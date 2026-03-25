@@ -283,7 +283,7 @@ func NewPTZClient(rtspURL string) (*PTZClient, error) {
 		password, _ = u.User.Password()
 	}
 
-	httpClient := &http.Client{Timeout: 5 * time.Second}
+	httpClient := &http.Client{Timeout: 10 * time.Second}
 
 	client := &PTZClient{
 		username:   username,
@@ -292,7 +292,8 @@ func NewPTZClient(rtspURL string) (*PTZClient, error) {
 	}
 
 	// Probe common ONVIF ports to find the device service.
-	onvifPorts := []string{"80", "2020", "8080", "8899"}
+	// Port 2020 is tried first (Tapo cameras), then 80 (most others).
+	onvifPorts := []string{"2020", "80", "8080", "8899"}
 	dateTimeBody := `<tds:GetSystemDateAndTime xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`
 
 	var deviceURL string

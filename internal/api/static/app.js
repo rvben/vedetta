@@ -213,8 +213,8 @@ function startMSE() {
         }
       }
 
-      // Auto-seek to live edge to minimize latency
-      if (video.buffered.length > 0) {
+      // Auto-seek to live edge to minimize latency (skip when user paused)
+      if (!userPaused && video.buffered.length > 0) {
         var liveEdge = video.buffered.end(video.buffered.length - 1);
         if (liveEdge - video.currentTime > 2) {
           video.currentTime = liveEdge - 0.5;

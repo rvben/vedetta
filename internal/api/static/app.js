@@ -398,6 +398,7 @@ function startMJPEG() {
 }
 
 var userPaused = false;
+var pausedAtTime = 0;
 
 function togglePause() {
   var video = el('live-video');
@@ -406,10 +407,19 @@ function togglePause() {
   if (userPaused) {
     // Resume from where we paused (not live)
     userPaused = false;
+    // Seek back to where we actually paused — MSE may have drifted
+    if (pausedAtTime > 0 && video.buffered.length > 0) {
+      var bufStart = video.buffered.start(0);
+      // Only seek back if the paused position is still in the buffer
+      if (pausedAtTime >= bufStart) {
+        video.currentTime = pausedAtTime;
+      }
+    }
     video.play();
     flashPauseIcon(false);
   } else {
     userPaused = true;
+    pausedAtTime = video.currentTime;
     video.pause();
     flashPauseIcon(true);
   }

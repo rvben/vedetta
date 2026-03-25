@@ -918,6 +918,7 @@ input, select { font-family: inherit; }
   overflow: hidden;
   cursor: pointer;
 }
+/* Centered pause/play flash indicator */
 .video-pause-indicator {
   position: absolute;
   top: 50%;
@@ -936,47 +937,96 @@ input, select { font-family: inherit; }
   0% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); }
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.5); }
 }
-.video-overlay-controls {
+
+/* Video control bar (YouTube/Twitch style) */
+.video-controls {
   position: absolute;
-  bottom: 0.5rem;
-  right: 0.5rem;
-  display: flex;
-  gap: 0.25rem;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
   opacity: 0;
   transition: opacity var(--dur-normal) var(--ease-out);
   pointer-events: none;
-  z-index: 5;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  padding-top: 2rem;
 }
-.video-overlay-controls .btn {
-  background: rgba(0, 0, 0, 0.6);
-  border-color: transparent;
+.live-viewport:hover .video-controls,
+.live-viewport:focus-within .video-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+.live-container:fullscreen .video-controls,
+.live-container:-webkit-full-screen .video-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+.vc-progress {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  margin: 0 0.75rem;
+  cursor: pointer;
+  position: relative;
+}
+.vc-progress-bar {
+  height: 100%;
+  background: var(--red, #ff5252);
+  width: 100%;
+  transition: width 0.3s linear;
+}
+.vc-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.375rem 0.5rem;
+}
+.vc-left, .vc-right {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.vc-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: #fff;
-  backdrop-filter: blur(4px);
+  cursor: pointer;
+  transition: background var(--dur-fast);
 }
-.video-overlay-controls .btn:hover {
-  background: rgba(0, 0, 0, 0.8);
+.vc-btn:hover { background: rgba(255, 255, 255, 0.15); }
+.vc-live-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: #fff;
-}
-.btn-live-overlay {
-  background: rgba(200, 0, 0, 0.8) !important;
-  color: #fff !important;
   font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.05em;
+  cursor: pointer;
   padding: 0.25rem 0.5rem;
+  opacity: 0.6;
+  transition: opacity var(--dur-fast);
 }
-.btn-live-overlay:hover {
-  background: rgba(220, 0, 0, 0.95) !important;
-}
-.live-viewport:hover .video-overlay-controls,
-.live-viewport:focus-within .video-overlay-controls {
+.vc-live-btn.is-live {
   opacity: 1;
-  pointer-events: auto;
 }
-.live-container:fullscreen .video-overlay-controls,
-.live-container:-webkit-full-screen .video-overlay-controls {
-  opacity: 1;
-  pointer-events: auto;
+.vc-live-btn:hover { opacity: 1; }
+.vc-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #888;
+}
+.vc-live-btn.is-live .vc-live-dot {
+  background: var(--red, #ff5252);
 }
 
 .live-viewport video,

@@ -445,7 +445,6 @@ function flashPauseIcon(isPause) {
 
 function updatePauseUI() {
   var indicator = el('video-pause-indicator');
-  var liveBtn = el('btn-go-live');
   if (indicator) {
     if (userPaused) {
       indicator.innerHTML = '<svg viewBox="0 0 24 24" fill="white" width="64" height="64"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
@@ -454,10 +453,30 @@ function updatePauseUI() {
       indicator.classList.add('hidden');
     }
   }
-  // Show "LIVE" button when behind the live edge
+  // Update pause/play icon in control bar
+  var pauseIcon = el('vc-pause-icon');
+  var playIcon = el('vc-play-icon');
+  if (pauseIcon) pauseIcon.style.display = userPaused ? 'none' : '';
+  if (playIcon) playIcon.style.display = userPaused ? '' : 'none';
+
+  // Update LIVE button state
+  var liveBtn = el('btn-go-live');
   if (liveBtn) {
-    var behindLive = userPaused || isBehindLive();
-    liveBtn.classList.toggle('hidden', !behindLive);
+    var atLive = !userPaused && !isBehindLive();
+    liveBtn.classList.toggle('is-live', atLive);
+  }
+
+  // Update progress bar (red = buffered, shows how far behind live)
+  var bar = el('vc-progress-bar');
+  if (bar) {
+    var video = el('live-video');
+    if (video && !video.classList.contains('hidden') && video.buffered.length > 0) {
+      var liveEdge = video.buffered.end(video.buffered.length - 1);
+      var pct = liveEdge > 0 ? Math.min(100, (video.currentTime / liveEdge) * 100) : 100;
+      bar.style.width = pct + '%';
+    } else {
+      bar.style.width = '100%';
+    }
   }
 }
 
@@ -472,7 +491,7 @@ function initViewportPause() {
   var viewport = el('live-viewport');
   if (!viewport) return;
   viewport.addEventListener('click', function(e) {
-    if (e.target.closest('.video-overlay-controls')) return;
+    if (e.target.closest('.video-controls')) return;
     if (e.target.closest('.stream-stats')) return;
     togglePause();
   });

@@ -940,7 +940,6 @@ function initTimeline() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function() {
       renderWaveform(cachedActivity, cachedTimelineEvents, cachedSegments);
-      renderTimelineEvents(cachedTimelineEvents);
     }, 200);
   });
 }
@@ -1098,7 +1097,6 @@ function fetchTimelineData() {
       cachedActivity = data.activity || [];
       cachedTimelineEvents = data.events || [];
       renderWaveform(cachedActivity, cachedTimelineEvents, cachedSegments);
-      renderTimelineEvents(cachedTimelineEvents);
     })
     .catch(function(err) {
       console.error('Timeline fetch error:', err);
@@ -1198,68 +1196,6 @@ function renderWaveform(activity, events, segments) {
   }
 }
 
-function renderTimelineEvents(events) {
-  var track = el('timeline-track');
-  if (!track) return;
-
-  // Remove existing event markers and tooltips
-  track.querySelectorAll('.timeline-event').forEach(function(e) { e.remove(); });
-  document.querySelectorAll('.timeline-tooltip').forEach(function(t) { t.remove(); });
-
-  events.forEach(function(evt) {
-    var ts = new Date(evt.timestamp);
-    var pct = (ts.getHours() * 3600 + ts.getMinutes() * 60 + ts.getSeconds()) / 86400 * 100;
-    var timeStr = String(ts.getHours()).padStart(2, '0') + ':' +
-      String(ts.getMinutes()).padStart(2, '0') + ':' +
-      String(ts.getSeconds()).padStart(2, '0');
-    var scoreStr = Math.round(evt.score * 100) + '%';
-
-    var dot = document.createElement('div');
-    dot.className = 'timeline-event ' + evt.label;
-    dot.style.left = pct + '%';
-    dot.title = evt.label + ' at ' + timeStr + ' (' + scoreStr + ')';
-
-    dot.addEventListener('mouseenter', function(e) {
-      showTimelineTooltip(dot, evt.label, timeStr, scoreStr);
-    });
-
-    dot.addEventListener('mouseleave', function() {
-      hideTimelineTooltip();
-    });
-
-    dot.addEventListener('click', function(e) {
-      e.stopPropagation();
-      location.href = '/event.html?id=' + encodeURIComponent(evt.id);
-    });
-
-    track.insertBefore(dot, track.querySelector('.timeline-playhead'));
-  });
-}
-
-function showTimelineTooltip(anchor, label, time, score) {
-  hideTimelineTooltip();
-
-  var tooltip = document.createElement('div');
-  tooltip.className = 'timeline-tooltip';
-  tooltip.innerHTML = '<strong>' + label + '</strong><br>' + time + '<br>' + score;
-
-  var container = el('timeline-container');
-  if (!container) return;
-  container.appendChild(tooltip);
-
-  var anchorRect = anchor.getBoundingClientRect();
-  var containerRect = container.getBoundingClientRect();
-  var tooltipWidth = tooltip.offsetWidth;
-
-  var left = anchorRect.left + anchorRect.width / 2 - containerRect.left - tooltipWidth / 2;
-  left = Math.max(4, Math.min(left, containerRect.width - tooltipWidth - 4));
-
-  tooltip.style.left = left + 'px';
-}
-
-function hideTimelineTooltip() {
-  document.querySelectorAll('.timeline-tooltip').forEach(function(t) { t.remove(); });
-}
 
 // ─── Birdseye View ───
 let birdseyeInterval = null;

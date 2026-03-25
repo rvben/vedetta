@@ -1246,28 +1246,6 @@ input, select { font-family: inherit; }
   pointer-events: none;
 }
 
-/* Event markers */
-.timeline-event {
-  position: absolute;
-  top: 50%;
-  transform: translateX(-50%) translateY(-50%);
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--cyan);
-  cursor: pointer;
-  z-index: 2;
-  transition: transform var(--dur-fast);
-}
-
-.timeline-event:hover {
-  transform: translateX(-50%) translateY(-50%) scale(1.5);
-}
-
-.timeline-event.person { background: var(--label-person); }
-.timeline-event.car { background: var(--label-car); }
-.timeline-event.dog { background: var(--label-dog); }
-.timeline-event.cat { background: var(--label-cat); }
 
 /* Playhead */
 .timeline-playhead {
@@ -1303,29 +1281,6 @@ input, select { font-family: inherit; }
   color: var(--text-tertiary);
 }
 
-/* Timeline tooltip */
-.timeline-tooltip {
-  position: absolute;
-  bottom: calc(100% - 2.5rem);
-  padding: 0.375rem 0.625rem;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
-  color: var(--text-primary);
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 10;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  line-height: 1.4;
-  text-align: center;
-}
-
-.timeline-tooltip strong {
-  text-transform: capitalize;
-  color: var(--cyan);
-}
 
 /* ─── Buttons ─── */
 .btn {

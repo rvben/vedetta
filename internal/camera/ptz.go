@@ -359,6 +359,11 @@ func NewPTZClient(rtspURL string) (*PTZClient, error) {
 
 	profilesBody := `<trt:GetProfiles xmlns:trt="http://www.onvif.org/ver10/media/wsdl"/>`
 	profilesData, err := sendAuthRequest(httpClient, mediaURL, profilesBody, "http://www.onvif.org/ver10/media/wsdl/GetProfiles", username, password, client.clockOffset, client.useWSSec)
+	if err != nil && !client.useWSSec {
+		// Basic Auth may work for GetCapabilities but not for other endpoints
+		client.useWSSec = true
+		profilesData, err = sendAuthRequest(httpClient, mediaURL, profilesBody, "http://www.onvif.org/ver10/media/wsdl/GetProfiles", username, password, client.clockOffset, true)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("getting profiles: %w", err)
 	}

@@ -3341,3 +3341,99 @@ function startDiscovery() {
 function showAddManual() {
   toast('Manual camera add coming soon');
 }
+
+// PTZ Controls
+function initPTZ(cameraName) {
+  fetch('/api/cameras')
+    .then(function(r) { return r.json(); })
+    .then(function(cameras) {
+      var cam = cameras.find(function(c) { return c.name === cameraName; });
+      if (cam && cam.ptz) {
+        var ptzEl = el('ptz-controls');
+        if (ptzEl) ptzEl.classList.remove('hidden');
+        bindPTZControls(cameraName);
+      }
+    })
+    .catch(function() {});
+}
+
+function bindPTZControls(cameraName) {
+  var ptzLastCmd = 0;
+  var ptzActive = false;
+
+  function ptzCommand(action, direction) {
+    var now = Date.now();
+    if (now - ptzLastCmd < 100) return;
+    ptzLastCmd = now;
+    var body = direction ? {action: action, direction: direction} : {action: action};
+    fetch('/api/cameras/' + encodeURIComponent(cameraName) + '/ptz', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    }).catch(function() {});
+  }
+
+  var buttons = document.querySelectorAll('#ptz-controls .ptz-btn');
+  buttons.forEach(function(btn) {
+    var ptzAction = btn.getAttribute('data-ptz');
+
+    btn.addEventListener('pointerdown', function(e) {
+      e.preventDefault();
+      btn.setPointerCapture(e.pointerId);
+      ptzActive = true;
+      if (ptzAction === 'stop') {
+        ptzCommand('stop');
+      } else if (ptzAction === 'zoom_in') {
+        ptzCommand('zoom', 'in');
+      } else if (ptzAction === 'zoom_out') {
+        ptzCommand('zoom', 'out');
+      } else {
+        ptzCommand('move', ptzAction);
+      }
+    });
+
+    btn.addEventListener('pointerup', function() {
+      if (ptzActive && ptzAction !== 'stop') {
+        ptzCommand('stop');
+      }
+      ptzActive = false;
+    });
+
+    btn.addEventListener('pointerleave', function() {
+      if (ptzActive && ptzAction !== 'stop') {
+        ptzCommand('stop');
+      }
+      ptzActive = false;
+    });
+  });
+
+  var ptzKeyActive = {};
+  document.addEventListener('keydown', function(e) {
+    if (e.repeat) return;
+    if (!el('ptz-controls') || el('ptz-controls').classList.contains('hidden')) return;
+    var tag = (e.target || {}).tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    var handled = true;
+    switch (e.key) {
+      case 'ArrowUp':    ptzCommand('move', 'up'); break;
+      case 'ArrowDown':  ptzCommand('move', 'down'); break;
+      case 'ArrowLeft':  ptzCommand('move', 'left'); break;
+      case 'ArrowRight': ptzCommand('move', 'right'); break;
+      case '+': case '=': ptzCommand('zoom', 'in'); break;
+      case '-':           ptzCommand('zoom', 'out'); break;
+      default: handled = false;
+    }
+    if (handled) {
+      e.preventDefault();
+      ptzKeyActive[e.key] = true;
+    }
+  });
+
+  document.addEventListener('keyup', function(e) {
+    if (ptzKeyActive[e.key]) {
+      delete ptzKeyActive[e.key];
+      ptzCommand('stop');
+    }
+  });
+}

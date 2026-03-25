@@ -239,6 +239,8 @@
         <div class="shortcut-row"><span>Toggle audio</span><span class="shortcut-keys"><kbd>A</kbd></span></div>
         <div class="shortcut-row"><span>Picture-in-Picture</span><span class="shortcut-keys"><kbd>P</kbd></span></div>
         <div class="shortcut-row"><span>Fullscreen</span><span class="shortcut-keys"><kbd>F</kbd></span></div>
+        <div class="shortcut-row"><span>Pan (PTZ)</span><span class="shortcut-keys"><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></span></div>
+        <div class="shortcut-row"><span>Zoom (PTZ)</span><span class="shortcut-keys"><kbd>+</kbd><kbd>-</kbd></span></div>
       </div>
       <div class="shortcut-group">
         <h3>Events</h3>
@@ -285,6 +287,8 @@
 
       // Zones
       initZones();
+
+      initPTZ(name);
 
       // Auto-playback if ?t= parameter is present (from recordings page)
       const playbackTime = new URLSearchParams(location.search).get('t');

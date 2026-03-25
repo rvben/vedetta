@@ -27,7 +27,7 @@ func newTestServer(t *testing.T) (*Server, *storage.DB) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	mgr := camera.NewManager(nil, nil, config.MotionConfig{}, nil, nil, nil, nil, "", 85, "", nil, nil, "")
+	mgr := camera.NewManager(nil, nil, config.MotionConfig{}, nil, nil, nil, nil, "", 85, "", nil, nil, "", nil)
 	rec := recording.New(config.RecordingConfig{
 		Path: t.TempDir(),
 	}, config.EventConfig{RetainDays: 90}, db, nil, "")
@@ -1353,7 +1353,7 @@ func newTestServerWithPTZ(t *testing.T) (*Server, *storage.DB) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	mgr := camera.NewManager(nil, nil, config.MotionConfig{}, nil, nil, nil, nil, "", 85, "", nil, nil, "")
+	mgr := camera.NewManager(nil, nil, config.MotionConfig{}, nil, nil, nil, nil, "", 85, "", nil, nil, "", nil)
 	mgr.AddCamera(config.CameraConfig{Name: "ptz_cam", URL: "rtsp://localhost/stream"})
 	mgr.AddCamera(config.CameraConfig{Name: "no_ptz_cam", URL: "rtsp://localhost/stream2"})
 

@@ -23,6 +23,7 @@ func newTestCamera(cfg config.CameraConfig, hub *rtsp.Hub) *Camera {
 		nil,
 		nil,
 		"",
+		nil,
 	)
 }
 
@@ -153,7 +154,7 @@ func TestManager_AddCamera(t *testing.T) {
 	eventEnds := make(chan EventEnd, 10)
 	presenceEvents := make(chan PresenceEvent, 10)
 	faceEvents := make(chan FaceEvent, 10)
-	m := NewManager(nil, nil, config.MotionConfig{}, events, eventEnds, presenceEvents, nil, "", 85, "", nil, faceEvents, "")
+	m := NewManager(nil, nil, config.MotionConfig{}, events, eventEnds, presenceEvents, nil, "", 85, "", nil, faceEvents, "", nil)
 	if len(m.ListCameras()) != 0 {
 		t.Fatal("expected 0 cameras initially")
 	}

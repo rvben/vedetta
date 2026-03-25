@@ -45,6 +45,13 @@ type EventEnd struct {
 	EndTime    time.Time
 }
 
+// MotionActivity carries per-minute motion intensity for timeline display.
+type MotionActivity struct {
+	CameraName string
+	Bucket     time.Time
+	Score      float64
+}
+
 // FaceEvent carries face detection results from the camera detection loop.
 type FaceEvent struct {
 	Camera  string
@@ -68,6 +75,9 @@ type Camera struct {
 	snapConsumer         *media.SnapshotConsumer
 	detectEnabled        bool
 	motionMinRegionScore float64
+	motionActivity       chan<- MotionActivity
+	motionBucketTime     time.Time
+	motionBucketMax      float64
 
 	mu               sync.RWMutex
 	rawFrame         []byte // RGB24 frame data, guarded by mu
@@ -98,7 +108,7 @@ type CameraStatus struct {
 	PTZ            bool      `json:"ptz"`
 }
 
-func NewCamera(cfg config.CameraConfig, detector *detect.Detector, motion config.MotionConfig, events chan<- Event, eventEnds chan<- EventEnd, presenceEvents chan<- PresenceEvent, hub *rtsp.Hub, snapshotPath string, snapshotQuality int, recordingPath string, faceRecognizer *detect.FaceRecognizer, faceEvents chan<- FaceEvent, faceCropDir string) *Camera {
+func NewCamera(cfg config.CameraConfig, detector *detect.Detector, motion config.MotionConfig, events chan<- Event, eventEnds chan<- EventEnd, presenceEvents chan<- PresenceEvent, hub *rtsp.Hub, snapshotPath string, snapshotQuality int, recordingPath string, faceRecognizer *detect.FaceRecognizer, faceEvents chan<- FaceEvent, faceCropDir string, motionActivity chan<- MotionActivity) *Camera {
 	if snapshotQuality <= 0 {
 		snapshotQuality = 85
 	}
@@ -116,6 +126,7 @@ func NewCamera(cfg config.CameraConfig, detector *detect.Detector, motion config
 		latestSnapshotPath:   filepath.Join(recordingPath, cfg.Name, "latest.jpg"),
 		detectEnabled:        cfg.DetectEnabled(),
 		motionMinRegionScore: motion.MinRegionScore,
+		motionActivity:       motionActivity,
 		confirmedTracks:      make(map[int]string),
 		presenceTracker:      NewPresenceTracker(),
 		faceRecognizer:       faceRecognizer,
@@ -289,6 +300,8 @@ func (c *Camera) readFrames(ctx context.Context) {
 	// Attach snapshot consumer to the main (high-res) stream for event snapshots
 	c.startSnapshotConsumer(ctx)
 
+	defer c.flushMotionBucket()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -296,6 +309,20 @@ func (c *Camera) readFrames(ctx context.Context) {
 		case frame := <-consumer.Frames():
 			c.processFrame(frame.Data, frame.Width, frame.Height)
 		}
+	}
+}
+
+func (c *Camera) flushMotionBucket() {
+	if c.motionActivity == nil || c.motionBucketTime.IsZero() || c.motionBucketMax <= 0 {
+		return
+	}
+	select {
+	case c.motionActivity <- MotionActivity{
+		CameraName: c.config.Name,
+		Bucket:     c.motionBucketTime,
+		Score:      c.motionBucketMax,
+	}:
+	default:
 	}
 }
 
@@ -367,6 +394,27 @@ func (c *Camera) processFrame(buf []byte, w, h int) {
 
 	// Contour-based motion detection
 	motionRegions := c.motionDetector.Detect(buf, w, h)
+
+	if c.motionActivity != nil {
+		coverage := c.motionDetector.FrameCoverage()
+		now := time.Now().Truncate(time.Minute)
+		if !c.motionBucketTime.IsZero() && now != c.motionBucketTime {
+			select {
+			case c.motionActivity <- MotionActivity{
+				CameraName: c.config.Name,
+				Bucket:     c.motionBucketTime,
+				Score:      c.motionBucketMax,
+			}:
+			default:
+			}
+			c.motionBucketMax = 0
+		}
+		c.motionBucketTime = now
+		if coverage > c.motionBucketMax {
+			c.motionBucketMax = coverage
+		}
+	}
+
 	qualifiedMotion := false
 	for _, region := range motionRegions {
 		if region.Score >= c.motionMinRegionScore {

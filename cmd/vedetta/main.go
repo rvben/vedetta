@@ -321,7 +321,7 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 	sub.presenceEvents = make(chan camera.PresenceEvent, 100)
 	sub.faceEvents = make(chan camera.FaceEvent, 100)
 
-	sub.manager = camera.NewManager(cfg.Cameras, sub.detector, cfg.Detect.Motion, sub.events, sub.eventEnds, sub.presenceEvents, sub.hub, cfg.Events.SnapshotPath, cfg.Events.SnapshotQuality, cfg.Recording.Path, sub.faceRecognizer, sub.faceEvents, filepath.Join(cfg.Events.SnapshotPath, "faces"))
+	sub.manager = camera.NewManager(cfg.Cameras, sub.detector, cfg.Detect.Motion, sub.events, sub.eventEnds, sub.presenceEvents, sub.hub, cfg.Events.SnapshotPath, cfg.Events.SnapshotQuality, cfg.Recording.Path, sub.faceRecognizer, sub.faceEvents, filepath.Join(cfg.Events.SnapshotPath, "faces"), nil)
 
 	// Sync zones from config to DB and load them into cameras
 	syncConfigZones(db, cfg.Cameras, sub.manager)

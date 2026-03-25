@@ -309,17 +309,19 @@ func NewPTZClient(rtspURL string) (*PTZClient, error) {
 		}
 		req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
 		resp, doErr := httpClient.Do(req)
-		cancel()
 		if doErr != nil {
+			cancel()
+			slog.Debug("PTZ probe failed", "host", host, "port", port, "error", doErr)
 			continue
 		}
 		data, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		cancel()
 		if readErr != nil || resp.StatusCode != http.StatusOK {
 			continue
 		}
 		deviceURL = candidate
-		slog.Debug("ONVIF device service found", "host", host, "port", port)
+		slog.Info("ONVIF device service found", "host", host, "port", port)
 		if camTime, parseErr := parseSystemDateAndTime(data); parseErr == nil {
 			client.clockOffset = camTime.Sub(time.Now().UTC())
 		}

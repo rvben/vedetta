@@ -213,8 +213,10 @@ function startMSE() {
         }
       }
 
-      // Auto-seek to live edge to minimize latency (skip when user paused)
-      if (!userPaused && video.buffered.length > 0) {
+      // Auto-seek to live edge to minimize latency
+      // Skip when paused or catching up from a pause (let user watch buffered content)
+      var suppressAutoSeek = userPaused || (resumedFromPause > 0 && Date.now() - resumedFromPause < 30000);
+      if (!suppressAutoSeek && video.buffered.length > 0) {
         var liveEdge = video.buffered.end(video.buffered.length - 1);
         if (liveEdge - video.currentTime > 2) {
           video.currentTime = liveEdge - 0.5;
@@ -399,6 +401,7 @@ function startMJPEG() {
 
 var userPaused = false;
 var pausedAtTime = 0;
+var resumedFromPause = 0; // timestamp when user resumed, suppresses auto-seek
 
 function togglePause() {
   var video = el('live-video');
@@ -407,10 +410,10 @@ function togglePause() {
   if (userPaused) {
     // Resume from where we paused (not live)
     userPaused = false;
+    resumedFromPause = Date.now();
     // Seek back to where we actually paused — MSE may have drifted
     if (pausedAtTime > 0 && video.buffered.length > 0) {
       var bufStart = video.buffered.start(0);
-      // Only seek back if the paused position is still in the buffer
       if (pausedAtTime >= bufStart) {
         video.currentTime = pausedAtTime;
       }
@@ -429,7 +432,7 @@ function togglePause() {
 function seekToLive() {
   var video = el('live-video');
   if (!video || video.classList.contains('hidden')) return;
-  // Seek to the live edge of the buffer
+  resumedFromPause = 0; // re-enable auto-seek
   if (video.buffered.length > 0) {
     video.currentTime = video.buffered.end(video.buffered.length - 1);
   }

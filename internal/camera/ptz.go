@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -282,9 +283,7 @@ func NewPTZClient(rtspURL string) (*PTZClient, error) {
 		password, _ = u.User.Password()
 	}
 
-	deviceURL := fmt.Sprintf("http://%s/onvif/device_service", host)
-
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := &http.Client{Timeout: 5 * time.Second}
 
 	client := &PTZClient{
 		username:   username,
@@ -292,24 +291,41 @@ func NewPTZClient(rtspURL string) (*PTZClient, error) {
 		httpClient: httpClient,
 	}
 
-	// Fetch clock offset (no auth required). If it fails, assume zero offset.
+	// Probe common ONVIF ports to find the device service.
+	onvifPorts := []string{"80", "2020", "8080", "8899"}
 	dateTimeBody := `<tds:GetSystemDateAndTime xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`
-	dateTimeEnvelope := buildSOAPEnvelope(dateTimeBody, "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime", fmt.Sprintf("urn:uuid:%d", time.Now().UnixNano()))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	var deviceURL string
+	for _, port := range onvifPorts {
+		candidate := fmt.Sprintf("http://%s:%s/onvif/device_service", host, port)
+		envelope := buildSOAPEnvelope(dateTimeBody, "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime", fmt.Sprintf("urn:uuid:%d", time.Now().UnixNano()))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, deviceURL, bytes.NewReader([]byte(dateTimeEnvelope)))
-	if err == nil {
-		req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
-		if resp, reqErr := httpClient.Do(req); reqErr == nil {
-			defer resp.Body.Close()
-			if data, readErr := io.ReadAll(resp.Body); readErr == nil {
-				if camTime, parseErr := parseSystemDateAndTime(data); parseErr == nil {
-					client.clockOffset = camTime.Sub(time.Now().UTC())
-				}
-			}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, candidate, bytes.NewReader([]byte(envelope)))
+		if reqErr != nil {
+			cancel()
+			continue
 		}
+		req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+		resp, doErr := httpClient.Do(req)
+		cancel()
+		if doErr != nil {
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil || resp.StatusCode != http.StatusOK {
+			continue
+		}
+		deviceURL = candidate
+		slog.Debug("ONVIF device service found", "host", host, "port", port)
+		if camTime, parseErr := parseSystemDateAndTime(data); parseErr == nil {
+			client.clockOffset = camTime.Sub(time.Now().UTC())
+		}
+		break
+	}
+	if deviceURL == "" {
+		return nil, fmt.Errorf("no ONVIF service found on %s (tried ports %v)", host, onvifPorts)
 	}
 
 	// GetCapabilities with Basic Auth first, fallback to WS-Security.

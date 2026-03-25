@@ -46,6 +46,7 @@ type subsystems struct {
 	eventEnds      chan camera.EventEnd
 	presenceEvents chan camera.PresenceEvent
 	faceEvents     chan camera.FaceEvent
+	motionActivity chan camera.MotionActivity
 	ptzClients     map[string]*camera.PTZClient
 }
 
@@ -320,8 +321,9 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 	sub.eventEnds = make(chan camera.EventEnd, 100)
 	sub.presenceEvents = make(chan camera.PresenceEvent, 100)
 	sub.faceEvents = make(chan camera.FaceEvent, 100)
+	sub.motionActivity = make(chan camera.MotionActivity, 100)
 
-	sub.manager = camera.NewManager(cfg.Cameras, sub.detector, cfg.Detect.Motion, sub.events, sub.eventEnds, sub.presenceEvents, sub.hub, cfg.Events.SnapshotPath, cfg.Events.SnapshotQuality, cfg.Recording.Path, sub.faceRecognizer, sub.faceEvents, filepath.Join(cfg.Events.SnapshotPath, "faces"), nil)
+	sub.manager = camera.NewManager(cfg.Cameras, sub.detector, cfg.Detect.Motion, sub.events, sub.eventEnds, sub.presenceEvents, sub.hub, cfg.Events.SnapshotPath, cfg.Events.SnapshotQuality, cfg.Recording.Path, sub.faceRecognizer, sub.faceEvents, filepath.Join(cfg.Events.SnapshotPath, "faces"), sub.motionActivity)
 
 	// Sync zones from config to DB and load them into cameras
 	syncConfigZones(db, cfg.Cameras, sub.manager)
@@ -435,6 +437,7 @@ func runEventLoop(ctx context.Context, cfg *config.Config, db *storage.DB, sub *
 	eventEnds := sub.eventEnds
 	presenceEvents := sub.presenceEvents
 	faceEvents := sub.faceEvents
+	motionActivity := sub.motionActivity
 
 	go func() {
 		type activeEvent struct {
@@ -614,6 +617,11 @@ func runEventLoop(ctx context.Context, cfg *config.Config, db *storage.DB, sub *
 						objectName = db.LatestObjectNameForZone(pe.ZoneName, pe.Label)
 					}
 					sub.mqttClient.PublishPresence(pe, objectName)
+				}
+
+			case ma := <-motionActivity:
+				if err := db.SaveMotionActivity(ma.CameraName, ma.Bucket, ma.Score); err != nil {
+					slog.Error("failed to save motion activity", "camera", ma.CameraName, "error", err)
 				}
 
 			case fe := <-faceEvents:

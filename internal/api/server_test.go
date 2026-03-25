@@ -1339,6 +1339,207 @@ func TestHandleRecordingExport_NoSegments(t *testing.T) {
 	}
 }
 
+// --- PTZ API tests ---
+
+// newTestServerWithPTZ creates a test server with a camera that has PTZ support.
+// It starts a mock ONVIF server that accepts SOAP requests, registers a camera
+// in the manager, and wires a PTZClient pointing at the mock.
+func newTestServerWithPTZ(t *testing.T) (*Server, *storage.DB) {
+	t.Helper()
+
+	db, err := storage.New(":memory:")
+	if err != nil {
+		t.Fatalf("create in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	mgr := camera.NewManager(nil, nil, config.MotionConfig{}, nil, nil, nil, nil, "", 85, "", nil, nil, "")
+	mgr.AddCamera(config.CameraConfig{Name: "ptz_cam", URL: "rtsp://localhost/stream"})
+	mgr.AddCamera(config.CameraConfig{Name: "no_ptz_cam", URL: "rtsp://localhost/stream2"})
+
+	rec := recording.New(config.RecordingConfig{
+		Path: t.TempDir(),
+	}, config.EventConfig{RetainDays: 90}, db, nil, "")
+
+	// Mock ONVIF server that accepts any SOAP request
+	ptzServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body/></s:Envelope>`))
+	}))
+	t.Cleanup(ptzServer.Close)
+
+	ptzClients := map[string]*camera.PTZClient{
+		"ptz_cam": camera.NewTestPTZClient(ptzServer.URL, "TestProfile"),
+	}
+
+	apiCfg := config.APIConfig{Host: "127.0.0.1", Port: 0}
+	srv := New(apiCfg, nil, db)
+	srv.SetSubsystems(mgr, rec, nil, nil, nil, "", "", nil, ptzClients)
+	return srv, db
+}
+
+func TestPTZMoveUp(t *testing.T) {
+	srv, _ := newTestServerWithPTZ(t)
+
+	body := strings.NewReader(`{"action":"move","direction":"up"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cameras/ptz_cam/ptz", body)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want %q", resp["status"], "ok")
+	}
+}
+
+func TestPTZStop(t *testing.T) {
+	srv, _ := newTestServerWithPTZ(t)
+
+	body := strings.NewReader(`{"action":"stop"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cameras/ptz_cam/ptz", body)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want %q", resp["status"], "ok")
+	}
+}
+
+func TestPTZZoomIn(t *testing.T) {
+	srv, _ := newTestServerWithPTZ(t)
+
+	body := strings.NewReader(`{"action":"zoom","direction":"in"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cameras/ptz_cam/ptz", body)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want %q", resp["status"], "ok")
+	}
+}
+
+func TestPTZCameraNotFound(t *testing.T) {
+	srv, _ := newTestServerWithPTZ(t)
+
+	body := strings.NewReader(`{"action":"move","direction":"up"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cameras/nonexistent/ptz", body)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["error"] != "camera not found" {
+		t.Errorf("error = %q, want %q", resp["error"], "camera not found")
+	}
+}
+
+func TestPTZNotSupported(t *testing.T) {
+	srv, _ := newTestServerWithPTZ(t)
+
+	body := strings.NewReader(`{"action":"move","direction":"up"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cameras/no_ptz_cam/ptz", body)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["error"] != "camera does not support PTZ" {
+		t.Errorf("error = %q, want %q", resp["error"], "camera does not support PTZ")
+	}
+}
+
+func TestPTZInvalidAction(t *testing.T) {
+	srv, _ := newTestServerWithPTZ(t)
+
+	body := strings.NewReader(`{"action":"invalid"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/cameras/ptz_cam/ptz", body)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["error"] != "invalid action" {
+		t.Errorf("error = %q, want %q", resp["error"], "invalid action")
+	}
+}
+
+func TestListCamerasIncludesPTZ(t *testing.T) {
+	srv, _ := newTestServerWithPTZ(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cameras", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var cameras []struct {
+		Name string `json:"name"`
+		PTZ  bool   `json:"ptz"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&cameras); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(cameras) != 2 {
+		t.Fatalf("got %d cameras, want 2", len(cameras))
+	}
+
+	ptzByName := make(map[string]bool)
+	for _, c := range cameras {
+		ptzByName[c.Name] = c.PTZ
+	}
+
+	if !ptzByName["ptz_cam"] {
+		t.Error("ptz_cam should have ptz=true")
+	}
+	if ptzByName["no_ptz_cam"] {
+		t.Error("no_ptz_cam should have ptz=false")
+	}
+}
+
 // contains checks if substr is present in s.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

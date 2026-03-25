@@ -257,6 +257,15 @@ func (c *PTZClient) Available() bool {
 	return c.ptzURL != "" && c.profileToken != ""
 }
 
+// NewTestPTZClient creates a PTZClient for testing with no real ONVIF connection.
+func NewTestPTZClient(ptzURL, profileToken string) *PTZClient {
+	return &PTZClient{
+		ptzURL:       ptzURL,
+		profileToken: profileToken,
+		httpClient:   &http.Client{Timeout: time.Second},
+	}
+}
+
 // NewPTZClient creates a PTZClient by probing ONVIF endpoints on the camera.
 // It derives the ONVIF HTTP endpoint from the RTSP URL (same host, port 80),
 // discovers PTZ capabilities, and finds a media profile with PTZ support.

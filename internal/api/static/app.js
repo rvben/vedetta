@@ -397,46 +397,75 @@ function startMJPEG() {
   }, 2000);
 }
 
+var userPaused = false;
+
 function togglePause() {
   var video = el('live-video');
   if (!video || video.classList.contains('hidden')) return;
 
-  if (video.paused) {
+  if (userPaused) {
+    // Resume from where we paused (not live)
+    userPaused = false;
     video.play();
-    showPauseFlash(false);
+    flashPauseIcon(false);
   } else {
+    userPaused = true;
     video.pause();
-    showPauseFlash(true);
+    flashPauseIcon(true);
   }
-  updatePauseIndicator();
+  updatePauseUI();
 }
 
-function showPauseFlash(isPause) {
+function seekToLive() {
+  var video = el('live-video');
+  if (!video || video.classList.contains('hidden')) return;
+  // Seek to the live edge of the buffer
+  if (video.buffered.length > 0) {
+    video.currentTime = video.buffered.end(video.buffered.length - 1);
+  }
+  if (userPaused) {
+    userPaused = false;
+    video.play();
+  }
+  updatePauseUI();
+}
+
+function flashPauseIcon(isPause) {
   var indicator = el('video-pause-indicator');
   if (!indicator) return;
-  // Show the appropriate icon briefly with a flash animation
   indicator.innerHTML = isPause
     ? '<svg viewBox="0 0 24 24" fill="white" width="64" height="64"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
     : '<svg viewBox="0 0 24 24" fill="white" width="64" height="64"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
   indicator.classList.remove('hidden', 'video-pause-flash');
-  // Force reflow to restart animation
   void indicator.offsetWidth;
   if (!isPause) {
     indicator.classList.add('video-pause-flash');
   }
 }
 
-function updatePauseIndicator() {
-  var video = el('live-video');
+function updatePauseUI() {
   var indicator = el('video-pause-indicator');
-  if (!indicator) return;
-  if (video && !video.classList.contains('hidden') && video.paused) {
-    // Show persistent play icon when paused
-    indicator.innerHTML = '<svg viewBox="0 0 24 24" fill="white" width="64" height="64"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
-    indicator.classList.remove('hidden', 'video-pause-flash');
-  } else {
-    indicator.classList.add('hidden');
+  var liveBtn = el('btn-go-live');
+  if (indicator) {
+    if (userPaused) {
+      indicator.innerHTML = '<svg viewBox="0 0 24 24" fill="white" width="64" height="64"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+      indicator.classList.remove('hidden', 'video-pause-flash');
+    } else {
+      indicator.classList.add('hidden');
+    }
   }
+  // Show "LIVE" button when behind the live edge
+  if (liveBtn) {
+    var behindLive = userPaused || isBehindLive();
+    liveBtn.classList.toggle('hidden', !behindLive);
+  }
+}
+
+function isBehindLive() {
+  var video = el('live-video');
+  if (!video || video.classList.contains('hidden') || !video.buffered.length) return false;
+  var liveEdge = video.buffered.end(video.buffered.length - 1);
+  return (liveEdge - video.currentTime) > 2;
 }
 
 function initViewportPause() {
@@ -447,6 +476,8 @@ function initViewportPause() {
     if (e.target.closest('.stream-stats')) return;
     togglePause();
   });
+  // Periodically check if behind live edge
+  setInterval(function() { updatePauseUI(); }, 2000);
 }
 
 function stopStream() {
@@ -497,7 +528,8 @@ function updateStreamButtons() {
   if (btnStop) {
     btnStop.classList.toggle('hidden', currentStream === null);
   }
-  updatePauseIndicator();
+  if (currentStream) userPaused = false;
+  updatePauseUI();
 
   updateStreamBadge();
 }
@@ -1756,7 +1788,11 @@ document.addEventListener('keydown', function(e) {
       if (el('live-viewport')) toggleFullscreen();
       break;
     case ' ':
-      if (el('btn-pause')) { togglePause(); e.preventDefault(); }
+      if (el('live-video')) { togglePause(); e.preventDefault(); }
+      break;
+    case 'l':
+    case 'L':
+      if (el('btn-go-live') && !el('btn-go-live').classList.contains('hidden')) { seekToLive(); }
       break;
     case 'ArrowLeft': {
       var prev = document.querySelector('[data-prev-id]');

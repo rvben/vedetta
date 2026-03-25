@@ -44,12 +44,12 @@
     <div class="camera-layout">
       <!-- Live View -->
       <div class="live-container">
-        <div class="live-toolbar" id="live-toolbar">
-          <button id="btn-webrtc" class="btn btn-sm btn-primary" onclick="startMSE()" aria-label="Start live stream">
+        <div class="live-toolbar hidden" id="live-toolbar">
+          <button id="btn-webrtc" class="btn btn-sm btn-primary hidden" onclick="startMSE()" aria-label="Start live stream">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             Live
           </button>
-          <button id="btn-mjpeg" class="btn btn-sm" onclick="startMJPEG()" aria-label="Start MJPEG stream">
+          <button id="btn-mjpeg" class="btn btn-sm hidden" onclick="startMJPEG()" aria-label="Start MJPEG stream">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
             MJPEG
           </button>

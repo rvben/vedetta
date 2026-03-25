@@ -1325,19 +1325,14 @@ function returnToLive() {
 }
 
 function updatePlaybackUI() {
+  var toolbar = el('live-toolbar');
   var pbBadge = el('playback-badge');
-  var streamBadge = el('stream-badge');
   var btnLive = el('btn-live');
 
+  // Show toolbar only during playback (Return to Live + badge)
+  if (toolbar) toolbar.classList.toggle('hidden', !playbackMode);
   if (pbBadge) pbBadge.classList.toggle('hidden', !playbackMode);
-  if (streamBadge) streamBadge.classList.toggle('hidden', playbackMode);
   if (btnLive) btnLive.classList.toggle('hidden', !playbackMode);
-
-  // Disable stream buttons during playback
-  var btnWebrtc = el('btn-webrtc');
-  var btnMjpeg = el('btn-mjpeg');
-  if (btnWebrtc) btnWebrtc.disabled = playbackMode;
-  if (btnMjpeg) btnMjpeg.disabled = playbackMode;
 }
 
 function updatePlayheadForPlayback(currentTime) {

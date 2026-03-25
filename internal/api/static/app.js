@@ -1120,8 +1120,23 @@ function renderWaveform(activity, events, segments) {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
 
+  // Mark minutes that have recording coverage
+  var hasCoverage = new Uint8Array(1440);
+  if (segments) {
+    segments.forEach(function(seg) {
+      var start = new Date(seg.start_time);
+      var end = new Date(seg.end_time);
+      var startMin = start.getUTCHours() * 60 + start.getUTCMinutes();
+      var endMin = end.getUTCHours() * 60 + end.getUTCMinutes();
+      for (var m = startMin; m <= endMin && m < 1440; m++) {
+        hasCoverage[m] = 1;
+      }
+    });
+  }
+
+  // Fill in motion scores from activity data
   var scores = new Float64Array(1440);
-  if (activity && activity.length > 0) {
+  if (activity) {
     activity.forEach(function(a) {
       var d = new Date(a.t);
       var minute = d.getUTCHours() * 60 + d.getUTCMinutes();
@@ -1129,18 +1144,6 @@ function renderWaveform(activity, events, segments) {
         scores[minute] = a.s;
       }
     });
-  } else {
-    if (segments) {
-      segments.forEach(function(seg) {
-        var start = new Date(seg.start_time);
-        var end = new Date(seg.end_time);
-        var startMin = start.getUTCHours() * 60 + start.getUTCMinutes();
-        var endMin = end.getUTCHours() * 60 + end.getUTCMinutes();
-        for (var m = startMin; m <= endMin && m < 1440; m++) {
-          scores[m] = 0.5;
-        }
-      });
-    }
   }
 
   // Populate mergedBlocks from segments for scrubbing hit-testing
@@ -1187,10 +1190,19 @@ function renderWaveform(activity, events, segments) {
   var maxHalf = h / 2;
   var minBarHeight = maxHalf * 0.15;
 
+  var baselineHeight = maxHalf * 0.08;
+
   for (var i = 0; i < 1440; i++) {
-    if (scores[i] <= 0) continue;
-    var barH = scores[i] * maxHalf;
-    if (barH < minBarHeight) barH = minBarHeight;
+    if (!hasCoverage[i]) continue;
+
+    var barH;
+    if (scores[i] > 0) {
+      barH = scores[i] * maxHalf;
+      if (barH < minBarHeight) barH = minBarHeight;
+    } else {
+      barH = baselineHeight;
+    }
+
     ctx.fillStyle = eventMinutes.has(i) ? eventColor : normalColor;
     ctx.fillRect(i * barWidth, midY - barH, Math.max(barWidth, 0.5), barH * 2);
   }

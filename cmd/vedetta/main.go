@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,6 +46,7 @@ type subsystems struct {
 	eventEnds      chan camera.EventEnd
 	presenceEvents chan camera.PresenceEvent
 	faceEvents     chan camera.FaceEvent
+	ptzClients     map[string]*camera.PTZClient
 }
 
 func main() {
@@ -132,7 +134,7 @@ func main() {
 
 		// Transition the running server to full mode
 		server.TransitionToFull(authChecker)
-		server.SetSubsystems(sub.manager, sub.recorder, sub.hub, sub.faceRecognizer, sub.objectEmbedder, cfg.Events.SnapshotPath, filepath.Join(cfg.Events.SnapshotPath, "faces"), cfg.Cameras, nil)
+		server.SetSubsystems(sub.manager, sub.recorder, sub.hub, sub.faceRecognizer, sub.objectEmbedder, cfg.Events.SnapshotPath, filepath.Join(cfg.Events.SnapshotPath, "faces"), cfg.Cameras, sub.ptzClients)
 		server.ObjectMatchThreshold = cfg.Detect.ObjectMatchThreshold
 		if sub.mqttClient != nil {
 			server.SetMQTT(sub.mqttClient)
@@ -209,7 +211,7 @@ func main() {
 	}
 
 	// Wire subsystems into the API server now that everything is initialized
-	server.SetSubsystems(sub.manager, sub.recorder, sub.hub, sub.faceRecognizer, sub.objectEmbedder, cfg.Events.SnapshotPath, filepath.Join(cfg.Events.SnapshotPath, "faces"), cfg.Cameras, nil)
+	server.SetSubsystems(sub.manager, sub.recorder, sub.hub, sub.faceRecognizer, sub.objectEmbedder, cfg.Events.SnapshotPath, filepath.Join(cfg.Events.SnapshotPath, "faces"), cfg.Cameras, sub.ptzClients)
 	server.ObjectMatchThreshold = cfg.Detect.ObjectMatchThreshold
 	if sub.mqttClient != nil {
 		server.SetMQTT(sub.mqttClient)
@@ -350,6 +352,33 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 	}
 
 	sub.manager.Start(ctx)
+
+	// Probe cameras for PTZ support (concurrent, non-blocking)
+	ptzClients := make(map[string]*camera.PTZClient)
+	var ptzMu sync.Mutex
+	var ptzWg sync.WaitGroup
+	for _, cam := range cfg.Cameras {
+		if !cam.IsEnabled() {
+			continue
+		}
+		ptzWg.Add(1)
+		go func(camCfg config.CameraConfig) {
+			defer ptzWg.Done()
+			client, err := camera.NewPTZClient(camCfg.URL)
+			if err != nil {
+				slog.Debug("PTZ not available", "camera", camCfg.Name, "reason", err)
+				return
+			}
+			ptzMu.Lock()
+			ptzClients[camCfg.Name] = client
+			ptzMu.Unlock()
+		}(cam)
+	}
+	ptzWg.Wait()
+	if len(ptzClients) > 0 {
+		slog.Info("PTZ cameras detected", "count", len(ptzClients))
+	}
+	sub.ptzClients = ptzClients
 
 	// Periodically publish camera online/offline status to MQTT.
 	if sub.mqttClient != nil {

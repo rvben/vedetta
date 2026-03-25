@@ -2791,3 +2791,59 @@ kbd {
   .topnav, .bottom-tabs { display: none; }
   body { background: #fff; color: #000; }
 }
+
+/* PTZ Controls */
+.ptz-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border-subtle);
+}
+.ptz-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ptz-dpad {
+  display: grid;
+  grid-template-areas:
+    ".    up   ."
+    "left stop right"
+    ".    down .";
+  grid-template-columns: repeat(3, 2rem);
+  grid-template-rows: repeat(3, 2rem);
+  gap: 2px;
+}
+.ptz-btn[data-ptz="up"]    { grid-area: up; }
+.ptz-btn[data-ptz="left"]  { grid-area: left; }
+.ptz-btn[data-ptz="stop"]  { grid-area: stop; }
+.ptz-btn[data-ptz="right"] { grid-area: right; }
+.ptz-btn[data-ptz="down"]  { grid-area: down; }
+.ptz-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ptz-btn:active {
+  background: var(--cyan-ghost);
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+.ptz-zoom {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+@media (max-width: 768px) {
+  .ptz-dpad {
+    grid-template-columns: repeat(3, 2.5rem);
+    grid-template-rows: repeat(3, 2.5rem);
+  }
+  .ptz-zoom .ptz-btn {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+}

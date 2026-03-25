@@ -397,36 +397,25 @@ function startMJPEG() {
   }, 2000);
 }
 
-let streamPaused = false;
-
 function togglePause() {
-  if (!currentStream) {
-    // Nothing playing — start the stream
-    startMSE();
-    return;
-  }
-
   var video = el('live-video');
-  var mjpeg = el('live-mjpeg');
-  var snap = el('live-snapshot');
+  if (!video || video.classList.contains('hidden')) return;
 
-  if (!streamPaused) {
-    // Pause: stop the live stream, show snapshot
-    stopStream();
-    streamPaused = true;
+  if (video.paused) {
+    video.play();
   } else {
-    // Resume: restart live stream
-    streamPaused = false;
-    startMSE();
+    video.pause();
   }
   updatePauseButton();
 }
 
 function updatePauseButton() {
+  var video = el('live-video');
+  var paused = !video || video.classList.contains('hidden') || video.paused;
   var pauseIcon = el('pause-icon');
   var playIcon = el('play-icon');
-  if (pauseIcon) pauseIcon.style.display = (streamPaused || !currentStream) ? 'none' : '';
-  if (playIcon) playIcon.style.display = (streamPaused || !currentStream) ? '' : 'none';
+  if (pauseIcon) pauseIcon.style.display = paused ? 'none' : '';
+  if (playIcon) playIcon.style.display = paused ? '' : 'none';
 }
 
 function stopStream() {
@@ -477,7 +466,6 @@ function updateStreamButtons() {
   if (btnStop) {
     btnStop.classList.toggle('hidden', currentStream === null);
   }
-  if (currentStream) streamPaused = false;
   updatePauseButton();
 
   updateStreamBadge();

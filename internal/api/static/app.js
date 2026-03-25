@@ -14,6 +14,8 @@ let playbackStartTime = null; // Date when playback segment starts
 let playbackOffset = 0; // offset into segment where playback begins
 let timelineDragging = false; // true during timeline drag
 var cachedSegments = []; // raw segment data from API
+var cachedActivity = [];
+var cachedTimelineEvents = [];
 var mergedBlocks = []; // merged blocks {start: sec, end: sec} for hit-testing
 let timelineDate = new Date();
 let calendarDate = new Date();
@@ -932,6 +934,15 @@ function initTimeline() {
       scrubTimeline(lastScrubEvent, true);
     }
   });
+
+  var resizeTimer;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+      renderWaveform(cachedActivity, cachedTimelineEvents, cachedSegments);
+      renderTimelineEvents(cachedTimelineEvents);
+    }, 200);
+  });
 }
 
 var lastScrubEvent = null;
@@ -1084,54 +1095,107 @@ function fetchTimelineData() {
     })
     .then(function(data) {
       cachedSegments = data.segments || [];
-      renderTimelineSegments(cachedSegments);
-      renderTimelineEvents(data.events || []);
+      cachedActivity = data.activity || [];
+      cachedTimelineEvents = data.events || [];
+      renderWaveform(cachedActivity, cachedTimelineEvents, cachedSegments);
+      renderTimelineEvents(cachedTimelineEvents);
     })
     .catch(function(err) {
       console.error('Timeline fetch error:', err);
     });
 }
 
-function renderTimelineSegments(segments) {
+function renderWaveform(activity, events, segments) {
+  var canvas = el('timeline-canvas');
+  if (!canvas) return;
   var track = el('timeline-track');
-  if (!track) return;
 
-  // Remove existing segments
-  track.querySelectorAll('.timeline-segment').forEach(function(s) { s.remove(); });
+  var dpr = window.devicePixelRatio || 1;
+  var w = track.offsetWidth;
+  var h = track.offsetHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
 
-  // Merge adjacent segments (gap < 60s) into continuous blocks
-  var blocks = [];
-  segments.forEach(function(seg) {
-    var start = new Date(seg.start_time);
-    var end = new Date(seg.end_time);
-    var startSec = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds();
-    var endSec = end.getHours() * 3600 + end.getMinutes() * 60 + end.getSeconds();
-    if (endSec <= startSec) return;
+  var ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
 
-    if (blocks.length > 0 && startSec - blocks[blocks.length - 1].end <= 60) {
-      // Extend previous block
-      if (endSec > blocks[blocks.length - 1].end) {
-        blocks[blocks.length - 1].end = endSec;
+  var scores = new Float64Array(1440);
+  if (activity && activity.length > 0) {
+    activity.forEach(function(a) {
+      var d = new Date(a.t);
+      var minute = d.getUTCHours() * 60 + d.getUTCMinutes();
+      if (minute >= 0 && minute < 1440) {
+        scores[minute] = a.s;
       }
-    } else {
-      blocks.push({ start: startSec, end: endSec });
+    });
+  } else {
+    if (segments) {
+      segments.forEach(function(seg) {
+        var start = new Date(seg.start_time);
+        var end = new Date(seg.end_time);
+        var startMin = start.getUTCHours() * 60 + start.getUTCMinutes();
+        var endMin = end.getUTCHours() * 60 + end.getUTCMinutes();
+        for (var m = startMin; m <= endMin && m < 1440; m++) {
+          scores[m] = 0.5;
+        }
+      });
     }
-  });
+  }
 
-  // Store merged blocks for hit-testing
-  mergedBlocks = blocks;
+  // Populate mergedBlocks from segments for scrubbing hit-testing
+  mergedBlocks = [];
+  if (segments) {
+    segments.forEach(function(seg) {
+      var start = new Date(seg.start_time);
+      var end = new Date(seg.end_time);
+      var startSec = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds();
+      var endSec = end.getHours() * 3600 + end.getMinutes() * 60 + end.getSeconds();
+      if (endSec <= startSec) return;
+      if (mergedBlocks.length > 0 && startSec - mergedBlocks[mergedBlocks.length - 1].end <= 60) {
+        if (endSec > mergedBlocks[mergedBlocks.length - 1].end) {
+          mergedBlocks[mergedBlocks.length - 1].end = endSec;
+        }
+      } else {
+        mergedBlocks.push({ start: startSec, end: endSec });
+      }
+    });
+  }
 
-  blocks.forEach(function(block) {
-    var startPct = block.start / 86400 * 100;
-    var widthPct = (block.end - block.start) / 86400 * 100;
-    if (widthPct < 0.15) widthPct = 0.15;
+  var eventMinutes = new Set();
+  if (events) {
+    events.forEach(function(evt) {
+      var startTs = new Date(evt.timestamp);
+      var startMin = startTs.getHours() * 60 + startTs.getMinutes();
+      var endMin = startMin;
+      if (evt.end_time) {
+        var endTs = new Date(evt.end_time);
+        endMin = endTs.getHours() * 60 + endTs.getMinutes();
+      }
+      for (var m = startMin; m <= endMin && m < 1440; m++) {
+        eventMinutes.add(m);
+      }
+    });
+  }
 
-    var div = document.createElement('div');
-    div.className = 'timeline-segment';
-    div.style.left = startPct + '%';
-    div.style.width = widthPct + '%';
-    track.insertBefore(div, track.querySelector('.timeline-playhead'));
-  });
+  var style = getComputedStyle(document.documentElement);
+  var normalColor = style.getPropertyValue('--cyan-dim').trim() || '#00b8d4';
+  var eventColor = style.getPropertyValue('--event-bar').trim() || '#ffab00';
+
+  var barWidth = w / 1440;
+  var midY = h / 2;
+  var maxHalf = h / 2;
+  var minBarHeight = maxHalf * 0.15;
+
+  for (var i = 0; i < 1440; i++) {
+    if (scores[i] <= 0) continue;
+    var barH = scores[i] * maxHalf;
+    if (barH < minBarHeight) barH = minBarHeight;
+    ctx.fillStyle = eventMinutes.has(i) ? eventColor : normalColor;
+    ctx.fillRect(i * barWidth, midY - barH, Math.max(barWidth, 0.5), barH * 2);
+  }
 }
 
 function renderTimelineEvents(events) {

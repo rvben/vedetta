@@ -403,19 +403,50 @@ function togglePause() {
 
   if (video.paused) {
     video.play();
+    showPauseFlash(false);
   } else {
     video.pause();
+    showPauseFlash(true);
   }
-  updatePauseButton();
+  updatePauseIndicator();
 }
 
-function updatePauseButton() {
+function showPauseFlash(isPause) {
+  var indicator = el('video-pause-indicator');
+  if (!indicator) return;
+  // Show the appropriate icon briefly with a flash animation
+  indicator.innerHTML = isPause
+    ? '<svg viewBox="0 0 24 24" fill="white" width="64" height="64"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="white" width="64" height="64"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+  indicator.classList.remove('hidden', 'video-pause-flash');
+  // Force reflow to restart animation
+  void indicator.offsetWidth;
+  if (!isPause) {
+    indicator.classList.add('video-pause-flash');
+  }
+}
+
+function updatePauseIndicator() {
   var video = el('live-video');
-  var paused = !video || video.classList.contains('hidden') || video.paused;
-  var pauseIcon = el('pause-icon');
-  var playIcon = el('play-icon');
-  if (pauseIcon) pauseIcon.style.display = paused ? 'none' : '';
-  if (playIcon) playIcon.style.display = paused ? '' : 'none';
+  var indicator = el('video-pause-indicator');
+  if (!indicator) return;
+  if (video && !video.classList.contains('hidden') && video.paused) {
+    // Show persistent play icon when paused
+    indicator.innerHTML = '<svg viewBox="0 0 24 24" fill="white" width="64" height="64"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+    indicator.classList.remove('hidden', 'video-pause-flash');
+  } else {
+    indicator.classList.add('hidden');
+  }
+}
+
+function initViewportPause() {
+  var viewport = el('live-viewport');
+  if (!viewport) return;
+  viewport.addEventListener('click', function(e) {
+    if (e.target.closest('.video-overlay-controls')) return;
+    if (e.target.closest('.stream-stats')) return;
+    togglePause();
+  });
 }
 
 function stopStream() {
@@ -466,7 +497,7 @@ function updateStreamButtons() {
   if (btnStop) {
     btnStop.classList.toggle('hidden', currentStream === null);
   }
-  updatePauseButton();
+  updatePauseIndicator();
 
   updateStreamBadge();
 }

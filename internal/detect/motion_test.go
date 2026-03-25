@@ -206,6 +206,33 @@ func TestBoxBlur3x3(t *testing.T) {
 	}
 }
 
+func TestMotionDetector_FrameCoverage(t *testing.T) {
+	md := NewMotionDetector(25, 50, 0.5)
+	w, h := 100, 100
+
+	frame1 := make([]byte, w*h*3)
+	md.Detect(frame1, w, h)
+
+	frame2 := make([]byte, w*h*3)
+	for i := 0; i < w*h*3/5; i++ {
+		frame2[i] = 255
+	}
+	md.Detect(frame2, w, h)
+
+	coverage := md.FrameCoverage()
+	if coverage < 0.1 || coverage > 0.3 {
+		t.Errorf("expected frame coverage ~0.2, got %f", coverage)
+	}
+
+	for i := 0; i < 10; i++ {
+		md.Detect(frame1, w, h)
+	}
+	coverage = md.FrameCoverage()
+	if coverage > 0.05 {
+		t.Errorf("expected near-zero coverage after static frames, got %f", coverage)
+	}
+}
+
 func BenchmarkMotionDetector_Detect(b *testing.B) {
 	w, h := 320, 240
 	md := NewMotionDetector(25, 50, 0.05)

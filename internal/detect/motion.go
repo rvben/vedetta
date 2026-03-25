@@ -50,8 +50,9 @@ type MotionDetector struct {
 	gray    []uint8
 	blurred []uint8
 	binary  []uint8
-	labels  []int
-	parent  []int
+	labels       []int
+	parent       []int
+	lastCoverage float64
 }
 
 // NewMotionDetector creates a MotionDetector.
@@ -98,6 +99,7 @@ func (m *MotionDetector) Detect(frame []byte, width, height int) []MotionRegion 
 		for i, v := range m.gray {
 			m.bg[i] = float64(v)
 		}
+		m.lastCoverage = 0
 		return nil
 	}
 
@@ -120,12 +122,15 @@ func (m *MotionDetector) Detect(frame []byte, width, height int) []MotionRegion 
 		}
 	}
 
+	m.lastCoverage = float64(totalFG) / float64(pixels)
+
 	// Update background model with alpha blending
 	for i := 0; i < pixels; i++ {
 		m.bg[i] = m.bg[i]*(1-m.bgAlpha) + float64(m.blurred[i])*m.bgAlpha
 	}
 
 	if totalFG == 0 {
+		m.lastCoverage = 0
 		return nil
 	}
 
@@ -298,4 +303,9 @@ func (m *MotionDetector) connectedComponents(w, h int) []MotionRegion {
 		}
 	}
 	return regions
+}
+
+// FrameCoverage returns the fraction of foreground pixels from the last Detect call.
+func (m *MotionDetector) FrameCoverage() float64 {
+	return m.lastCoverage
 }

@@ -397,6 +397,38 @@ function startMJPEG() {
   }, 2000);
 }
 
+let streamPaused = false;
+
+function togglePause() {
+  if (!currentStream) {
+    // Nothing playing — start the stream
+    startMSE();
+    return;
+  }
+
+  var video = el('live-video');
+  var mjpeg = el('live-mjpeg');
+  var snap = el('live-snapshot');
+
+  if (!streamPaused) {
+    // Pause: stop the live stream, show snapshot
+    stopStream();
+    streamPaused = true;
+  } else {
+    // Resume: restart live stream
+    streamPaused = false;
+    startMSE();
+  }
+  updatePauseButton();
+}
+
+function updatePauseButton() {
+  var pauseIcon = el('pause-icon');
+  var playIcon = el('play-icon');
+  if (pauseIcon) pauseIcon.style.display = (streamPaused || !currentStream) ? 'none' : '';
+  if (playIcon) playIcon.style.display = (streamPaused || !currentStream) ? '' : 'none';
+}
+
 function stopStream() {
   if (mseReconnectTimer) {
     clearTimeout(mseReconnectTimer);
@@ -445,6 +477,8 @@ function updateStreamButtons() {
   if (btnStop) {
     btnStop.classList.toggle('hidden', currentStream === null);
   }
+  if (currentStream) streamPaused = false;
+  updatePauseButton();
 
   updateStreamBadge();
 }
@@ -1701,6 +1735,9 @@ document.addEventListener('keydown', function(e) {
     case 'f':
     case 'F':
       if (el('live-viewport')) toggleFullscreen();
+      break;
+    case ' ':
+      if (el('btn-pause')) { togglePause(); e.preventDefault(); }
       break;
     case 'ArrowLeft': {
       var prev = document.querySelector('[data-prev-id]');

@@ -1185,26 +1185,44 @@ function renderWaveform(activity, events, segments) {
   var normalColor = style.getPropertyValue('--cyan-dim').trim() || '#00b8d4';
   var eventColor = style.getPropertyValue('--event-bar').trim() || '#ffab00';
 
-  var barWidth = w / 1440;
+  var barW = 2;
+  var gap = 1;
+  var step = barW + gap;
+  var numBars = Math.floor(w / step);
+  var minutesPerBar = 1440 / numBars;
+
   var midY = h / 2;
   var maxHalf = h / 2;
   var minBarHeight = maxHalf * 0.15;
-
   var baselineHeight = maxHalf * 0.08;
 
-  for (var i = 0; i < 1440; i++) {
-    if (!hasCoverage[i]) continue;
+  for (var b = 0; b < numBars; b++) {
+    var mStart = Math.floor(b * minutesPerBar);
+    var mEnd = Math.floor((b + 1) * minutesPerBar);
+    if (mEnd > 1440) mEnd = 1440;
+
+    // Find max score and check coverage/events in this bucket
+    var maxScore = 0;
+    var covered = false;
+    var hasEvent = false;
+    for (var m = mStart; m < mEnd; m++) {
+      if (hasCoverage[m]) covered = true;
+      if (scores[m] > maxScore) maxScore = scores[m];
+      if (eventMinutes.has(m)) hasEvent = true;
+    }
+
+    if (!covered) continue;
 
     var barH;
-    if (scores[i] > 0) {
-      barH = scores[i] * maxHalf;
+    if (maxScore > 0) {
+      barH = maxScore * maxHalf;
       if (barH < minBarHeight) barH = minBarHeight;
     } else {
       barH = baselineHeight;
     }
 
-    ctx.fillStyle = eventMinutes.has(i) ? eventColor : normalColor;
-    ctx.fillRect(i * barWidth, midY - barH, Math.max(barWidth, 0.5), barH * 2);
+    ctx.fillStyle = hasEvent ? eventColor : normalColor;
+    ctx.fillRect(b * step, midY - barH, barW, barH * 2);
   }
 }
 

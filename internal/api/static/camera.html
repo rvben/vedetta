@@ -63,18 +63,6 @@
           </button>
           <span id="playback-badge" class="playback-badge hidden">PLAYBACK</span>
           <span id="stream-badge" class="stream-badge hidden"></span>
-          <div class="spacer"></div>
-          <button id="btn-mute" class="btn btn-icon btn-sm" onclick="toggleMute()" aria-label="Toggle audio" title="Toggle audio (A)">
-            <svg id="mute-icon-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
-            <svg id="mute-icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-          </button>
-          <button id="btn-pip" class="btn btn-icon btn-sm" onclick="togglePiP()" aria-label="Picture in picture" title="Picture-in-Picture (P)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><rect x="12" y="9" width="8" height="6" rx="1"/></svg>
-          </button>
-          <button id="btn-fullscreen" class="btn btn-icon btn-sm" onclick="toggleFullscreen()" aria-label="Fullscreen" title="Fullscreen (F)">
-            <svg id="fs-icon-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
-            <svg id="fs-icon-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
-          </button>
         </div>
         <div class="live-viewport-row">
         <div class="live-viewport" id="live-viewport">
@@ -82,6 +70,19 @@
           <img id="live-mjpeg" class="hidden" alt="MJPEG stream">
           <img id="live-snapshot" alt="Latest snapshot">
           <div class="stream-stats" id="stream-stats"></div>
+          <div class="video-overlay-controls" id="video-overlay-controls">
+            <button id="btn-mute" class="btn btn-icon btn-sm" onclick="toggleMute()" aria-label="Toggle audio" title="Toggle audio (A)">
+              <svg id="mute-icon-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+              <svg id="mute-icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+            </button>
+            <button id="btn-pip" class="btn btn-icon btn-sm" onclick="togglePiP()" aria-label="Picture in picture" title="Picture-in-Picture (P)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><rect x="12" y="9" width="8" height="6" rx="1"/></svg>
+            </button>
+            <button id="btn-fullscreen" class="btn btn-icon btn-sm" onclick="toggleFullscreen()" aria-label="Fullscreen" title="Fullscreen (F)">
+              <svg id="fs-icon-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+              <svg id="fs-icon-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
+            </button>
+          </div>
         </div>
         <div class="ptz-controls hidden" id="ptz-controls">
           <div class="ptz-dpad">

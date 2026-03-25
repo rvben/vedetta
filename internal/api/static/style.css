@@ -917,6 +917,37 @@ input, select { font-family: inherit; }
   background: var(--void);
   overflow: hidden;
 }
+.video-overlay-controls {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity var(--dur-normal) var(--ease-out);
+  pointer-events: none;
+  z-index: 5;
+}
+.video-overlay-controls .btn {
+  background: rgba(0, 0, 0, 0.6);
+  border-color: transparent;
+  color: #fff;
+  backdrop-filter: blur(4px);
+}
+.video-overlay-controls .btn:hover {
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+}
+.live-viewport:hover .video-overlay-controls,
+.live-viewport:focus-within .video-overlay-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+.live-container:fullscreen .video-overlay-controls,
+.live-container:-webkit-full-screen .video-overlay-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
 
 .live-viewport video,
 .live-viewport img {

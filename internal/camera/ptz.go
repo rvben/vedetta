@@ -2,6 +2,7 @@ package camera
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -175,4 +177,213 @@ func truncateStr(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// onvifCapabilities holds ONVIF service endpoint URLs extracted from a
+// GetCapabilities response.
+type onvifCapabilities struct {
+	ptzURL   string
+	mediaURL string
+}
+
+// capabilitiesEnvelope is the XML structure for GetCapabilitiesResponse.
+type capabilitiesEnvelope struct {
+	XMLName xml.Name `xml:"Envelope"`
+	Body    struct {
+		Response struct {
+			Capabilities struct {
+				Media *struct {
+					XAddr string `xml:"XAddr"`
+				} `xml:"Media"`
+				PTZ *struct {
+					XAddr string `xml:"XAddr"`
+				} `xml:"PTZ"`
+			} `xml:"Capabilities"`
+		} `xml:"GetCapabilitiesResponse"`
+	} `xml:"Body"`
+}
+
+// parseCapabilities extracts PTZ and Media service URLs from an ONVIF
+// GetCapabilities XML response.
+func parseCapabilities(data []byte) (onvifCapabilities, error) {
+	var env capabilitiesEnvelope
+	if err := xml.Unmarshal(data, &env); err != nil {
+		return onvifCapabilities{}, fmt.Errorf("parsing capabilities XML: %w", err)
+	}
+
+	var caps onvifCapabilities
+	if env.Body.Response.Capabilities.PTZ != nil {
+		caps.ptzURL = env.Body.Response.Capabilities.PTZ.XAddr
+	}
+	if env.Body.Response.Capabilities.Media != nil {
+		caps.mediaURL = env.Body.Response.Capabilities.Media.XAddr
+	}
+	return caps, nil
+}
+
+// profilesEnvelope is the XML structure for GetProfilesResponse.
+type profilesEnvelope struct {
+	XMLName xml.Name `xml:"Envelope"`
+	Body    struct {
+		Response struct {
+			Profiles []struct {
+				Token            string `xml:"token,attr"`
+				PTZConfiguration *struct {
+					Token string `xml:"token,attr"`
+				} `xml:"PTZConfiguration"`
+			} `xml:"Profiles"`
+		} `xml:"GetProfilesResponse"`
+	} `xml:"Body"`
+}
+
+// parsePTZProfileToken returns the token of the first media profile that
+// contains a PTZConfiguration element.
+func parsePTZProfileToken(data []byte) (string, error) {
+	var env profilesEnvelope
+	if err := xml.Unmarshal(data, &env); err != nil {
+		return "", fmt.Errorf("parsing profiles XML: %w", err)
+	}
+
+	for _, p := range env.Body.Response.Profiles {
+		if p.PTZConfiguration != nil {
+			return p.Token, nil
+		}
+	}
+	return "", fmt.Errorf("no profile with PTZConfiguration found")
+}
+
+// Available reports whether PTZ controls are available for this camera.
+func (c *PTZClient) Available() bool {
+	return c.ptzURL != "" && c.profileToken != ""
+}
+
+// NewPTZClient creates a PTZClient by probing ONVIF endpoints on the camera.
+// It derives the ONVIF HTTP endpoint from the RTSP URL (same host, port 80),
+// discovers PTZ capabilities, and finds a media profile with PTZ support.
+func NewPTZClient(rtspURL string) (*PTZClient, error) {
+	u, err := url.Parse(rtspURL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing RTSP URL: %w", err)
+	}
+
+	host := u.Hostname()
+	var username, password string
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+
+	deviceURL := fmt.Sprintf("http://%s/onvif/device_service", host)
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	client := &PTZClient{
+		username:   username,
+		password:   password,
+		httpClient: httpClient,
+	}
+
+	// Fetch clock offset (no auth required). If it fails, assume zero offset.
+	dateTimeBody := `<tds:GetSystemDateAndTime xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`
+	dateTimeEnvelope := buildSOAPEnvelope(dateTimeBody, "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime", fmt.Sprintf("urn:uuid:%d", time.Now().UnixNano()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, deviceURL, bytes.NewReader([]byte(dateTimeEnvelope)))
+	if err == nil {
+		req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+		if resp, reqErr := httpClient.Do(req); reqErr == nil {
+			defer resp.Body.Close()
+			if data, readErr := io.ReadAll(resp.Body); readErr == nil {
+				if camTime, parseErr := parseSystemDateAndTime(data); parseErr == nil {
+					client.clockOffset = camTime.Sub(time.Now().UTC())
+				}
+			}
+		}
+	}
+
+	// GetCapabilities with Basic Auth first, fallback to WS-Security.
+	capsBody := `<tds:GetCapabilities xmlns:tds="http://www.onvif.org/ver10/device/wsdl"><tds:Category>All</tds:Category></tds:GetCapabilities>`
+	capsData, capsErr := sendAuthRequest(httpClient, deviceURL, capsBody, "http://www.onvif.org/ver10/device/wsdl/GetCapabilities", username, password, client.clockOffset, false)
+	if capsErr != nil {
+		// Fallback to WS-Security
+		capsData, capsErr = sendAuthRequest(httpClient, deviceURL, capsBody, "http://www.onvif.org/ver10/device/wsdl/GetCapabilities", username, password, client.clockOffset, true)
+		if capsErr != nil {
+			return nil, fmt.Errorf("getting capabilities: %w", capsErr)
+		}
+		client.useWSSec = true
+	}
+
+	caps, err := parseCapabilities(capsData)
+	if err != nil {
+		return nil, err
+	}
+	client.ptzURL = caps.ptzURL
+
+	if caps.ptzURL == "" {
+		// Camera does not support PTZ; return a client that reports unavailable.
+		return client, nil
+	}
+
+	// GetProfiles to find a profile with PTZConfiguration.
+	mediaURL := caps.mediaURL
+	if mediaURL == "" {
+		mediaURL = fmt.Sprintf("http://%s/onvif/media", host)
+	}
+
+	profilesBody := `<trt:GetProfiles xmlns:trt="http://www.onvif.org/ver10/media/wsdl"/>`
+	profilesData, err := sendAuthRequest(httpClient, mediaURL, profilesBody, "http://www.onvif.org/ver10/media/wsdl/GetProfiles", username, password, client.clockOffset, client.useWSSec)
+	if err != nil {
+		return nil, fmt.Errorf("getting profiles: %w", err)
+	}
+
+	token, err := parsePTZProfileToken(profilesData)
+	if err != nil {
+		return nil, err
+	}
+	client.profileToken = token
+
+	return client, nil
+}
+
+// sendAuthRequest sends a SOAP request with either Basic Auth or WS-Security.
+func sendAuthRequest(httpClient *http.Client, endpoint, body, action, username, password string, clockOffset time.Duration, useWSSec bool) ([]byte, error) {
+	var envelope string
+	if useWSSec {
+		envelope = buildSOAPEnvelopeWSSec(body, username, password, clockOffset)
+	} else {
+		messageID := fmt.Sprintf("urn:uuid:%d", time.Now().UnixNano())
+		envelope = buildSOAPEnvelope(body, action, messageID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte(envelope)))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	if !useWSSec {
+		req.SetBasicAuth(username, password)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncateStr(string(data), 512))
+	}
+
+	return data, nil
 }

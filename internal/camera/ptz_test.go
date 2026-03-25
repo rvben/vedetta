@@ -147,6 +147,98 @@ func TestParseSystemDateAndTimeMalformed(t *testing.T) {
 	}
 }
 
+func TestParseCapabilitiesPTZ(t *testing.T) {
+	data := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+  <s:Body>
+    <tds:GetCapabilitiesResponse xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+      <tds:Capabilities>
+        <tt:Media><tt:XAddr>http://192.168.1.100/onvif/media</tt:XAddr></tt:Media>
+        <tt:PTZ><tt:XAddr>http://192.168.1.100/onvif/ptz</tt:XAddr></tt:PTZ>
+      </tds:Capabilities>
+    </tds:GetCapabilitiesResponse>
+  </s:Body>
+</s:Envelope>`)
+
+	caps, err := parseCapabilities(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if caps.ptzURL != "http://192.168.1.100/onvif/ptz" {
+		t.Errorf("ptzURL = %q, want %q", caps.ptzURL, "http://192.168.1.100/onvif/ptz")
+	}
+	if caps.mediaURL != "http://192.168.1.100/onvif/media" {
+		t.Errorf("mediaURL = %q, want %q", caps.mediaURL, "http://192.168.1.100/onvif/media")
+	}
+}
+
+func TestParseCapabilitiesNoPTZ(t *testing.T) {
+	data := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+  <s:Body>
+    <tds:GetCapabilitiesResponse xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+      <tds:Capabilities>
+        <tt:Media><tt:XAddr>http://192.168.1.100/onvif/media</tt:XAddr></tt:Media>
+      </tds:Capabilities>
+    </tds:GetCapabilitiesResponse>
+  </s:Body>
+</s:Envelope>`)
+
+	caps, err := parseCapabilities(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if caps.ptzURL != "" {
+		t.Errorf("ptzURL = %q, want empty", caps.ptzURL)
+	}
+}
+
+func TestParseProfilesPTZ(t *testing.T) {
+	data := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+  <s:Body>
+    <trt:GetProfilesResponse xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+      <trt:Profiles token="MainStream" fixed="true">
+        <tt:Name>MainStream</tt:Name>
+        <tt:VideoSourceConfiguration token="VSC_0"/>
+        <tt:PTZConfiguration token="PTZ_0"><tt:NodeToken>PTZNode_0</tt:NodeToken></tt:PTZConfiguration>
+      </trt:Profiles>
+      <trt:Profiles token="SubStream" fixed="true">
+        <tt:Name>SubStream</tt:Name>
+        <tt:VideoSourceConfiguration token="VSC_1"/>
+      </trt:Profiles>
+    </trt:GetProfilesResponse>
+  </s:Body>
+</s:Envelope>`)
+
+	token, err := parsePTZProfileToken(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token != "MainStream" {
+		t.Errorf("token = %q, want %q", token, "MainStream")
+	}
+}
+
+func TestParseProfilesNoPTZ(t *testing.T) {
+	data := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+  <s:Body>
+    <trt:GetProfilesResponse xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+      <trt:Profiles token="MainStream" fixed="true">
+        <tt:Name>MainStream</tt:Name>
+        <tt:VideoSourceConfiguration token="VSC_0"/>
+      </trt:Profiles>
+    </trt:GetProfilesResponse>
+  </s:Body>
+</s:Envelope>`)
+
+	_, err := parsePTZProfileToken(data)
+	if err == nil {
+		t.Fatal("expected error for profiles without PTZConfiguration")
+	}
+}
+
 func TestTruncateStr(t *testing.T) {
 	tests := []struct {
 		input    string

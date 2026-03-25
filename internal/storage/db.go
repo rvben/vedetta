@@ -29,6 +29,12 @@ type SegmentRecord struct {
 	SizeBytes int64
 }
 
+// MotionBucket represents a single minute-level motion activity score for a camera.
+type MotionBucket struct {
+	Bucket time.Time
+	Score  float64
+}
+
 // DB wraps SQLite for event storage.
 type DB struct {
 	db *sql.DB
@@ -204,6 +210,13 @@ func migrate(db *sql.DB) error {
 			password_hash TEXT NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS motion_activity (
+			camera TEXT NOT NULL,
+			bucket DATETIME NOT NULL,
+			score  REAL NOT NULL,
+			PRIMARY KEY (camera, bucket)
 		);
 	`)
 	if err != nil {
@@ -457,6 +470,38 @@ func (d *DB) SaveSegment(seg SegmentRecord) error {
 		VALUES (?, ?, ?, ?, ?)`,
 		seg.Camera, seg.Path, utc(seg.StartTime), utc(seg.EndTime), seg.SizeBytes,
 	)
+	return err
+}
+
+// SaveMotionActivity inserts or replaces a motion activity score for a camera and minute bucket.
+func (d *DB) SaveMotionActivity(camera string, bucket time.Time, score float64) error {
+	_, err := d.db.Exec("INSERT OR REPLACE INTO motion_activity (camera, bucket, score) VALUES (?, ?, ?)", camera, utc(bucket), score)
+	return err
+}
+
+// GetMotionActivity returns all motion buckets for a camera on the same UTC day as the given date.
+func (d *DB) GetMotionActivity(camera string, date time.Time) ([]MotionBucket, error) {
+	dayStart := date.UTC().Truncate(24 * time.Hour)
+	dayEnd := dayStart.Add(24 * time.Hour)
+	rows, err := d.db.Query("SELECT bucket, score FROM motion_activity WHERE camera = ? AND bucket >= ? AND bucket < ? ORDER BY bucket", camera, dayStart, dayEnd)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var buckets []MotionBucket
+	for rows.Next() {
+		var b MotionBucket
+		if err := rows.Scan(&b.Bucket, &b.Score); err != nil {
+			return nil, err
+		}
+		buckets = append(buckets, b)
+	}
+	return buckets, rows.Err()
+}
+
+// DeleteMotionActivityBefore removes all motion activity records older than the cutoff.
+func (d *DB) DeleteMotionActivityBefore(cutoff time.Time) error {
+	_, err := d.db.Exec("DELETE FROM motion_activity WHERE bucket < ?", utc(cutoff))
 	return err
 }
 

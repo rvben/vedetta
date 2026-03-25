@@ -1054,6 +1054,88 @@ func TestAuthUsers(t *testing.T) {
 	}
 }
 
+// --- Motion Activity ---
+
+func TestSaveAndGetMotionActivity(t *testing.T) {
+	db := newTestDB(t)
+	bucket1 := time.Date(2026, 3, 25, 14, 23, 0, 0, time.UTC)
+	bucket2 := time.Date(2026, 3, 25, 14, 24, 0, 0, time.UTC)
+	bucket3 := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
+	if err := db.SaveMotionActivity("cam1", bucket1, 0.73); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveMotionActivity("cam1", bucket2, 0.12); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveMotionActivity("cam1", bucket3, 0.50); err != nil {
+		t.Fatal(err)
+	}
+	buckets, err := db.GetMotionActivity("cam1", bucket1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets, got %d", len(buckets))
+	}
+	if buckets[0].Score != 0.73 {
+		t.Errorf("expected score 0.73, got %f", buckets[0].Score)
+	}
+	if buckets[1].Score != 0.12 {
+		t.Errorf("expected score 0.12, got %f", buckets[1].Score)
+	}
+}
+
+func TestSaveMotionActivity_Upsert(t *testing.T) {
+	db := newTestDB(t)
+	bucket := time.Date(2026, 3, 25, 14, 23, 0, 0, time.UTC)
+	if err := db.SaveMotionActivity("cam1", bucket, 0.50); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveMotionActivity("cam1", bucket, 0.90); err != nil {
+		t.Fatal(err)
+	}
+	buckets, err := db.GetMotionActivity("cam1", bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 1 {
+		t.Fatalf("expected 1 bucket, got %d", len(buckets))
+	}
+	if buckets[0].Score != 0.90 {
+		t.Errorf("expected upserted score 0.90, got %f", buckets[0].Score)
+	}
+}
+
+func TestDeleteMotionActivityBefore(t *testing.T) {
+	db := newTestDB(t)
+	old := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	recent := time.Date(2026, 3, 25, 12, 0, 0, 0, time.UTC)
+	cutoff := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	if err := db.SaveMotionActivity("cam1", old, 0.5); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveMotionActivity("cam1", recent, 0.8); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteMotionActivityBefore(cutoff); err != nil {
+		t.Fatal(err)
+	}
+	buckets, err := db.GetMotionActivity("cam1", old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 0 {
+		t.Errorf("expected 0 buckets after cleanup, got %d", len(buckets))
+	}
+	buckets, err = db.GetMotionActivity("cam1", recent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 1 {
+		t.Errorf("expected 1 bucket retained, got %d", len(buckets))
+	}
+}
+
 func TestNew_WALModeIsSet(t *testing.T) {
 	db := newTestDB(t)
 

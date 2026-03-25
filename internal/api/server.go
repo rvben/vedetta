@@ -1227,6 +1227,12 @@ func (s *Server) handleCameraTimeline(w http.ResponseWriter, r *http.Request) {
 		Label     string    `json:"label"`
 		Score     float32   `json:"score"`
 		Timestamp time.Time `json:"timestamp"`
+		EndTime   time.Time `json:"end_time,omitempty"`
+	}
+
+	type timelineActivity struct {
+		Time  time.Time `json:"t"`
+		Score float64   `json:"s"`
 	}
 
 	segs := make([]timelineSegment, 0, len(segments))
@@ -1244,12 +1250,24 @@ func (s *Server) handleCameraTimeline(w http.ResponseWriter, r *http.Request) {
 			Label:     evt.Label,
 			Score:     evt.Score,
 			Timestamp: evt.Timestamp,
+			EndTime:   evt.EndTime,
 		})
+	}
+
+	activity, err := s.db.GetMotionActivity(name, date)
+	if err != nil {
+		slog.Error("failed to get motion activity", "camera", name, "error", err)
+		activity = nil
+	}
+	acts := make([]timelineActivity, 0, len(activity))
+	for _, a := range activity {
+		acts = append(acts, timelineActivity{Time: a.Bucket, Score: a.Score})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"segments": segs,
 		"events":   evts,
+		"activity": acts,
 	})
 }
 

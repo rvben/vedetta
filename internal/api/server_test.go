@@ -1553,3 +1553,71 @@ func searchString(s, substr string) bool {
 	}
 	return false
 }
+
+func TestHandleCameraTimeline_ActivityAndEndTime(t *testing.T) {
+	srv, db := newTestServer(t)
+	srv.cameras.AddCamera(config.CameraConfig{Name: "cam1", URL: "rtsp://localhost/stream"})
+
+	date := time.Date(2026, 3, 25, 0, 0, 0, 0, time.UTC)
+
+	// Seed a segment
+	seedSegment(t, db, "cam1", "/tmp/tl-seg.mp4", date.Add(10*time.Hour), date.Add(11*time.Hour), 1024)
+
+	// Seed motion activity
+	if err := db.SaveMotionActivity("cam1", date.Add(10*time.Hour+23*time.Minute), 0.73); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveMotionActivity("cam1", date.Add(10*time.Hour+24*time.Minute), 0.12); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed an event with end_time
+	ev := camera.Event{
+		ID:         "evt-tl-1",
+		CameraName: "cam1",
+		Label:      "person",
+		Score:      0.95,
+		Timestamp:  date.Add(10*time.Hour + 23*time.Minute),
+		EndTime:    date.Add(10*time.Hour + 24*time.Minute),
+	}
+	if err := db.SaveEvent(ev); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cameras/cam1/timeline?date=2026-03-25", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Segments []struct{} `json:"segments"`
+		Events   []struct {
+			ID      string `json:"id"`
+			EndTime string `json:"end_time"`
+		} `json:"events"`
+		Activity []struct {
+			Time  string  `json:"t"`
+			Score float64 `json:"s"`
+		} `json:"activity"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(body.Activity) != 2 {
+		t.Fatalf("got %d activity buckets, want 2", len(body.Activity))
+	}
+	if body.Activity[0].Score != 0.73 {
+		t.Errorf("activity[0].s = %f, want 0.73", body.Activity[0].Score)
+	}
+
+	if len(body.Events) != 1 {
+		t.Fatalf("got %d events, want 1", len(body.Events))
+	}
+	if body.Events[0].EndTime == "" {
+		t.Error("event end_time should be present")
+	}
+}

@@ -387,3 +387,45 @@ func sendAuthRequest(httpClient *http.Client, endpoint, body, action, username, 
 
 	return data, nil
 }
+
+// buildContinuousMoveBody builds the SOAP body for a ContinuousMove PTZ request.
+func buildContinuousMoveBody(profileToken string, pan, tilt, zoom float64) string {
+	return fmt.Sprintf(
+		`<ContinuousMove xmlns="http://www.onvif.org/ver20/ptz/wsdl">`+
+			`<ProfileToken>%s</ProfileToken>`+
+			`<Velocity>`+
+			`<PanTilt x="%.1f" y="%.1f" xmlns="http://www.onvif.org/ver10/schema"/>`+
+			`<Zoom x="%.1f" xmlns="http://www.onvif.org/ver10/schema"/>`+
+			`</Velocity>`+
+			`<Timeout>PT5S</Timeout>`+
+			`</ContinuousMove>`,
+		profileToken, pan, tilt, zoom,
+	)
+}
+
+// buildStopBody builds the SOAP body for a Stop PTZ request.
+func buildStopBody(profileToken string) string {
+	return fmt.Sprintf(
+		`<Stop xmlns="http://www.onvif.org/ver20/ptz/wsdl">`+
+			`<ProfileToken>%s</ProfileToken>`+
+			`<PanTilt>true</PanTilt>`+
+			`<Zoom>true</Zoom>`+
+			`</Stop>`,
+		profileToken,
+	)
+}
+
+// ContinuousMove starts continuous PTZ movement with the given velocity values.
+// Pan and tilt range from -1.0 to 1.0; zoom ranges from -1.0 to 1.0.
+func (c *PTZClient) ContinuousMove(pan, tilt, zoom float64) error {
+	body := buildContinuousMoveBody(c.profileToken, pan, tilt, zoom)
+	_, err := c.soapRequest("http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove", body)
+	return err
+}
+
+// Stop halts all PTZ movement on the camera.
+func (c *PTZClient) Stop() error {
+	body := buildStopBody(c.profileToken)
+	_, err := c.soapRequest("http://www.onvif.org/ver20/ptz/wsdl/Stop", body)
+	return err
+}

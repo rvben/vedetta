@@ -239,6 +239,40 @@ func TestParseProfilesNoPTZ(t *testing.T) {
 	}
 }
 
+func TestContinuousMoveXML(t *testing.T) {
+	body := buildContinuousMoveBody("MainStream", 0.5, -0.3, 0.0)
+
+	if !strings.Contains(body, "<ProfileToken>MainStream</ProfileToken>") {
+		t.Error("body must contain ProfileToken")
+	}
+	if !strings.Contains(body, `x="0.5"`) {
+		t.Error("body must contain x=\"0.5\"")
+	}
+	if !strings.Contains(body, `y="-0.3"`) {
+		t.Error("body must contain y=\"-0.3\"")
+	}
+	if !strings.Contains(body, `xmlns="http://www.onvif.org/ver10/schema"`) {
+		t.Error("body must contain schema namespace on PanTilt/Zoom elements")
+	}
+	if !strings.Contains(body, "<Timeout>PT5S</Timeout>") {
+		t.Error("body must contain Timeout element")
+	}
+}
+
+func TestStopXML(t *testing.T) {
+	body := buildStopBody("MainStream")
+
+	if !strings.Contains(body, "<ProfileToken>MainStream</ProfileToken>") {
+		t.Error("body must contain ProfileToken")
+	}
+	if !strings.Contains(body, "<PanTilt>true</PanTilt>") {
+		t.Error("body must contain PanTilt=true")
+	}
+	if !strings.Contains(body, "<Zoom>true</Zoom>") {
+		t.Error("body must contain Zoom=true")
+	}
+}
+
 func TestTruncateStr(t *testing.T) {
 	tests := []struct {
 		input    string

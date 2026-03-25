@@ -64,6 +64,7 @@ type Server struct {
 	mqttClient           MQTTPublisher
 	snapshotPath         string
 	faceCropDir    string
+	ptzClients     map[string]*camera.PTZClient
 	cameraConfigs  []config.CameraConfig
 	httpSrv        *http.Server
 	mux            *http.ServeMux
@@ -256,6 +257,7 @@ func (s *Server) registerRoutes() {
 
 	// Doorbell + real-time events
 	s.mux.HandleFunc("POST /api/cameras/{name}/doorbell", s.handleDoorbellPress)
+	s.mux.HandleFunc("POST /api/cameras/{name}/ptz", s.handlePTZ)
 	s.mux.HandleFunc("GET /api/events/stream", s.handleSSE)
 
 	// Streaming endpoints
@@ -484,7 +486,7 @@ func (s *Server) TransitionToFull(authChecker *auth.Checker) {
 
 // SetSubsystems wires in the heavy dependencies once they're initialized.
 // After calling this, camera/recording/streaming endpoints become functional.
-func (s *Server) SetSubsystems(cameras *camera.Manager, recorder *recording.Recorder, hub *rtsp.Hub, faceRecognizer *detect.FaceRecognizer, objectEmbedder *detect.ObjectEmbedder, snapshotPath string, faceCropDir string, cameraConfigs []config.CameraConfig) {
+func (s *Server) SetSubsystems(cameras *camera.Manager, recorder *recording.Recorder, hub *rtsp.Hub, faceRecognizer *detect.FaceRecognizer, objectEmbedder *detect.ObjectEmbedder, snapshotPath string, faceCropDir string, cameraConfigs []config.CameraConfig, ptzClients map[string]*camera.PTZClient) {
 	s.cameras = cameras
 	s.recorder = recorder
 	s.hub = hub
@@ -495,6 +497,7 @@ func (s *Server) SetSubsystems(cameras *camera.Manager, recorder *recording.Reco
 	s.snapshotPath = snapshotPath
 	s.faceCropDir = faceCropDir
 	s.cameraConfigs = cameraConfigs
+	s.ptzClients = ptzClients
 	s.ready.Store(true)
 	slog.Info("API server ready (all subsystems initialized)")
 }
@@ -627,12 +630,83 @@ func (s *Server) handleListCameras(w http.ResponseWriter, _ *http.Request) {
 		Name      string `json:"name"`
 		Online    bool   `json:"online"`
 		HasMotion bool   `json:"has_motion"`
+		PTZ       bool   `json:"ptz"`
 	}
 	result := make([]cameraInfo, len(statuses))
 	for i, st := range statuses {
-		result[i] = cameraInfo{Name: st.Name, Online: st.Online, HasMotion: st.HasMotion}
+		_, hasPTZ := s.ptzClients[st.Name]
+		result[i] = cameraInfo{Name: st.Name, Online: st.Online, HasMotion: st.HasMotion, PTZ: hasPTZ}
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handlePTZ(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	cam := s.cameras.GetCamera(name)
+	if cam == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "camera not found"})
+		return
+	}
+
+	ptzClient, ok := s.ptzClients[name]
+	if !ok || !ptzClient.Available() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "camera does not support PTZ"})
+		return
+	}
+
+	var req struct {
+		Action    string `json:"action"`
+		Direction string `json:"direction"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	var err error
+	switch req.Action {
+	case "stop":
+		err = ptzClient.Stop()
+	case "move":
+		var pan, tilt float64
+		switch req.Direction {
+		case "up":
+			tilt = 0.5
+		case "down":
+			tilt = -0.5
+		case "left":
+			pan = -0.5
+		case "right":
+			pan = 0.5
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid direction"})
+			return
+		}
+		err = ptzClient.ContinuousMove(pan, tilt, 0)
+	case "zoom":
+		var zoom float64
+		switch req.Direction {
+		case "in":
+			zoom = 0.5
+		case "out":
+			zoom = -0.5
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid zoom direction"})
+			return
+		}
+		err = ptzClient.ContinuousMove(0, 0, zoom)
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid action"})
+		return
+	}
+
+	if err != nil {
+		slog.Error("PTZ command failed", "camera", name, "action", req.Action, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "PTZ command failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {

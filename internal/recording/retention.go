@@ -50,6 +50,7 @@ func (r *Recorder) runCleanup() {
 	r.cleanClips(eventCutoff)
 	r.cleanSnapshots(eventCutoff)
 	r.cleanEventMetadata(eventMetadataCutoff)
+	r.cleanMotionActivity(segmentCutoff)
 	r.reconcileEventMediaAvailability()
 	r.enforceStorageCap()
 	r.cleanEmptyDirs()
@@ -191,6 +192,12 @@ func (r *Recorder) cleanEventMetadata(cutoff time.Time) {
 	}
 	if err := r.db.DeleteEventsOlderThan(cutoff); err != nil {
 		slog.Error("failed to delete expired events", "error", err)
+	}
+}
+
+func (r *Recorder) cleanMotionActivity(cutoff time.Time) {
+	if err := r.db.DeleteMotionActivityBefore(cutoff); err != nil {
+		slog.Error("failed to delete expired motion activity", "error", err)
 	}
 }
 

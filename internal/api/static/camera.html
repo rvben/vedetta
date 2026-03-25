@@ -76,8 +76,14 @@
             <svg id="fs-icon-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
           </button>
         </div>
+        <div class="live-viewport-row">
+        <div class="live-viewport" id="live-viewport">
+          <video id="live-video" autoplay playsinline muted class="hidden"></video>
+          <img id="live-mjpeg" class="hidden" alt="MJPEG stream">
+          <img id="live-snapshot" alt="Latest snapshot">
+          <div class="stream-stats" id="stream-stats"></div>
+        </div>
         <div class="ptz-controls hidden" id="ptz-controls">
-          <span class="ptz-label">PTZ</span>
           <div class="ptz-dpad">
             <button class="btn btn-sm btn-icon ptz-btn" data-ptz="up" aria-label="Pan up" title="Pan up (↑)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>
@@ -104,12 +110,6 @@
             </button>
           </div>
         </div>
-
-        <div class="live-viewport" id="live-viewport">
-          <video id="live-video" autoplay playsinline muted class="hidden"></video>
-          <img id="live-mjpeg" class="hidden" alt="MJPEG stream">
-          <img id="live-snapshot" alt="Latest snapshot">
-          <div class="stream-stats" id="stream-stats"></div>
         </div>
       </div>
 

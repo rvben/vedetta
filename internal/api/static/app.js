@@ -1005,7 +1005,6 @@ function scrubTimeline(e, commit) {
 
   // Snap to event start if clicking on an event bar
   if (eventBarSnaps.length > 0) {
-    var track = el('timeline-track');
     var barStep = 3; // barW(2) + gap(1)
     var barIdx = Math.floor(pct * track.offsetWidth / barStep);
     if (barIdx >= 0 && barIdx < eventBarSnaps.length && eventBarSnaps[barIdx] >= 0) {

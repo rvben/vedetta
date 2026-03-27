@@ -17,6 +17,7 @@ var cachedSegments = []; // raw segment data from API
 var cachedActivity = [];
 var cachedTimelineEvents = [];
 var mergedBlocks = []; // merged blocks {start: sec, end: sec} for hit-testing
+var eventBarSnaps = []; // per-bar: nearest event start in seconds-of-day, or -1
 let timelineDate = new Date();
 let calendarDate = new Date();
 
@@ -883,7 +884,13 @@ function initTimeline() {
     var m = Math.floor((totalSec % 3600) / 60);
     cursorTime.textContent = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
     // Change cursor when over a recorded segment
-    track.style.cursor = isOverSegment(pct) ? 'pointer' : 'default';
+    var overEvent = false;
+    if (eventBarSnaps.length > 0) {
+      var barStep = 3;
+      var bIdx = Math.floor(pct * track.offsetWidth / barStep);
+      if (bIdx >= 0 && bIdx < eventBarSnaps.length && eventBarSnaps[bIdx] >= 0) overEvent = true;
+    }
+    track.style.cursor = overEvent ? 'pointer' : isOverSegment(pct) ? 'pointer' : 'default';
 
     // Thumbnail request: throttle to one request per 150ms (fires immediately, then rate-limits)
     var now = Date.now();
@@ -995,6 +1002,16 @@ function scrubTimeline(e, commit) {
   if (!commit) return;
 
   var sec = pctToSec(pct);
+
+  // Snap to event start if clicking on an event bar
+  if (eventBarSnaps.length > 0) {
+    var track = el('timeline-track');
+    var barStep = 3; // barW(2) + gap(1)
+    var barIdx = Math.floor(pct * track.offsetWidth / barStep);
+    if (barIdx >= 0 && barIdx < eventBarSnaps.length && eventBarSnaps[barIdx] >= 0) {
+      sec = eventBarSnaps[barIdx];
+    }
+  }
 
   // Check if directly on a segment
   if (isOverSegment(pct)) {
@@ -1165,10 +1182,13 @@ function renderWaveform(activity, events, segments) {
     });
   }
 
+  // Build event minute set and per-minute snap targets (exact event start in seconds-of-day)
   var eventMinutes = new Set();
+  var eventSnapSec = {}; // minute -> earliest event start second in that minute
   if (events) {
     events.forEach(function(evt) {
       var startTs = new Date(evt.timestamp);
+      var startSec = startTs.getHours() * 3600 + startTs.getMinutes() * 60 + startTs.getSeconds();
       var startMin = startTs.getHours() * 60 + startTs.getMinutes();
       var endMin = startMin;
       if (evt.end_time) {
@@ -1177,6 +1197,10 @@ function renderWaveform(activity, events, segments) {
       }
       for (var m = startMin; m <= endMin && m < 1440; m++) {
         eventMinutes.add(m);
+      }
+      // Store the earliest event start second for its minute
+      if (!(startMin in eventSnapSec) || startSec < eventSnapSec[startMin]) {
+        eventSnapSec[startMin] = startSec;
       }
     });
   }
@@ -1196,22 +1220,31 @@ function renderWaveform(activity, events, segments) {
   var minBarHeight = maxHalf * 0.15;
   var baselineHeight = maxHalf * 0.08;
 
+  // Build per-bar event snap targets
+  eventBarSnaps = new Array(numBars);
+  for (var b = 0; b < numBars; b++) eventBarSnaps[b] = -1;
+
   for (var b = 0; b < numBars; b++) {
     var mStart = Math.floor(b * minutesPerBar);
     var mEnd = Math.floor((b + 1) * minutesPerBar);
     if (mEnd > 1440) mEnd = 1440;
 
-    // Find max score and check coverage/events in this bucket
     var maxScore = 0;
     var covered = false;
     var hasEvent = false;
+    var earliestSnap = -1;
     for (var m = mStart; m < mEnd; m++) {
       if (hasCoverage[m]) covered = true;
       if (scores[m] > maxScore) maxScore = scores[m];
       if (eventMinutes.has(m)) hasEvent = true;
+      if (m in eventSnapSec && (earliestSnap === -1 || eventSnapSec[m] < earliestSnap)) {
+        earliestSnap = eventSnapSec[m];
+      }
     }
 
     if (!covered) continue;
+
+    if (hasEvent) eventBarSnaps[b] = earliestSnap;
 
     var barH;
     if (maxScore > 0) {

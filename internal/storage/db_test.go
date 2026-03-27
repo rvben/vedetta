@@ -526,6 +526,37 @@ func TestGetAllSegments(t *testing.T) {
 	}
 }
 
+func TestGetSegmentByID(t *testing.T) {
+	db := newTestDB(t)
+
+	now := time.Now().UTC()
+	mustSaveSegment(t, db, makeSegment("cam1", "/path/to/seg.mp4", now, now.Add(10*time.Minute), 1000))
+
+	segs, err := db.GetAllSegments("cam1")
+	if err != nil || len(segs) == 0 {
+		t.Fatal("no segments found")
+	}
+
+	got, err := db.GetSegmentByID(segs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected segment, got nil")
+	}
+	if got.Camera != "cam1" {
+		t.Errorf("Camera = %q, want %q", got.Camera, "cam1")
+	}
+
+	got, err = db.GetSegmentByID(99999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Error("expected nil for non-existent ID")
+	}
+}
+
 // --- GetAdjacentEvents ---
 
 func TestGetAdjacentEvents_MiddleEvent(t *testing.T) {

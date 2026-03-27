@@ -19,6 +19,10 @@ import (
 )
 
 // SegmentWriter writes RTP packets into an fMP4 file.
+// Video and audio samples are buffered per GOP (group of pictures) and flushed
+// as a single fMP4 Part when a new keyframe arrives or the segment is closed.
+// This produces one moof+mdat per GOP instead of per frame, which is essential
+// for smooth HLS byte-range playback.
 type SegmentWriter struct {
 	mu   sync.Mutex
 	path string
@@ -41,11 +45,17 @@ type SegmentWriter struct {
 	videoDTS       uint64
 	audioDTS       uint64
 	startTime      time.Time
-	lastVideoRTP  uint32
-	hasFirstVideo bool
+	lastVideoRTP   uint32
+	hasFirstVideo  bool
 	hasAudio       bool
 	videoTimeScale uint32
 	audioTimeScale uint32
+
+	// GOP buffering: accumulate samples until next keyframe
+	pendingVideoSamples []*fmp4.Sample
+	pendingAudioSamples []*fmp4.Sample
+	pendingVideoDTS     uint64 // base decode time for pending video GOP
+	pendingAudioDTS     uint64 // base decode time for pending audio
 }
 
 // NewSegmentWriter creates a new fMP4 segment writer.
@@ -190,22 +200,19 @@ func (sw *SegmentWriter) WriteVideo(pkt *rtp.Packet) error {
 		return fmt.Errorf("fill H264 sample: %w", err)
 	}
 
-	part := fmp4.Part{
-		SequenceNumber: sw.seqNum,
-		Tracks: []*fmp4.PartTrack{
-			{
-				ID:       sw.videoTrackID,
-				BaseTime: sw.videoDTS,
-				Samples:  []*fmp4.Sample{sample},
-			},
-		},
+	// On keyframe: flush the previous GOP before starting a new one
+	if h264.IsRandomAccess(au) && len(sw.pendingVideoSamples) > 0 {
+		if err := sw.flushGOP(); err != nil {
+			return err
+		}
 	}
 
-	if err := part.Marshal(sw.f); err != nil {
-		return fmt.Errorf("marshal fmp4 part: %w", err)
+	// Start tracking base DTS for this GOP if this is the first sample
+	if len(sw.pendingVideoSamples) == 0 {
+		sw.pendingVideoDTS = sw.videoDTS
 	}
 
-	sw.seqNum++
+	sw.pendingVideoSamples = append(sw.pendingVideoSamples, sample)
 	sw.videoDTS += uint64(sample.Duration)
 
 	return nil
@@ -229,29 +236,17 @@ func (sw *SegmentWriter) WriteAudio(pkt *rtp.Packet) error {
 		return nil
 	}
 
-	// Each AAC access unit is one frame (1024 samples typically)
 	for _, au := range aus {
 		sample := &fmp4.Sample{
 			Duration: 1024, // Standard AAC frame size in samples
 			Payload:  au,
 		}
 
-		part := fmp4.Part{
-			SequenceNumber: sw.seqNum,
-			Tracks: []*fmp4.PartTrack{
-				{
-					ID:       sw.audioTrackID,
-					BaseTime: sw.audioDTS,
-					Samples:  []*fmp4.Sample{sample},
-				},
-			},
+		if len(sw.pendingAudioSamples) == 0 {
+			sw.pendingAudioDTS = sw.audioDTS
 		}
 
-		if err := part.Marshal(sw.f); err != nil {
-			return fmt.Errorf("marshal audio part: %w", err)
-		}
-
-		sw.seqNum++
+		sw.pendingAudioSamples = append(sw.pendingAudioSamples, sample)
 		sw.audioDTS += 1024
 	}
 
@@ -263,6 +258,11 @@ func (sw *SegmentWriter) Close() (time.Duration, error) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
+	// Flush any remaining buffered samples
+	if len(sw.pendingVideoSamples) > 0 || len(sw.pendingAudioSamples) > 0 {
+		sw.flushGOP()
+	}
+
 	duration := time.Since(sw.startTime)
 
 	if err := sw.f.Close(); err != nil {
@@ -270,6 +270,47 @@ func (sw *SegmentWriter) Close() (time.Duration, error) {
 	}
 
 	return duration, nil
+}
+
+// flushGOP writes all pending video and audio samples as a single fMP4 Part.
+// This produces one moof+mdat pair containing an entire GOP worth of samples.
+func (sw *SegmentWriter) flushGOP() error {
+	var tracks []*fmp4.PartTrack
+
+	if len(sw.pendingVideoSamples) > 0 {
+		tracks = append(tracks, &fmp4.PartTrack{
+			ID:       sw.videoTrackID,
+			BaseTime: sw.pendingVideoDTS,
+			Samples:  sw.pendingVideoSamples,
+		})
+	}
+
+	if len(sw.pendingAudioSamples) > 0 {
+		tracks = append(tracks, &fmp4.PartTrack{
+			ID:       sw.audioTrackID,
+			BaseTime: sw.pendingAudioDTS,
+			Samples:  sw.pendingAudioSamples,
+		})
+	}
+
+	if len(tracks) == 0 {
+		return nil
+	}
+
+	part := fmp4.Part{
+		SequenceNumber: sw.seqNum,
+		Tracks:         tracks,
+	}
+
+	if err := part.Marshal(sw.f); err != nil {
+		return fmt.Errorf("marshal fmp4 GOP: %w", err)
+	}
+
+	sw.seqNum++
+	sw.pendingVideoSamples = nil
+	sw.pendingAudioSamples = nil
+
+	return nil
 }
 
 func (sw *SegmentWriter) writeInit() error {

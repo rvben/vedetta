@@ -507,10 +507,15 @@ func (d *DB) DeleteMotionActivityBefore(cutoff time.Time) error {
 
 // QuerySegments returns segments for a camera that overlap the given time range.
 func (d *DB) QuerySegments(cameraName string, from, to time.Time) ([]SegmentRecord, error) {
+	// Use replace() to normalize the stored timestamps so that string comparison
+	// works regardless of whether they were stored in Go's String() format
+	// ("2006-01-02 15:04:05 +0000 UTC") or RFC3339 ("2006-01-02T15:04:05Z").
 	rows, err := d.db.Query(`
 		SELECT id, camera, path, start_time, end_time, size_bytes
 		FROM segments
-		WHERE camera = ? AND start_time < ? AND end_time > ?
+		WHERE camera = ?
+		  AND replace(start_time, 'T', ' ') < replace(?, 'T', ' ')
+		  AND replace(end_time, 'T', ' ') > replace(?, 'T', ' ')
 		ORDER BY start_time`,
 		cameraName, utc(to), utc(from),
 	)
@@ -560,6 +565,21 @@ func (d *DB) GetSegmentByPath(path string) (*SegmentRecord, error) {
 		return nil, err
 	}
 	return &seg, nil
+}
+
+// GetSegmentByID returns a single segment record by its primary key, or nil if not found.
+func (d *DB) GetSegmentByID(id int64) (*SegmentRecord, error) {
+	row := d.db.QueryRow(
+		`SELECT id, camera, path, start_time, end_time, size_bytes FROM segments WHERE id = ?`, id)
+	var s SegmentRecord
+	err := row.Scan(&s.ID, &s.Camera, &s.Path, &s.StartTime, &s.EndTime, &s.SizeBytes)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
 }
 
 // CountEventsToday returns the number of events with timestamp >= today midnight UTC.

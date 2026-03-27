@@ -3,6 +3,7 @@ package media
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -253,5 +254,100 @@ func TestConcatMP4_Empty(t *testing.T) {
 	err := ConcatMP4(nil, outputPath, 0, 0)
 	if err == nil {
 		t.Fatal("expected error for empty inputs")
+	}
+}
+
+func TestGenerateHLSPlaylist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.mp4")
+
+	// 10 fragments at 3000 ticks each (90kHz timescale) = ~333ms total
+	writeSyntheticFMP4(t, path, 10, 3000)
+
+	playlist, err := GenerateHLSPlaylist(
+		[]string{path},
+		[]string{"/recordings/test.mp4"},
+		0,
+	)
+	if err != nil {
+		t.Fatalf("GenerateHLSPlaylist: %v", err)
+	}
+
+	// Verify required HLS tags are present
+	requiredTags := []string{
+		"#EXTM3U",
+		"#EXT-X-VERSION:7",
+		"#EXT-X-TARGETDURATION:",
+		"#EXT-X-PLAYLIST-TYPE:VOD",
+		"#EXT-X-MAP:",
+		"#EXTINF:",
+		"#EXT-X-BYTERANGE:",
+		"#EXT-X-ENDLIST",
+	}
+	for _, tag := range requiredTags {
+		if !strings.Contains(playlist, tag) {
+			t.Errorf("playlist missing required tag %q", tag)
+		}
+	}
+
+	// Verify the segment URI appears
+	if !strings.Contains(playlist, "/recordings/test.mp4") {
+		t.Error("playlist missing segment URI")
+	}
+
+	t.Logf("Generated playlist:\n%s", playlist)
+}
+
+func TestGenerateHLSPlaylistReal(t *testing.T) {
+	const realPath = "/tmp/test_fmp4.mp4"
+	if _, err := os.Stat(realPath); os.IsNotExist(err) {
+		t.Skip("skipping: real test file not available at", realPath)
+	}
+
+	playlist, err := GenerateHLSPlaylist(
+		[]string{realPath},
+		[]string{"/recordings/real.mp4"},
+		0,
+	)
+	if err != nil {
+		t.Fatalf("GenerateHLSPlaylist: %v", err)
+	}
+
+	// A 10-minute recording should produce multiple HLS segments
+	segmentCount := strings.Count(playlist, "#EXTINF:")
+	if segmentCount < 2 {
+		t.Errorf("expected multiple HLS segments for a long recording, got %d", segmentCount)
+	}
+
+	t.Logf("Generated %d segments from real file", segmentCount)
+	t.Logf("Playlist:\n%s", playlist)
+}
+
+func TestIndexFileDetectsSync(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.mp4")
+
+	// 10 fragments, each with one sync (IDR) sample
+	writeSyntheticFMP4(t, path, 10, 3000)
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+
+	_, fragments, _, err := indexFile(f)
+	if err != nil {
+		t.Fatalf("indexFile: %v", err)
+	}
+
+	if len(fragments) != 10 {
+		t.Fatalf("expected 10 fragments, got %d", len(fragments))
+	}
+
+	for i, frag := range fragments {
+		if !frag.isSync {
+			t.Errorf("fragment %d: expected isSync=true (IDR frame), got false", i)
+		}
 	}
 }

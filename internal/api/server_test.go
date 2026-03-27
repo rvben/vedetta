@@ -1621,3 +1621,34 @@ func TestHandleCameraTimeline_ActivityAndEndTime(t *testing.T) {
 		t.Error("event end_time should be present")
 	}
 }
+
+func TestHandlePlaybackM3U8_NotFound(t *testing.T) {
+	s, _ := newTestServer(t)
+	req := httptest.NewRequest("GET", "/api/cameras/unknown/playback.m3u8?start=2026-01-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestHandlePlaybackM3U8_MissingStart(t *testing.T) {
+	s, _ := newTestServer(t)
+	s.cameras.AddCamera(config.CameraConfig{Name: "test"})
+	req := httptest.NewRequest("GET", "/api/cameras/test/playback.m3u8", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleSegment_NotFound(t *testing.T) {
+	s, _ := newTestServer(t)
+	req := httptest.NewRequest("GET", "/api/cameras/test/segments/99999", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}

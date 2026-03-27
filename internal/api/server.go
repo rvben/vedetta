@@ -211,7 +211,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/recordings/summary", s.handleRecordingsSummary)
 
 	s.mux.HandleFunc("GET /api/cameras/{name}/timeline", s.handleCameraTimeline)
-	s.mux.HandleFunc("GET /api/cameras/{name}/playback", s.handlePlayback)
+	// Old progressive MP4 playback endpoint removed — replaced by HLS m3u8
+	s.mux.HandleFunc("GET /api/cameras/{name}/playback.m3u8", s.handlePlaybackM3U8)
+	s.mux.HandleFunc("GET /api/cameras/{name}/segments/{id}", s.handleSegment)
 	s.mux.HandleFunc("GET /api/cameras/{name}/thumbnail", s.handleThumbnail)
 	s.mux.HandleFunc("GET /api/recordings/segments/{camera}", s.handleListSegments)
 	s.mux.HandleFunc("GET /api/recordings/export/{camera}", s.handleRecordingExport)
@@ -1271,7 +1273,7 @@ func (s *Server) handleCameraTimeline(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePlaybackM3U8(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	cam := s.cameras.GetCamera(name)
 	if cam == nil {
@@ -1287,51 +1289,78 @@ func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
 
 	start, err := time.Parse(time.RFC3339, startStr)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid start time format, use RFC3339"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid start time format"})
 		return
 	}
 
-	// Find the segment that contains the requested timestamp
-	segments, err := s.db.QuerySegments(name, start, start.Add(1*time.Second))
+	durationSec := 600
+	if ds := r.URL.Query().Get("duration"); ds != "" {
+		if d, err := strconv.Atoi(ds); err == nil && d > 0 {
+			durationSec = d
+		}
+	}
+	if durationSec > 3600 {
+		durationSec = 3600
+	}
+
+	end := start.Add(time.Duration(durationSec) * time.Second)
+	segments, err := s.db.QuerySegments(name, start, end)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-
 	if len(segments) == 0 {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no recording found for this timestamp"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no recordings found"})
 		return
 	}
 
-	seg := segments[0]
+	var paths []string
+	var uris []string
+	for _, seg := range segments {
+		paths = append(paths, seg.Path)
+		uris = append(uris, fmt.Sprintf("/api/cameras/%s/segments/%d", name, seg.ID))
+	}
 
-	// Calculate the offset into the segment
-	offset := start.Sub(seg.StartTime)
+	offset := start.Sub(segments[0].StartTime)
 	if offset < 0 {
 		offset = 0
 	}
 
-	w.Header().Set("X-Segment-Start", seg.StartTime.Format(time.RFC3339))
-	w.Header().Set("X-Segment-End", seg.EndTime.Format(time.RFC3339))
-
-	// For HEAD requests, just confirm the segment exists
-	if r.Method == "HEAD" {
-		w.Header().Set("Content-Type", "video/mp4")
-		w.WriteHeader(http.StatusOK)
+	playlist, err := media.GenerateHLSPlaylist(paths, uris, offset)
+	if err != nil {
+		slog.Error("HLS playlist generation failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "playlist generation failed"})
 		return
 	}
 
-	// Serve full segment if offset is negligible (< 2s)
-	if offset < 2*time.Second {
-		http.ServeFile(w, r, seg.Path)
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-cache")
+	if _, err := w.Write([]byte(playlist)); err != nil {
+		slog.Error("HLS playlist write failed", "error", err)
+	}
+}
+
+func (s *Server) handleSegment(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	idStr := r.PathValue("id")
+
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid segment ID"})
 		return
 	}
 
-	// Stream trimmed fMP4 starting at the requested offset
-	w.Header().Set("Content-Type", "video/mp4")
-	if err := media.TrimMP4ToWriter(seg.Path, w, offset); err != nil {
-		slog.Error("playback trim failed", "path", seg.Path, "offset", offset, "error", err)
+	seg, err := s.db.GetSegmentByID(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
+	if seg == nil || seg.Camera != name {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "segment not found"})
+		return
+	}
+
+	http.ServeFile(w, r, seg.Path)
 }
 
 func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {

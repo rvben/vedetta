@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"strings"
 	"time"
 
 	gomp4 "github.com/abema/go-mp4"
@@ -217,6 +219,7 @@ type fragment struct {
 	decodeTime uint64
 	duration   uint32
 	trackID    uint32
+	isSync     bool // true if the first sample in this fragment is a sync sample (keyframe)
 }
 
 // boxLoc stores the position and size of a top-level box.
@@ -509,6 +512,17 @@ func indexFile(r io.ReadSeeker) (initBoxes []boxLoc, fragments []fragment, track
 			return h.Expand()
 
 		case gomp4.BoxTypeTraf():
+			// Each traf within a moof represents a different track.
+			// Emit one fragment per traf so multi-track moofs (per-GOP)
+			// produce separate video and audio fragment entries.
+			if currentFrag != nil && currentFrag.trackID != 0 {
+				// Save previous traf's fragment before starting a new one
+				fragments = append(fragments, *currentFrag)
+				currentFrag = &fragment{
+					moofOffset: currentFrag.moofOffset,
+					moofSize:   currentFrag.moofSize,
+				}
+			}
 			return h.Expand()
 
 		case gomp4.BoxTypeTfhd():
@@ -519,6 +533,11 @@ func indexFile(r io.ReadSeeker) (initBoxes []boxLoc, fragments []fragment, track
 				}
 				tfhd := box.(*gomp4.Tfhd)
 				currentFrag.trackID = tfhd.TrackID
+				if tfhd.GetFlags()&0x000020 != 0 {
+					currentFrag.isSync = tfhd.DefaultSampleFlags&0x00010000 == 0
+				} else {
+					currentFrag.isSync = true
+				}
 			}
 			return nil, nil
 
@@ -545,6 +564,13 @@ func indexFile(r io.ReadSeeker) (initBoxes []boxLoc, fragments []fragment, track
 					totalDur += e.SampleDuration
 				}
 				currentFrag.duration += totalDur
+
+				trunFlags := trun.GetFlags()
+				if trunFlags&0x000004 != 0 {
+					currentFrag.isSync = trun.FirstSampleFlags&0x00010000 == 0
+				} else if trunFlags&0x000400 != 0 && len(trun.Entries) > 0 {
+					currentFrag.isSync = trun.Entries[0].SampleFlags&0x00010000 == 0
+				}
 			}
 			return nil, nil
 
@@ -587,6 +613,220 @@ func copyFragmentAdjusted(src io.ReadSeeker, dst io.Writer, frag fragment, seqNu
 	}
 	_, err := io.CopyN(dst, src, frag.mdatSize)
 	return err
+}
+
+// GenerateHLSPlaylist builds an HLS m3u8 playlist with byte-range addressing for
+// one or more fMP4 files. Each HLS segment starts at a video keyframe. The start
+// parameter skips fragments before that time offset in the first file. The paths
+// slice contains filesystem paths used to open and index each file, while uris
+// contains the corresponding URIs that appear in the playlist output.
+func GenerateHLSPlaylist(paths []string, uris []string, start time.Duration) (string, error) {
+	if len(paths) == 0 {
+		return "", fmt.Errorf("no paths provided")
+	}
+	if len(paths) != len(uris) {
+		return "", fmt.Errorf("paths and uris length mismatch")
+	}
+
+	type hlsSegment struct {
+		uri        string
+		byteStart  int64
+		byteLength int64
+		duration   float64 // seconds
+	}
+
+	var segments []hlsSegment
+
+	// Track which file index each segment belongs to, so we can insert
+	// EXT-X-MAP tags when the file changes.
+	type initInfo struct {
+		uri       string
+		byteStart int64
+		byteLen   int64
+	}
+	var segmentInits []initInfo
+	var fileInits []initInfo
+
+	for fileIdx, path := range paths {
+		f, err := os.Open(path)
+		if err != nil {
+			return "", fmt.Errorf("open %s: %w", path, err)
+		}
+
+		initBoxes, fragments, trackTimeScales, err := indexFile(f)
+		f.Close()
+		if err != nil {
+			return "", fmt.Errorf("index %s: %w", path, err)
+		}
+
+		// Compute init segment byte range (ftyp+moov+styp combined)
+		var initStart, initEnd int64
+		if len(initBoxes) > 0 {
+			initStart = initBoxes[0].offset
+			last := initBoxes[len(initBoxes)-1]
+			initEnd = last.offset + last.size
+		}
+		fi := initInfo{
+			uri:       uris[fileIdx],
+			byteStart: initStart,
+			byteLen:   initEnd - initStart,
+		}
+		fileInits = append(fileInits, fi)
+
+		// Identify the video track: pick the track with the highest timescale,
+		// falling back to the track with the most fragments.
+		videoTrackID := findVideoTrack(fragments, trackTimeScales)
+		videoTS := trackTimeScales[videoTrackID]
+		if videoTS == 0 {
+			videoTS = 90000
+		}
+
+		// Filter fragments by start time (first file only)
+		var startTick uint64
+		if fileIdx == 0 && start > 0 {
+			startTick = uint64(start.Seconds() * float64(videoTS))
+		}
+
+		// Group fragments into HLS segments aligned to video keyframes.
+		// Target ~4 seconds per segment to reduce parsing overhead (each segment
+		// contains many per-frame moof+mdat pairs from the fMP4 recording format).
+		const targetSegmentDuration = 4.0 // seconds
+		var curByteStart int64 = -1
+		var curByteEnd int64
+		var curDurationTicks uint64
+
+		flushSegment := func() {
+			if curByteStart < 0 {
+				return
+			}
+			dur := float64(curDurationTicks) / float64(videoTS)
+			segments = append(segments, hlsSegment{
+				uri:        uris[fileIdx],
+				byteStart:  curByteStart,
+				byteLength: curByteEnd - curByteStart,
+				duration:   dur,
+			})
+			segmentInits = append(segmentInits, fi)
+			curByteStart = -1
+			curByteEnd = 0
+			curDurationTicks = 0
+		}
+
+		for _, frag := range fragments {
+			// Skip fragments before start offset
+			fragTS := trackTimeScales[frag.trackID]
+			if fragTS == 0 {
+				fragTS = 90000
+			}
+			if fileIdx == 0 && start > 0 {
+				fragStartTick := frag.decodeTime
+				// Convert to video timescale for comparison if different track
+				if frag.trackID != videoTrackID && fragTS != videoTS {
+					fragStartTick = uint64(float64(fragStartTick) / float64(fragTS) * float64(videoTS))
+				}
+				fragEndTick := fragStartTick + uint64(float64(frag.duration)/float64(fragTS)*float64(videoTS))
+				if fragEndTick <= startTick {
+					continue
+				}
+			}
+
+			fragEnd := frag.mdatOffset + frag.mdatSize
+
+			// Start a new segment at a video keyframe, but only if we've
+			// accumulated enough duration to meet the target.
+			curDurSec := float64(curDurationTicks) / float64(videoTS)
+			if frag.trackID == videoTrackID && frag.isSync && curByteStart >= 0 && curDurSec >= targetSegmentDuration {
+				flushSegment()
+			}
+
+			if curByteStart < 0 {
+				curByteStart = frag.moofOffset
+			}
+			if fragEnd > curByteEnd {
+				curByteEnd = fragEnd
+			}
+
+			// Accumulate duration from video track fragments only
+			if frag.trackID == videoTrackID {
+				curDurationTicks += uint64(frag.duration)
+			}
+		}
+		flushSegment()
+	}
+
+	if len(segments) == 0 {
+		return "", fmt.Errorf("no segments produced")
+	}
+
+	// Compute target duration (ceiling of max segment duration)
+	var maxDur float64
+	for _, seg := range segments {
+		if seg.duration > maxDur {
+			maxDur = seg.duration
+		}
+	}
+	targetDuration := int(math.Ceil(maxDur))
+	if targetDuration < 1 {
+		targetDuration = 1
+	}
+
+	// Build the m3u8 playlist
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n")
+	b.WriteString("#EXT-X-VERSION:7\n")
+	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", targetDuration)
+	b.WriteString("#EXT-X-PLAYLIST-TYPE:VOD\n")
+
+	var lastInitURI string
+	for i, seg := range segments {
+		init := segmentInits[i]
+
+		// Emit a new EXT-X-MAP when the source file changes
+		if init.uri != lastInitURI {
+			fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"%s\",BYTERANGE=\"%d@%d\"\n",
+				init.uri, init.byteLen, init.byteStart)
+			lastInitURI = init.uri
+		}
+
+		fmt.Fprintf(&b, "#EXTINF:%.6f,\n", seg.duration)
+		fmt.Fprintf(&b, "#EXT-X-BYTERANGE:%d@%d\n", seg.byteLength, seg.byteStart)
+		fmt.Fprintf(&b, "%s\n", seg.uri)
+	}
+
+	b.WriteString("#EXT-X-ENDLIST\n")
+	return b.String(), nil
+}
+
+// findVideoTrack identifies the video track ID from fragments and timescales.
+// It picks the track with the highest timescale (video is typically 90000),
+// falling back to the track with the most fragments.
+func findVideoTrack(fragments []fragment, trackTimeScales map[uint32]uint32) uint32 {
+	// Try highest timescale first
+	var bestID uint32
+	var bestTS uint32
+	for id, ts := range trackTimeScales {
+		if ts > bestTS {
+			bestTS = ts
+			bestID = id
+		}
+	}
+	if bestID != 0 {
+		return bestID
+	}
+
+	// Fallback: track with most fragments
+	counts := make(map[uint32]int)
+	for _, f := range fragments {
+		counts[f.trackID]++
+	}
+	var maxCount int
+	for id, c := range counts {
+		if c > maxCount {
+			maxCount = c
+			bestID = id
+		}
+	}
+	return bestID
 }
 
 // patchMoof modifies mfhd.SequenceNumber and tfdt.BaseMediaDecodeTime in raw moof bytes.

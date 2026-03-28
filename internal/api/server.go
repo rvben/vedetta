@@ -62,6 +62,7 @@ type Server struct {
 	objectEmbedder       *detect.ObjectEmbedder
 	ObjectMatchThreshold float64
 	mqttClient           MQTTPublisher
+	mqttEnabled          bool
 	snapshotPath         string
 	faceCropDir    string
 	ptzClients     map[string]*camera.PTZClient
@@ -398,6 +399,11 @@ func (s *Server) TriggerDoorbell(cameraName string) {
 
 func (s *Server) SetMQTT(publisher MQTTPublisher) {
 	s.mqttClient = publisher
+	s.mqttEnabled = true
+}
+
+func (s *Server) SetMQTTEnabled(enabled bool) {
+	s.mqttEnabled = enabled
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
@@ -605,10 +611,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		status = "degraded"
 	}
 
+	mqttStatus := "disabled"
+	if s.mqttClient != nil {
+		mqttStatus = "connected"
+	} else if s.mqttEnabled {
+		mqttStatus = "disconnected"
+		status = "degraded"
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": status,
 		"checks": map[string]any{
 			"database": dbStatus,
+			"mqtt":     mqttStatus,
 			"cameras": map[string]any{
 				"total":  len(statuses),
 				"online": onlineCount,

@@ -137,6 +137,9 @@ func main() {
 		server.TransitionToFull(authChecker)
 		server.SetSubsystems(sub.manager, sub.recorder, sub.hub, sub.faceRecognizer, sub.objectEmbedder, cfg.Events.SnapshotPath, filepath.Join(cfg.Events.SnapshotPath, "faces"), cfg.Cameras, sub.ptzClients)
 		server.ObjectMatchThreshold = cfg.Detect.ObjectMatchThreshold
+		if cfg.MQTT.Enabled {
+			server.SetMQTTEnabled(true)
+		}
 		if sub.mqttClient != nil {
 			server.SetMQTT(sub.mqttClient)
 		}
@@ -214,6 +217,9 @@ func main() {
 	// Wire subsystems into the API server now that everything is initialized
 	server.SetSubsystems(sub.manager, sub.recorder, sub.hub, sub.faceRecognizer, sub.objectEmbedder, cfg.Events.SnapshotPath, filepath.Join(cfg.Events.SnapshotPath, "faces"), cfg.Cameras, sub.ptzClients)
 	server.ObjectMatchThreshold = cfg.Detect.ObjectMatchThreshold
+	if cfg.MQTT.Enabled {
+		server.SetMQTTEnabled(true)
+	}
 	if sub.mqttClient != nil {
 		server.SetMQTT(sub.mqttClient)
 	}
@@ -248,8 +254,21 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 	if cfg.MQTT.Enabled {
 		sub.mqttClient, err = mqtt.New(cfg.MQTT)
 		if err != nil {
-			slog.Error("failed to connect to MQTT", "error", err)
-			os.Exit(1)
+			slog.Warn("MQTT unavailable, continuing without it", "error", err)
+			// Start background reconnect
+			go func() {
+				for {
+					time.Sleep(30 * time.Second)
+					c, err := mqtt.New(cfg.MQTT)
+					if err != nil {
+						slog.Debug("MQTT reconnect failed", "error", err)
+						continue
+					}
+					slog.Info("MQTT reconnected")
+					sub.mqttClient = c
+					return
+				}
+			}()
 		}
 	}
 

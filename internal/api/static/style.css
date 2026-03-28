@@ -1271,6 +1271,28 @@ input, select { font-family: inherit; }
   border-radius: 50%;
 }
 
+.timeline-now-marker {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.4);
+  z-index: 4;
+  pointer-events: none;
+}
+
+.timeline-now-marker::after {
+  content: 'NOW';
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.5rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0.05em;
+}
+
 /* Time labels */
 .timeline-labels {
   display: flex;

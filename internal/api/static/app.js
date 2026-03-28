@@ -2306,23 +2306,34 @@ function startPlayheadAnimation() {
   if (playheadRAF) cancelAnimationFrame(playheadRAF);
 
   function tick() {
+    var now = new Date();
+    var today = new Date();
+    var isToday = timelineDate.toDateString() === today.toDateString();
+    var nowPct = isToday ? (now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60) / (24 * 60) * 100 : -1;
+
+    // During playback: show a "now" marker so user knows where current time is
+    var nowMarker = el('timeline-now-marker');
+    if (nowMarker) {
+      if (playbackMode && isToday && nowPct >= 0) {
+        nowMarker.style.left = nowPct + '%';
+        nowMarker.style.display = '';
+      } else {
+        nowMarker.style.display = 'none';
+      }
+    }
+
     if (!playbackMode && !timelineDragging) {
       var playhead = el('timeline-playhead');
-      if (playhead) {
-        var now = new Date();
-        var today = new Date();
-        if (timelineDate.toDateString() === today.toDateString()) {
-          var pct = (now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60) / (24 * 60) * 100;
-          playhead.style.left = pct + '%';
-          playhead.style.display = '';
+      if (playhead && isToday) {
+        playhead.style.left = nowPct + '%';
+        playhead.style.display = '';
+      }
 
-          // Refresh timeline segments every 30s so blue bars stay current
-          var ts = Date.now();
-          if (ts - lastTimelineRefresh > 30000) {
-            lastTimelineRefresh = ts;
-            fetchTimelineData();
-          }
-        }
+      // Refresh timeline segments every 30s so blue bars stay current
+      var ts = Date.now();
+      if (ts - lastTimelineRefresh > 30000) {
+        lastTimelineRefresh = ts;
+        fetchTimelineData();
       }
     }
     playheadRAF = requestAnimationFrame(tick);

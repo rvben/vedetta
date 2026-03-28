@@ -1,4 +1,4 @@
-.PHONY: build build-capi build-deploy run test bench lint clean fmt check docker-build docker-push deploy
+.PHONY: build build-capi build-deploy run test bench lint clean fmt check docker-build docker-push deploy release-patch release-minor release-major
 
 BINARY := vedetta
 BUILD_DIR := ./build
@@ -54,3 +54,12 @@ docker-build:
 docker-push:
 	docker push $(DOCKER_IMAGE):$(VERSION)
 	docker push $(DOCKER_IMAGE):latest
+
+release-patch:
+	vership bump patch
+
+release-minor:
+	vership bump minor
+
+release-major:
+	vership bump major

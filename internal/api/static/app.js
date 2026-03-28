@@ -1968,14 +1968,17 @@ initTheme();
 // ─── Connection Status ───
 var connDebounceTimer = null;
 
-function setConnStatus(ok) {
+function setConnStatus(status, detail) {
   var dot = document.getElementById('conn-dot');
   var label = document.getElementById('conn-label');
   if (!dot || !label) return;
 
-  if (ok) {
+  if (status === 'ok') {
     dot.className = 'conn-dot ok';
     label.textContent = 'Connected';
+  } else if (status === 'degraded') {
+    dot.className = 'conn-dot warn';
+    label.textContent = detail || 'Degraded';
   } else {
     dot.className = 'conn-dot error';
     label.textContent = 'Reconnecting...';
@@ -1984,23 +1987,43 @@ function setConnStatus(ok) {
 
 document.addEventListener('htmx:sendError', function() {
   clearTimeout(connDebounceTimer);
-  setConnStatus(false);
+  setConnStatus('error');
 });
 
 document.addEventListener('htmx:responseError', function(e) {
   console.error('HTMX error:', e.detail);
   clearTimeout(connDebounceTimer);
-  setConnStatus(false);
+  setConnStatus('error');
 });
 
 document.addEventListener('htmx:afterRequest', function(e) {
   if (!e.detail.failed) {
     clearTimeout(connDebounceTimer);
     connDebounceTimer = setTimeout(function() {
-      setConnStatus(true);
+      setConnStatus('ok');
     }, 300);
   }
 });
+
+// ─── Health Check: detect degraded services ───
+(function pollHealth() {
+  function check() {
+    fetch('/api/health')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.status === 'degraded') {
+          var issues = [];
+          if (data.checks && data.checks.mqtt === 'disconnected') issues.push('MQTT disconnected');
+          if (data.checks && data.checks.storage && data.checks.storage.disk_low) issues.push('Disk low');
+          if (data.checks && data.checks.database === 'error') issues.push('DB error');
+          setConnStatus('degraded', issues.join(', ') || 'Degraded');
+        }
+      })
+      .catch(function() {});
+  }
+  check();
+  setInterval(check, 60000);
+})();
 
 // ─── Page visibility: pause updates when hidden ───
 document.addEventListener('visibilitychange', function() {

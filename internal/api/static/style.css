@@ -162,7 +162,10 @@
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   color: var(--text-tertiary);
+  text-decoration: none;
+  cursor: pointer;
 }
+.conn-status:hover { color: var(--text-secondary); }
 
 .conn-dot {
   width: 6px;
@@ -172,6 +175,7 @@
 }
 
 .conn-dot.ok { background: var(--green); }
+.conn-dot.warn { background: var(--amber, #ffa000); }
 .conn-dot.error { background: var(--red); animation: pulse-dot 1s infinite; }
 
 /* ─── Reset ─── */

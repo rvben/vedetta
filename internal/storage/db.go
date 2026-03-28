@@ -639,23 +639,29 @@ func (d *DB) GetSegmentsForDate(cameraName string, date time.Time) ([]SegmentRec
 	dayStart := date.UTC().Truncate(24 * time.Hour)
 	dayEnd := dayStart.Add(24 * time.Hour)
 
+	// Use replace() to normalize timestamps for comparison — the DB may store
+	// timestamps in Go's String() format or RFC3339 format.
+	const layout = "2006-01-02 15:04:05"
+	dayStartStr := dayStart.Format(layout)
+	dayEndStr := dayEnd.Format(layout)
+
 	var rows *sql.Rows
 	var err error
 	if cameraName != "" {
 		rows, err = d.db.Query(`
 			SELECT id, camera, path, start_time, end_time, size_bytes
 			FROM segments
-			WHERE camera = ? AND start_time >= ? AND start_time < ?
+			WHERE camera = ? AND replace(start_time, 'T', ' ') >= ? AND replace(start_time, 'T', ' ') < ?
 			ORDER BY start_time`,
-			cameraName, dayStart, dayEnd,
+			cameraName, dayStartStr, dayEndStr,
 		)
 	} else {
 		rows, err = d.db.Query(`
 			SELECT id, camera, path, start_time, end_time, size_bytes
 			FROM segments
-			WHERE start_time >= ? AND start_time < ?
+			WHERE replace(start_time, 'T', ' ') >= ? AND replace(start_time, 'T', ' ') < ?
 			ORDER BY start_time`,
-			dayStart, dayEnd,
+			dayStartStr, dayEndStr,
 		)
 	}
 	if err != nil {
@@ -739,20 +745,24 @@ func (d *DB) GetRecordingDays(camera string, year int, month int) ([]int, error)
 	monthStart := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
 	monthEnd := monthStart.AddDate(0, 1, 0)
 
+	const layout = "2006-01-02 15:04:05"
+	startStr := monthStart.Format(layout)
+	endStr := monthEnd.Format(layout)
+
 	var rows *sql.Rows
 	var err error
 	if camera != "" {
 		rows, err = d.db.Query(`
 			SELECT DISTINCT CAST(substr(start_time, 9, 2) AS INTEGER) AS day
 			FROM segments
-			WHERE camera = ? AND start_time >= ? AND start_time < ?
-			ORDER BY day`, camera, monthStart, monthEnd)
+			WHERE camera = ? AND replace(start_time, 'T', ' ') >= ? AND replace(start_time, 'T', ' ') < ?
+			ORDER BY day`, camera, startStr, endStr)
 	} else {
 		rows, err = d.db.Query(`
 			SELECT DISTINCT CAST(substr(start_time, 9, 2) AS INTEGER) AS day
 			FROM segments
-			WHERE start_time >= ? AND start_time < ?
-			ORDER BY day`, monthStart, monthEnd)
+			WHERE replace(start_time, 'T', ' ') >= ? AND replace(start_time, 'T', ' ') < ?
+			ORDER BY day`, startStr, endStr)
 	}
 	if err != nil {
 		return nil, err

@@ -190,9 +190,21 @@ func (c *Client) PublishDoorbell(cameraName, person string, jpegData []byte) {
 }
 
 func (c *Client) PublishPresence(pe camera.PresenceEvent, objectName string) error {
-	state := "entered"
-	if pe.Type == "zone_leave" {
+	// Map explicitly. Defaulting anything that is not a leave to "entered" turned
+	// a zone that had merely lost sight of an object into a claim that the object
+	// was there.
+	var state string
+	switch pe.Type {
+	case camera.EventZoneEnter:
+		state = "entered"
+	case camera.EventZoneLeave:
 		state = "left"
+	case camera.EventZoneUnknown:
+		state = "unknown"
+	default:
+		slog.Warn("unhandled presence event type, not publishing",
+			"type", pe.Type, "zone", pe.ZoneName, "label", pe.Label)
+		return nil
 	}
 	m := map[string]string{
 		"zone":  pe.ZoneName,
@@ -295,16 +307,24 @@ func (c *Client) publishPresenceSensorDiscovery(z ZoneInfo) {
 		Model:        "Zone Presence",
 	}
 
+	stateTopic := fmt.Sprintf("%s/presence/%s/%s", c.topic, zoneSafe, labelSafe)
 	sensorConfig := haPresenceSensorConfig{
-		Name:              fmt.Sprintf("%s %s", z.ZoneName, z.Label),
-		UniqueID:          objectID,
-		StateTopic:        fmt.Sprintf("%s/presence/%s/%s", c.topic, zoneSafe, labelSafe),
-		AvailabilityTopic: c.topic + "/availability",
-		DeviceClass:       "occupancy",
-		ValueTemplate:     "{{ value_json.state }}",
-		PayloadOn:         "entered",
-		PayloadOff:        "left",
-		Device:            device,
+		Name:     fmt.Sprintf("%s %s", z.ZoneName, z.Label),
+		UniqueID: objectID,
+		Availability: []haAvailability{
+			{Topic: c.topic + "/availability"},
+			{
+				Topic:         stateTopic,
+				ValueTemplate: "{{ 'offline' if value_json.state == 'unknown' else 'online' }}",
+			},
+		},
+		AvailabilityMode: "all",
+		StateTopic:       stateTopic,
+		DeviceClass:      "occupancy",
+		ValueTemplate:    "{{ value_json.state }}",
+		PayloadOn:        "entered",
+		PayloadOff:       "left",
+		Device:           device,
 	}
 
 	payload, err := json.Marshal(sensorConfig)
@@ -585,16 +605,27 @@ type haBinarySensorConfig struct {
 	Device            haDevice `json:"device"`
 }
 
+// haAvailability is one entry of Home Assistant's `availability` list.
+type haAvailability struct {
+	Topic         string `json:"topic"`
+	ValueTemplate string `json:"value_template,omitempty"`
+}
+
 type haPresenceSensorConfig struct {
-	Name              string   `json:"name"`
-	UniqueID          string   `json:"unique_id"`
-	StateTopic        string   `json:"state_topic"`
-	AvailabilityTopic string   `json:"availability_topic"`
-	DeviceClass       string   `json:"device_class"`
-	ValueTemplate     string   `json:"value_template"`
-	PayloadOn         string   `json:"payload_on"`
-	PayloadOff        string   `json:"payload_off"`
-	Device            haDevice `json:"device"`
+	Name     string `json:"name"`
+	UniqueID string `json:"unique_id"`
+	// Availability carries two entries, combined with AvailabilityMode "all":
+	// the broker-level LWT, and the presence state itself. A zone reporting
+	// "unknown" has lost sight of the object, which is neither on nor off, so it
+	// renders as unavailable instead of silently reading as "no car here".
+	Availability     []haAvailability `json:"availability"`
+	AvailabilityMode string           `json:"availability_mode"`
+	StateTopic       string           `json:"state_topic"`
+	DeviceClass      string           `json:"device_class"`
+	ValueTemplate    string           `json:"value_template"`
+	PayloadOn        string           `json:"payload_on"`
+	PayloadOff       string           `json:"payload_off"`
+	Device           haDevice         `json:"device"`
 }
 
 type haImageConfig struct {

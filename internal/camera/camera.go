@@ -740,17 +740,18 @@ func (c *Camera) runTrackingPipeline(detections []detect.Detection, buf []byte, 
 	zones := c.zones
 	c.mu.RUnlock()
 
-	var zoneMatches map[PresenceKey]bool
 	var trackZones map[int][]Zone // trackID → matched zones
 	if len(zones) > 0 {
-		zoneMatches, trackZones = matchZones(zones, tracked, w, h)
+		var inZone map[PresenceKey]map[int]bool
+		var detectedTracks map[int]bool
+		inZone, detectedTracks, trackZones = matchZones(zones, tracked, w, h)
 
 		// Update presence state machine
 		zoneNameMap := make(map[int]string, len(zones))
 		for _, z := range zones {
 			zoneNameMap[z.ID] = z.Name
 		}
-		presenceEvts := c.presenceTracker.Update(zoneMatches, zoneNameMap)
+		presenceEvts := c.presenceTracker.UpdateObserved(inZone, detectedTracks, zoneNameMap)
 		for _, pe := range presenceEvts {
 			select {
 			case c.presenceEvents <- pe:

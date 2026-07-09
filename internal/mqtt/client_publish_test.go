@@ -344,3 +344,57 @@ func TestClientPublishDiskStatus_TopicAndPayload(t *testing.T) {
 		t.Errorf("recording_paused = %v, want true", m["recording_paused"])
 	}
 }
+
+// A zone that lost sight of an object must not publish "entered" or "left". The
+// old mapping defaulted every non-leave event to "entered", so a zone_unknown
+// would have re-asserted presence for a car nobody could see.
+func TestClientPublishPresence_UnknownIsNotEnteredOrLeft(t *testing.T) {
+	c, f := newTestClient()
+	c.PublishPresence(camera.PresenceEvent{Type: "zone_unknown", ZoneName: "Driveway", Label: "car"}, "Renault Trafic")
+
+	got := requireOnePublish(t, f)
+	if got.topic != "vedetta/presence/driveway/car" {
+		t.Errorf("topic = %q, want vedetta/presence/driveway/car", got.topic)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(got.payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if m["state"] != "unknown" {
+		t.Errorf("zone_unknown published state = %q, want unknown", m["state"])
+	}
+}
+
+// Home Assistant must render an unknown zone as unavailable rather than "off".
+// The discovery config therefore has to carry an availability entry that maps the
+// state payload, alongside the broker-level availability topic.
+func TestClientPresenceDiscovery_UnknownMapsToUnavailable(t *testing.T) {
+	c, f := newTestClient()
+	c.publishPresenceSensorDiscovery(ZoneInfo{ZoneName: "Driveway", Label: "car"})
+
+	got := requireOnePublish(t, f)
+	var cfg map[string]any
+	if err := json.Unmarshal(got.payload, &cfg); err != nil {
+		t.Fatalf("discovery payload not JSON: %v", err)
+	}
+	avail, ok := cfg["availability"].([]any)
+	if !ok || len(avail) < 2 {
+		t.Fatalf("discovery must declare both the broker and the state availability entries, got %v", cfg["availability"])
+	}
+	if cfg["availability_mode"] != "all" {
+		t.Errorf("availability_mode = %v, want all", cfg["availability_mode"])
+	}
+	var sawStateTemplate bool
+	for _, a := range avail {
+		entry, _ := a.(map[string]any)
+		if tmpl, _ := entry["value_template"].(string); tmpl != "" && entry["topic"] == cfg["state_topic"] {
+			sawStateTemplate = true
+			if !json.Valid([]byte(`"` + tmpl + `"`)) {
+				t.Errorf("availability template is not a JSON-safe string: %q", tmpl)
+			}
+		}
+	}
+	if !sawStateTemplate {
+		t.Errorf("no availability entry maps the presence state topic to online/offline")
+	}
+}

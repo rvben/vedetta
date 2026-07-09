@@ -202,18 +202,24 @@ func TestMatchZones_CoastingTrackDoesNotSustainPresence(t *testing.T) {
 	key := PresenceKey{ZoneID: zone.ID, Label: "car"}
 
 	seen := []detect.TrackedObject{{TrackID: 1, Label: "car", Box: box, Detected: true}}
-	matches, trackZones := matchZones(zones, seen, 100, 100)
-	if !matches[key] {
+	inZone, detected, trackZones := matchZones(zones, seen, 100, 100)
+	if !inZone[key][1] {
 		t.Errorf("car detected in zone this frame: presence match = false, want true")
+	}
+	if !detected[1] {
+		t.Errorf("car detected this frame: detected = false, want true")
 	}
 	if len(trackZones[1]) != 1 {
 		t.Errorf("detected track should still be tagged with its zone, got %d zones", len(trackZones[1]))
 	}
 
 	coasting := []detect.TrackedObject{{TrackID: 1, Label: "car", Box: box, Detected: false}}
-	matches, trackZones = matchZones(zones, coasting, 100, 100)
-	if matches[key] {
+	inZone, detected, trackZones = matchZones(zones, coasting, 100, 100)
+	if inZone[key][1] {
 		t.Errorf("track coasting with no detection: presence match = true, want false")
+	}
+	if detected[1] {
+		t.Errorf("track coasting with no detection: detected = true, want false")
 	}
 	// Event emission still needs the zone tag for a coasting track.
 	if len(trackZones[1]) != 1 {

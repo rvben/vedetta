@@ -8,22 +8,30 @@ import (
 )
 
 // matchZones tags each tracked object with the zones it overlaps and derives the
-// presence keys for zones with TrackPresence enabled.
+// observations the presence state machine needs.
 //
 // trackZones covers every tracked object, because event emission needs the zones
 // of a coasting track to close its event correctly.
 //
-// zoneMatches covers only objects a detection matched on this frame. Presence
-// must report what the detector saw, never what the tracker still believes: a
-// stationary track coasts for 50x the normal disappearance budget, so a parked
-// car's track outlives the car. Feeding coasting tracks to the presence state
-// machine kept driveway/car "entered" for 4.5 hours after the car drove off,
-// with no detections in that window. The tracker's own leave debounce is what
-// absorbs the gaps between detections; it can only do that if the gaps are
-// visible to it.
-func matchZones(zones []Zone, tracked []detect.TrackedObject, frameW, frameH int) (map[PresenceKey]bool, map[int][]Zone) {
-	zoneMatches := make(map[PresenceKey]bool)
-	trackZones := make(map[int][]Zone, len(tracked))
+// inZone and detected cover only objects a detection matched on this frame.
+// Presence must report what the detector saw, never what the tracker still
+// believes: a stationary track coasts for 50x the normal disappearance budget, so
+// a parked car's track outlives the car. Feeding coasting tracks to presence kept
+// driveway/car "entered" for 4.5 hours after the car drove off, with no
+// detections in that window.
+//
+// The two are separate because their difference carries the meaning. A track
+// missing from inZone but present in detected was seen to leave the zone. A track
+// missing from both was merely lost, and a zone that cannot see an object must
+// not claim it departed.
+func matchZones(
+	zones []Zone,
+	tracked []detect.TrackedObject,
+	frameW, frameH int,
+) (inZone map[PresenceKey]map[int]bool, detected map[int]bool, trackZones map[int][]Zone) {
+	inZone = make(map[PresenceKey]map[int]bool)
+	detected = make(map[int]bool, len(tracked))
+	trackZones = make(map[int][]Zone, len(tracked))
 
 	for _, obj := range tracked {
 		matched := MatchZones(zones, obj.Box, obj.Label, frameW, frameH)
@@ -31,14 +39,20 @@ func matchZones(zones []Zone, tracked []detect.TrackedObject, frameW, frameH int
 		if !obj.Detected {
 			continue
 		}
+		detected[obj.TrackID] = true
 		for _, z := range matched {
-			if z.TrackPresence {
-				zoneMatches[PresenceKey{ZoneID: z.ID, Label: obj.Label}] = true
+			if !z.TrackPresence {
+				continue
 			}
+			key := PresenceKey{ZoneID: z.ID, Label: obj.Label}
+			if inZone[key] == nil {
+				inZone[key] = make(map[int]bool, 1)
+			}
+			inZone[key][obj.TrackID] = true
 		}
 	}
 
-	return zoneMatches, trackZones
+	return inZone, detected, trackZones
 }
 
 // Zone represents a spatial region on a camera view.

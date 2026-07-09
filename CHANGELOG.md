@@ -46,6 +46,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.7.14](https://github.com/rvben/vedetta/compare/v0.7.13...v0.7.14) - 2026-07-09
+
+### Fixed
+
+- **camera**: base zone presence on detections, not on coasting tracks ([d70a09b](https://github.com/rvben/vedetta/commit/d70a09b08dcca25cbd45fb3318a55d0cda0a6633))
+
 ## [0.7.13](https://github.com/rvben/vedetta/compare/v0.7.12...v0.7.13) - 2026-06-27
 
 ### Added

@@ -291,3 +291,100 @@ func TestPresence_RapidTransitions(t *testing.T) {
 		t.Error("expected not present during rapid transitions")
 	}
 }
+
+// Presence now only sees an object on frames where a detection matched it. A
+// parked car is re-detected once per stationaryReconfirmInterval, so the leave
+// debounce must outlast that cadence, with room for a reconfirm to miss. If it
+// does not, every parked car "leaves" between reconfirmations.
+func TestPresence_ParkedObjectSurvivesReconfirmCadence(t *testing.T) {
+	pt := NewPresenceTracker() // production debounce values, not the test helper's
+	clock := time.Date(2026, 7, 8, 8, 0, 0, 0, time.UTC)
+	pt.now = func() time.Time { return clock }
+
+	zones := map[int]string{1: "driveway"}
+	key := PresenceKey{ZoneID: 1, Label: "car"}
+	detected := map[PresenceKey]bool{key: true}
+	empty := map[PresenceKey]bool{}
+
+	const frame = 200 * time.Millisecond
+	var leaves int
+
+	// Arrival: the car is moving, so motion-gated detection fires on every frame.
+	for elapsed := time.Duration(0); elapsed < 5*time.Second; elapsed += frame {
+		pt.Update(detected, zones)
+		clock = clock.Add(frame)
+	}
+	if present, _, _ := pt.GetPresence(key); !present {
+		t.Fatalf("car detected on every frame for 5s: presence = false, want true")
+	}
+
+	// Parked: motion stops, so a detection only lands at each reconfirm. The
+	// reconfirm fires on the first frame at or after the interval, so gaps are a
+	// little over 30s, and YOLO periodically fails to re-see a still car in poor
+	// light. The debounce has to ride out a missed reconfirmation; every third is
+	// dropped here. Production showed 195 spurious sub-10-minute "left" stretches
+	// in one week from exactly this.
+	reconfirms := 0
+	for elapsed := time.Duration(0); elapsed < 10*time.Minute; elapsed += frame {
+		matches := empty
+		if elapsed > 0 && elapsed%stationaryReconfirmInterval == 0 {
+			reconfirms++
+			if reconfirms%3 != 0 { // every third reconfirmation misses the car
+				matches = detected
+			}
+		}
+		for _, ev := range pt.Update(matches, zones) {
+			if ev.Type == "zone_leave" {
+				leaves++
+			}
+		}
+		clock = clock.Add(frame)
+	}
+
+	if leaves != 0 {
+		t.Errorf("parked car re-detected every %v: got %d zone_leave events, want 0",
+			stationaryReconfirmInterval, leaves)
+	}
+	if present, _, _ := pt.GetPresence(key); !present {
+		t.Errorf("parked car re-detected every %v: presence = false, want true",
+			stationaryReconfirmInterval)
+	}
+}
+
+// A car that actually leaves must still be reported, and reasonably promptly.
+func TestPresence_LeavesOnceDetectionsStop(t *testing.T) {
+	pt := NewPresenceTracker()
+	clock := time.Date(2026, 7, 8, 8, 0, 0, 0, time.UTC)
+	pt.now = func() time.Time { return clock }
+
+	zones := map[int]string{1: "driveway"}
+	key := PresenceKey{ZoneID: 1, Label: "car"}
+	detected := map[PresenceKey]bool{key: true}
+	empty := map[PresenceKey]bool{}
+
+	const frame = 200 * time.Millisecond
+	for elapsed := time.Duration(0); elapsed < 10*time.Second; elapsed += frame {
+		pt.Update(detected, zones)
+		clock = clock.Add(frame)
+	}
+	if present, _, _ := pt.GetPresence(key); !present {
+		t.Fatalf("car detected for 10s: presence = false, want true")
+	}
+
+	var leftAfter time.Duration
+	for elapsed := time.Duration(0); elapsed < 10*time.Minute; elapsed += frame {
+		for _, ev := range pt.Update(empty, zones) {
+			if ev.Type == "zone_leave" && leftAfter == 0 {
+				leftAfter = elapsed
+			}
+		}
+		clock = clock.Add(frame)
+	}
+
+	if leftAfter == 0 {
+		t.Fatalf("detections stopped: no zone_leave emitted within 10 minutes")
+	}
+	if leftAfter > 3*time.Minute {
+		t.Errorf("detections stopped: zone_leave took %v, want within 3m", leftAfter)
+	}
+}

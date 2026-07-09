@@ -942,3 +942,35 @@ func TestTracker_StaleTrackReusedWhenUpdateSkipped(t *testing.T) {
 			"deleted and a new TrackID issued, but got the original ID %d", originalID)
 	}
 }
+
+// A confirmed track keeps being returned while it coasts through frames with no
+// detection, so callers cannot tell "I see it" from "I still believe in it".
+// Presence tracking needs that distinction: a zone must reflect what was
+// observed, not what is merely remembered.
+func TestTracker_DetectedReportsWhetherMatchedThisFrame(t *testing.T) {
+	tr := NewTracker(5, 1) // maxDisappeared=5, confirm after 1 hit
+	det := Detection{Label: "car", Score: 0.9, Box: [4]int{10, 10, 50, 50}}
+
+	objs := tr.Update([]Detection{det})
+	if len(objs) != 1 {
+		t.Fatalf("expected 1 confirmed object, got %d", len(objs))
+	}
+	if !objs[0].Detected {
+		t.Errorf("object matched by a detection this frame: Detected = false, want true")
+	}
+
+	// No detection this frame: the track coasts, but nothing was observed.
+	objs = tr.Update(nil)
+	if len(objs) != 1 {
+		t.Fatalf("expected the track to still coast, got %d objects", len(objs))
+	}
+	if objs[0].Detected {
+		t.Errorf("object coasting with no detection: Detected = true, want false")
+	}
+
+	// A fresh detection re-observes it.
+	objs = tr.Update([]Detection{det})
+	if len(objs) != 1 || !objs[0].Detected {
+		t.Errorf("object re-matched by a detection: Detected = false, want true")
+	}
+}

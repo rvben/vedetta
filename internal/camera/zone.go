@@ -3,7 +3,43 @@ package camera
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/rvben/vedetta/internal/detect"
 )
+
+// matchZones tags each tracked object with the zones it overlaps and derives the
+// presence keys for zones with TrackPresence enabled.
+//
+// trackZones covers every tracked object, because event emission needs the zones
+// of a coasting track to close its event correctly.
+//
+// zoneMatches covers only objects a detection matched on this frame. Presence
+// must report what the detector saw, never what the tracker still believes: a
+// stationary track coasts for 50x the normal disappearance budget, so a parked
+// car's track outlives the car. Feeding coasting tracks to the presence state
+// machine kept driveway/car "entered" for 4.5 hours after the car drove off,
+// with no detections in that window. The tracker's own leave debounce is what
+// absorbs the gaps between detections; it can only do that if the gaps are
+// visible to it.
+func matchZones(zones []Zone, tracked []detect.TrackedObject, frameW, frameH int) (map[PresenceKey]bool, map[int][]Zone) {
+	zoneMatches := make(map[PresenceKey]bool)
+	trackZones := make(map[int][]Zone, len(tracked))
+
+	for _, obj := range tracked {
+		matched := MatchZones(zones, obj.Box, obj.Label, frameW, frameH)
+		trackZones[obj.TrackID] = matched
+		if !obj.Detected {
+			continue
+		}
+		for _, z := range matched {
+			if z.TrackPresence {
+				zoneMatches[PresenceKey{ZoneID: z.ID, Label: obj.Label}] = true
+			}
+		}
+	}
+
+	return zoneMatches, trackZones
+}
 
 // Zone represents a spatial region on a camera view.
 // Coordinates are percentages (0.0-1.0) relative to the frame dimensions.

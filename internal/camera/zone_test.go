@@ -2,6 +2,8 @@ package camera
 
 import (
 	"testing"
+
+	"github.com/rvben/vedetta/internal/detect"
 )
 
 func makeTestZone(name string, x1, y1, x2, y2 float64, labels []string) Zone {
@@ -184,5 +186,37 @@ func TestMatchZones_DetectionAtEdge(t *testing.T) {
 	matched := MatchZones(zones, [4]int{40, 40, 60, 60}, "person", 100, 100)
 	if len(matched) != 0 {
 		t.Fatalf("expected 0 matches for 25%% overlap, got %d", len(matched))
+	}
+}
+
+// A stationary track coasts for 50x the normal disappearance budget, so a parked
+// car's track outlives the car itself. Presence must follow what the detector
+// saw this frame, not what the tracker still believes, or a zone reports a car
+// that drove away hours ago. Observed in production: driveway/car stayed
+// "entered" for 4.5 hours after the car left, with zero detections in between.
+func TestMatchZones_CoastingTrackDoesNotSustainPresence(t *testing.T) {
+	zone := makeTestZone("driveway", 0, 0, 1, 1, []string{"car"})
+	zone.TrackPresence = true
+	zones := []Zone{zone}
+	box := [4]int{10, 10, 90, 90}
+	key := PresenceKey{ZoneID: zone.ID, Label: "car"}
+
+	seen := []detect.TrackedObject{{TrackID: 1, Label: "car", Box: box, Detected: true}}
+	matches, trackZones := matchZones(zones, seen, 100, 100)
+	if !matches[key] {
+		t.Errorf("car detected in zone this frame: presence match = false, want true")
+	}
+	if len(trackZones[1]) != 1 {
+		t.Errorf("detected track should still be tagged with its zone, got %d zones", len(trackZones[1]))
+	}
+
+	coasting := []detect.TrackedObject{{TrackID: 1, Label: "car", Box: box, Detected: false}}
+	matches, trackZones = matchZones(zones, coasting, 100, 100)
+	if matches[key] {
+		t.Errorf("track coasting with no detection: presence match = true, want false")
+	}
+	// Event emission still needs the zone tag for a coasting track.
+	if len(trackZones[1]) != 1 {
+		t.Errorf("coasting track must still be tagged with its zone, got %d zones", len(trackZones[1]))
 	}
 }

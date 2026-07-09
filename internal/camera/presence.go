@@ -40,12 +40,23 @@ type PresenceTracker struct {
 	now           func() time.Time // injectable clock for testing
 }
 
+// debounceLeaveReconfirms is how many stationary reconfirmations a present object
+// may miss before it counts as gone.
+//
+// Presence is fed only by frames where a detection matched (see matchZones), and
+// a parked object is re-detected just once per stationaryReconfirmInterval. The
+// leave debounce therefore has to outlast that cadence: at 1x it is a coin flip,
+// because the reconfirm fires on the first frame at or after the interval and
+// YOLO periodically fails to re-see a still car in poor light. 3x rides out a
+// missed reconfirmation and still reports a real departure inside 90 seconds.
+const debounceLeaveReconfirms = 3
+
 // NewPresenceTracker creates a new PresenceTracker with default debounce timings.
 func NewPresenceTracker() *PresenceTracker {
 	return &PresenceTracker{
 		states:        make(map[PresenceKey]*presenceState),
 		debounceEnter: 3 * time.Second,
-		debounceLeave: 30 * time.Second,
+		debounceLeave: debounceLeaveReconfirms * stationaryReconfirmInterval,
 		now:           time.Now,
 	}
 }

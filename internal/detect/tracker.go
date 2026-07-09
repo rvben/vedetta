@@ -28,6 +28,12 @@ type TrackedObject struct {
 	// which lets the camera categorize its events as low-priority detections
 	// rather than alerts.
 	Moved bool
+	// Detected reports whether a detection matched this track on the most recent
+	// update. A confirmed track keeps being returned while it coasts through
+	// frames without a detection, and a stationary one coasts for 50x the normal
+	// budget. Callers that must distinguish observation from belief, such as zone
+	// presence, have to consult this rather than the track's existence.
+	Detected bool
 }
 
 // track is the internal state for a single tracked object.
@@ -361,6 +367,7 @@ func (t *Tracker) confirmedObjects() []TrackedObject {
 				State:      string(tr.state),
 				FramesSeen: tr.hits,
 				Moved:      tr.moved,
+				Detected:   tr.disappeared == 0,
 			})
 		}
 	}

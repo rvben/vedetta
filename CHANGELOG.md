@@ -47,6 +47,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.7.15](https://github.com/rvben/vedetta/compare/v0.7.14...v0.7.15) - 2026-07-10
+
+### Added
+
+- **camera**: distinguish a zone departure from a lost object ([1e415c1](https://github.com/rvben/vedetta/commit/1e415c10c0e940a1591dcabb53637bdc115f9ab5))
+
 ## [0.7.14](https://github.com/rvben/vedetta/compare/v0.7.13...v0.7.14) - 2026-07-09
 
 ### Fixed

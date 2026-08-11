@@ -211,6 +211,20 @@ type CameraStatus struct {
 	// worth alerting on. Always false for a normal mains-powered camera, whose
 	// stream really should be there.
 	Sleeping bool `json:"sleeping"`
+	// LastConnected dates the last time this camera's RTSP source reached PLAY.
+	// Omitted when it has not connected since Vedetta started, which is a
+	// different fact from a zero time and must not be rendered as an age.
+	//
+	// For an on-demand camera this is the only signal separating one napping
+	// between events from one that has been unplugged or removed from its
+	// bridge: both answer "no such stream" indefinitely, so a stale timestamp
+	// here is the whole warning.
+	LastConnected time.Time `json:"last_connected,omitempty"`
+	// StreamError carries the most recent RTSP connection failure when it is
+	// something other than the stream not being published, with credentials
+	// redacted. Empty while connected, and empty for an on-demand camera
+	// resting between events, because that is not a fault.
+	StreamError string `json:"stream_error,omitempty"`
 }
 
 func NewCamera(cfg config.CameraConfig, detector *detect.Detector, motion config.MotionConfig, events chan<- Event, eventEnds chan<- EventEnd, presenceEvents chan<- PresenceEvent, hub *rtsp.Hub, snapshotPath string, snapshotQuality int, recordingPath string, faceRecognizer *detect.FaceRecognizer, faceEvents chan<- FaceEvent, faceCropDir string, motionActivity chan<- MotionActivity, detections chan<- DetectionFrame) *Camera {
@@ -1050,6 +1064,25 @@ func (c *Camera) Status() CameraStatus {
 	if lastSeen.IsZero() {
 		lastSeen = c.cachedSnapshotTime
 	}
+
+	// An on-demand camera delivering no frames is assumed asleep, but that
+	// assumption is only sound while the failures are the stream not being
+	// published. One that is refusing the connection or rejecting credentials
+	// delivers no frames either, and reporting it as a nap hides the fault
+	// behind a badge that says everything is fine.
+	sleeping := c.config.OnDemand && !online
+	var lastConnected time.Time
+	var streamErr string
+	if c.hub != nil {
+		if h, ok := c.hub.Health(c.config.URL); ok {
+			lastConnected = h.LastConnected
+			if h.Faulted() {
+				streamErr = h.LastError
+				sleeping = false
+			}
+		}
+	}
+
 	return CameraStatus{
 		Name:           c.config.Name,
 		Online:         online,
@@ -1059,7 +1092,9 @@ func (c *Camera) Status() CameraStatus {
 		Degraded:       c.degradedReason != "",
 		DegradedReason: c.degradedReason,
 		SourceFPS:      fps,
-		Sleeping:       c.config.OnDemand && !online,
+		Sleeping:       sleeping,
+		LastConnected:  lastConnected,
+		StreamError:    streamErr,
 	}
 }
 

@@ -60,6 +60,66 @@ type Source struct {
 	// camera configured with the same URL, and each must see the reconnect.
 	// Guarded by mu.
 	reconnectSinks []*atomic.Int64
+
+	// Connection-attempt bookkeeping, guarded by mu. Only this loop sees why an
+	// attempt failed, and "no frames arrived" cannot express the difference
+	// between a camera asleep and a camera rejecting our credentials. See
+	// SourceHealth.
+	lastConnected time.Time
+	lastAttempt   time.Time
+	lastErr       string
+	unpublished   bool
+	failures      int64
+	// lastWarn stamps the most recent non-routine on-demand failure that was
+	// logged, so a permanently broken source announces itself without filling
+	// the log at the retry interval.
+	lastWarn time.Time
+}
+
+// Health returns a snapshot of this source's connection attempts.
+func (s *Source) Health() SourceHealth {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return SourceHealth{
+		Connected:           s.connected,
+		LastConnected:       s.lastConnected,
+		LastAttempt:         s.lastAttempt,
+		LastError:           s.lastErr,
+		Unpublished:         s.unpublished,
+		ConsecutiveFailures: s.failures,
+	}
+}
+
+// recordAttempt files the outcome of one pass through the connect loop. start
+// is when that pass began, which is how a pass that reached PLAY and later
+// dropped is told apart from one that never got there: only the former stamps
+// lastConnected, and only the latter counts as a failure.
+func (s *Source) recordAttempt(start time.Time, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastAttempt = time.Now()
+	if s.lastConnected.After(start) {
+		s.failures = 0
+		s.lastErr = ""
+		s.unpublished = false
+		// Clear the rate limiter too, so a fault appearing after a good
+		// connection is logged at once instead of waiting out an interval that
+		// started before the camera was working.
+		s.lastWarn = time.Time{}
+		return
+	}
+	s.failures++
+	if err != nil {
+		s.lastErr = redactCredentials(err.Error(), s.url)
+		s.unpublished = streamUnpublished(err)
+	}
+}
+
+// SimulateAttemptForTest drives the real attempt bookkeeping with a given
+// outcome, so health reporting can be exercised without a live RTSP server.
+// Test-only seam, mirroring SimulateReconnectForTest.
+func (s *Source) SimulateAttemptForTest(err error) {
+	s.recordAttempt(time.Now(), err)
 }
 
 // Reconnects returns the cumulative number of times this source has lost an
@@ -256,6 +316,36 @@ func (s *Source) WaitForVideoParams(ctx context.Context) bool {
 // against responsiveness and therefore no reason to back off.
 const onDemandRetry = 3 * time.Second
 
+// onDemandWarnInterval bounds how often a faulted on-demand source repeats
+// itself in the log. The condition is steady rather than eventful - a wrong
+// password stays wrong - so one line every few minutes is enough to prove it is
+// still happening, while onDemandRetry would produce twenty a minute.
+const onDemandWarnInterval = 5 * time.Minute
+
+// shouldWarn reports whether a non-routine on-demand failure is due a log line,
+// and stamps the emission. The first fault after any successful connection logs
+// immediately; repeats are held back to onDemandWarnInterval.
+func (s *Source) shouldWarn() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if !s.lastWarn.IsZero() && now.Sub(s.lastWarn) < onDemandWarnInterval {
+		return false
+	}
+	s.lastWarn = now
+	return true
+}
+
+// lastConnectedLabel renders a last-connected time for a log line. A source
+// that has never connected reports "never" rather than a zero timestamp, whose
+// age would read as a plausible fifty-six years.
+func lastConnectedLabel(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	return t.Format(time.RFC3339)
+}
+
 // Connect starts reading from the RTSP stream, reconnecting on failure.
 // Blocks until ctx is cancelled.
 func (s *Source) Connect(ctx context.Context) {
@@ -269,10 +359,12 @@ func (s *Source) Connect(ctx context.Context) {
 		default:
 		}
 
+		attemptStart := time.Now()
 		err := s.connectOnce(ctx)
 		if ctx.Err() != nil {
 			return
 		}
+		s.recordAttempt(attemptStart, err)
 		if err == nil {
 			// Successful connection ended cleanly (e.g., server closed).
 			// Reset backoff for quick reconnect.
@@ -284,8 +376,10 @@ func (s *Source) Connect(ctx context.Context) {
 			wait = onDemandRetry
 		}
 
+		health := s.Health()
+
 		switch {
-		case s.onDemand:
+		case s.onDemand && !health.Faulted():
 			// The stream being gone is this camera's resting state, so neither
 			// outcome is an error: logging it as one buries real faults under
 			// hundreds of lines a day and leaves the camera permanently red.
@@ -294,6 +388,21 @@ func (s *Source) Connect(ctx context.Context) {
 				"error", err,
 				"retry_in", wait,
 			)
+		case s.onDemand:
+			// Not the resting state: the far end is refusing, rejecting, or
+			// ignoring us. Silence here is what made a wrong password on a
+			// battery camera indistinguishable from a normal nap, so this must
+			// reach the log at a level the process actually emits. Rate-limited
+			// because the retry interval is three seconds.
+			if s.shouldWarn() {
+				slog.Warn("on-demand RTSP source failing, not merely unpublished",
+					"url", SanitizeURL(s.url),
+					"error", health.LastError,
+					"consecutive_failures", health.ConsecutiveFailures,
+					"last_connected", lastConnectedLabel(health.LastConnected),
+					"retry_in", wait,
+				)
+			}
 		case err != nil:
 			slog.Error("RTSP connection error, reconnecting",
 				"url", SanitizeURL(s.url),
@@ -403,6 +512,7 @@ func (s *Source) connectOnce(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.connected = true
+	s.lastConnected = time.Now()
 	s.mu.Unlock()
 
 	transportLabel := s.transport

@@ -64,7 +64,7 @@ func (s *Server) GetCamera(w http.ResponseWriter, r *http.Request, name string) 
 	st := cam.Status()
 	_, hasPTZ := s.ptzClients[name]
 	zones, _ := s.db.ListZones(name)
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"name":            st.Name,
 		"online":          st.Online,
 		"sleeping":        st.Sleeping,
@@ -76,7 +76,17 @@ func (s *Server) GetCamera(w http.ResponseWriter, r *http.Request, name string) 
 		"zone_count":      len(zones),
 		"recording":       s.recorder != nil,
 		"source_fps":      st.SourceFPS,
-	})
+	}
+	// Both keys are absent rather than empty when there is nothing to report: a
+	// camera that has never connected has no last-connected time, and a zero
+	// timestamp there would render as an age of decades.
+	if !st.LastConnected.IsZero() {
+		resp["last_connected"] = st.LastConnected
+	}
+	if st.StreamError != "" {
+		resp["stream_error"] = st.StreamError
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) SendPTZCommand(w http.ResponseWriter, r *http.Request, name string) {

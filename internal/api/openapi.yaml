@@ -2779,7 +2779,11 @@ components:
             also reports online=false, because no frames are arriving, but it is
             not a fault. A camera with online=false and sleeping=false is a
             genuine outage. Always false for a mains-powered camera, and always
-            false while the camera is stopped.
+            false while the camera is stopped. Also false when the camera's RTSP
+            source is failing for a reason other than its stream not being
+            published (refused connection, rejected credentials, timeout): that
+            delivers no frames just as sleep does, but it is an outage, and
+            stream_error on the camera detail carries the reason.
         stopped:
           type: boolean
           description: >-
@@ -2844,6 +2848,24 @@ components:
           type: number
           format: float
           description: Rolling-window source frame rate measured at the detect consumer (frames per second).
+        last_connected:
+          type: string
+          format: date-time
+          description: >-
+            Time of the camera's last successful RTSP connection. Absent when it
+            has not connected since Vedetta started; absent is not the same as
+            old, and must not be rendered as an age. For an on-demand camera
+            this is the only signal separating one napping between events from
+            one that has been unplugged or removed from its bridge, since both
+            report the stream as unpublished indefinitely.
+        stream_error:
+          type: string
+          description: >-
+            Reason the camera's RTSP source cannot connect, with credentials
+            redacted. Present only when the source has failed repeatedly for a
+            reason other than its stream not being published, so it is absent
+            both while the camera is connected and while an on-demand camera is
+            resting between events.
 
     Zone:
       type: object

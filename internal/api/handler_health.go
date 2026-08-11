@@ -274,6 +274,24 @@ func (s *Server) GetMetrics(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	// The only signal that separates an on-demand camera napping between events
+	// from one that has been unplugged or dropped from its bridge: both report
+	// online=0 sleeping=1 indefinitely, and nothing else ever changes. Alert on
+	// time() minus this exceeding the longest plausible gap between events.
+	//
+	// A camera that has not connected since startup has no timestamp to report,
+	// so its sample is omitted rather than written as 0, which would assert a
+	// successful connection in 1970 and make the alert above read as healthy.
+	// Detect that case with absent(), against vedetta_camera_online, which is
+	// emitted for every camera.
+	fmt.Fprintf(&b, "# HELP vedetta_camera_last_connected_timestamp_seconds Unix time of the camera's last successful RTSP connection. Absent when the camera has not connected since startup.\n# TYPE vedetta_camera_last_connected_timestamp_seconds gauge\n")
+	for _, st := range cameraStatuses {
+		if st.LastConnected.IsZero() {
+			continue
+		}
+		fmt.Fprintf(&b, "vedetta_camera_last_connected_timestamp_seconds{camera=%q} %d\n", promLabel(st.Name), st.LastConnected.Unix())
+	}
+
 	// Drop-on-full fan-out counters: the detection-overlay SSE hub and the MSE
 	// pipeline shed frames to slow clients rather than blocking. A rising count
 	// means live overlay / playback is silently degrading for those viewers.

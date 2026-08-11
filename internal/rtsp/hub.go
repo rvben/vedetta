@@ -189,6 +189,20 @@ func (h *Hub) Get(url string) *Source {
 	return nil
 }
 
+// Health returns the connection health of the Source for url. The second
+// return is false when no Source exists for that URL, which is a different fact
+// from a Source that has never connected: nothing has tried yet, so callers
+// must not read the zero value as "never connected".
+func (h *Hub) Health(url string) (SourceHealth, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if ms, ok := h.sources[url]; ok {
+		return ms.source.Health(), true
+	}
+	return SourceHealth{}, false
+}
+
 // Remove disconnects and removes the Source for the given URL.
 // If no consumers remain, this frees the RTSP connection slot on the camera.
 func (h *Hub) Remove(url string) {

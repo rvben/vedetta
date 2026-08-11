@@ -15,6 +15,7 @@ import (
 
 	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/detect"
+	"github.com/rvben/vedetta/internal/reid"
 	"github.com/rvben/vedetta/internal/storage"
 )
 
@@ -513,16 +514,13 @@ func (s *Server) BackfillFaces(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-const clusterThreshold = 0.62
-
 func (s *Server) clusterUnmatchedFace(newFaceID int64, embedding []float32) bool {
 	unmatched, err := s.db.ListUnmatchedFaces(200)
 	if err != nil || len(unmatched) == 0 {
 		return false
 	}
 
-	var bestFace *storage.Face
-	var bestSim float64
+	candidates := make([]reid.Candidate, 0, len(unmatched)-1)
 	for i := range unmatched {
 		if unmatched[i].ID == newFaceID {
 			continue
@@ -531,18 +529,25 @@ func (s *Server) clusterUnmatchedFace(newFaceID int64, embedding []float32) bool
 		if len(other) == 0 {
 			continue
 		}
-		sim := detect.CosineSimilarity(embedding, other)
-		if sim > bestSim {
-			bestSim = sim
-			bestFace = &unmatched[i]
-		}
+		candidates = append(candidates, reid.Candidate{ID: unmatched[i].ID, Centroid: other})
 	}
 
-	if bestFace == nil || bestSim < clusterThreshold {
+	bestID, bestSim := reid.BestMatch(embedding, candidates, reid.FaceClusterThreshold)
+	if bestID == 0 {
+		return false
+	}
+	var bestFace *storage.Face
+	for i := range unmatched {
+		if unmatched[i].ID == bestID {
+			bestFace = &unmatched[i]
+			break
+		}
+	}
+	if bestFace == nil {
 		return false
 	}
 
-	centroid := averageEmbeddings(embedding, detect.BytesToFloat32(bestFace.Embedding))
+	centroid := reid.AverageNormalized(embedding, detect.BytesToFloat32(bestFace.Embedding))
 	personID, err := s.db.SavePerson("", false, detect.Float32ToBytes(centroid))
 	if err != nil {
 		return false
@@ -550,23 +555,4 @@ func (s *Server) clusterUnmatchedFace(newFaceID int64, embedding []float32) bool
 	_ = s.db.UpdateFacePerson(bestFace.ID, personID, bestSim)
 	_ = s.db.UpdateFacePerson(newFaceID, personID, 1.0)
 	return true
-}
-
-func averageEmbeddings(a, b []float32) []float32 {
-	if len(a) != len(b) {
-		return a
-	}
-	out := make([]float32, len(a))
-	var norm float64
-	for i := range out {
-		out[i] = (a[i] + b[i]) / 2
-		norm += float64(out[i]) * float64(out[i])
-	}
-	if norm > 1e-10 {
-		invNorm := float32(1.0 / math.Sqrt(norm))
-		for i := range out {
-			out[i] *= invNorm
-		}
-	}
-	return out
 }

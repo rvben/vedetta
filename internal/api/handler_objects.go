@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/rvben/vedetta/internal/detect"
+	"github.com/rvben/vedetta/internal/reid"
 	"github.com/rvben/vedetta/internal/storage"
 )
 
@@ -611,11 +612,9 @@ func (s *Server) rematchRecentEvents(objectID int64) {
 
 	centroid := detect.BytesToFloat32(obj.Centroid)
 	threshold := s.ObjectMatchThreshold
-	if threshold <= 0 {
-		threshold = 0.75
-	}
+	candidate := reid.Candidate{ID: obj.ID, Centroid: centroid}
 	if obj.MatchThreshold != nil {
-		threshold = *obj.MatchThreshold
+		candidate.Threshold = *obj.MatchThreshold
 	}
 
 	events, err := s.db.RecentUnmatchedEventsByLabel(obj.Label, 200)
@@ -637,17 +636,20 @@ func (s *Server) rematchRecentEvents(objectID int64) {
 		if err != nil {
 			continue
 		}
-		sim := detect.CosineSimilarity(embedding, centroid)
-		if sim >= threshold {
-			s.db.SaveObjectSighting(storage.ObjectSighting{
+		matchedID, similarity := reid.BestMatch(embedding, []reid.Candidate{candidate}, threshold)
+		if matchedID != 0 {
+			_, err = s.db.SaveObjectRecognition(storage.ObjectSighting{
 				EventID:    ev.ID,
 				Camera:     ev.CameraName,
 				ObjectID:   objectID,
-				Similarity: sim,
+				ObjectName: obj.Name,
+				Similarity: similarity,
 				Timestamp:  ev.Timestamp,
 			})
-			_ = s.db.UpdateEventObjectName(ev.ID, obj.Name)
-			_ = s.db.UpdateEventSubLabel(ev.ID, obj.Name)
+			if err != nil {
+				slog.Warn("rematch: failed to save recognition", "event", ev.ID, "object", obj.Name, "error", err)
+				continue
+			}
 			matched++
 		}
 	}

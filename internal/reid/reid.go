@@ -10,6 +10,15 @@ import (
 	"github.com/rvben/vedetta/internal/detect"
 )
 
+const (
+	// FaceClusterThreshold is the minimum similarity for grouping two
+	// unmatched faces into a new unnamed person.
+	FaceClusterThreshold = 0.62
+	// PersonCentroidUpdateWeight controls how much a newly matched face
+	// contributes when updating a person's recognition centroid.
+	PersonCentroidUpdateWeight float32 = 0.3
+)
+
 // Candidate is a stored centroid an embedding can be matched against.
 type Candidate struct {
 	ID       int64

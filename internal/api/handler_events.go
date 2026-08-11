@@ -7,7 +7,6 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"log/slog"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/detect"
+	"github.com/rvben/vedetta/internal/reid"
 	"github.com/rvben/vedetta/internal/safepath"
 	"github.com/rvben/vedetta/internal/snapshot"
 	"github.com/rvben/vedetta/internal/storage"
@@ -341,29 +341,37 @@ func (s *Server) IdentifyEvent(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 
-	var matches []storage.ObjectSighting
+	candidates := make([]reid.Candidate, 0, len(knownObjects))
 	for _, obj := range knownObjects {
 		centroid := detect.BytesToFloat32(obj.Centroid)
 		if len(centroid) == 0 {
 			continue
 		}
-		threshold := s.ObjectMatchThreshold
+		candidate := reid.Candidate{ID: obj.ID, Centroid: centroid}
 		if obj.MatchThreshold != nil {
-			threshold = *obj.MatchThreshold
+			candidate.Threshold = *obj.MatchThreshold
 		}
-		sim := detect.CosineSimilarity(embedding, centroid)
-		if sim >= threshold {
+		candidates = append(candidates, candidate)
+	}
+
+	var matches []storage.ObjectSighting
+	bestID, similarity := reid.BestMatch(embedding, candidates, s.ObjectMatchThreshold)
+	for _, obj := range knownObjects {
+		if obj.ID == bestID {
 			sighting := storage.ObjectSighting{
 				EventID:    eventID,
 				Camera:     event.CameraName,
 				ObjectID:   obj.ID,
 				ObjectName: obj.Name,
-				Similarity: sim,
+				Similarity: similarity,
 				Timestamp:  event.Timestamp,
 			}
-			if _, err := s.db.SaveObjectSighting(sighting); err == nil {
-				matches = append(matches, sighting)
+			if _, err := s.db.SaveObjectRecognition(sighting); err != nil {
+				s.serverError(w, r, err)
+				return
 			}
+			matches = append(matches, sighting)
+			break
 		}
 	}
 
@@ -587,26 +595,15 @@ func (s *Server) matchFaceToPerson(embedding []float32) (int64, float64) {
 		return 0, 0
 	}
 
-	var bestID int64
-	var bestSim float64
-	threshold := s.faceRecognizer.MatchThreshold()
-
-	for _, p := range people {
-		if p.Ignore || len(p.Centroid) == 0 {
-			continue
-		}
-		centroid := detect.BytesToFloat32(p.Centroid)
-		sim := detect.CosineSimilarity(embedding, centroid)
-		if sim > bestSim {
-			bestSim = sim
-			bestID = p.ID
+	candidates := make([]reid.Candidate, len(people))
+	for i, p := range people {
+		candidates[i] = reid.Candidate{
+			ID:       p.ID,
+			Centroid: detect.BytesToFloat32(p.Centroid),
+			Ignore:   p.Ignore,
 		}
 	}
-
-	if bestSim >= threshold {
-		return bestID, bestSim
-	}
-	return 0, 0
+	return reid.BestMatch(embedding, candidates, s.faceRecognizer.MatchThreshold())
 }
 
 // updatePersonCentroid updates a person's centroid with a running average.
@@ -616,30 +613,7 @@ func (s *Server) updatePersonCentroid(personID int64, newEmbedding []float32) {
 		return
 	}
 
-	if len(p.Centroid) == 0 {
-		_ = s.db.UpdatePersonCentroid(personID, detect.Float32ToBytes(newEmbedding))
-		return
-	}
-
 	old := detect.BytesToFloat32(p.Centroid)
-	if len(old) != len(newEmbedding) {
-		_ = s.db.UpdatePersonCentroid(personID, detect.Float32ToBytes(newEmbedding))
-		return
-	}
-
-	alpha := float32(0.3)
-	merged := make([]float32, len(old))
-	var norm float64
-	for i := range merged {
-		merged[i] = (1-alpha)*old[i] + alpha*newEmbedding[i]
-		norm += float64(merged[i]) * float64(merged[i])
-	}
-	if norm > 1e-10 {
-		invNorm := float32(1.0 / math.Sqrt(norm))
-		for i := range merged {
-			merged[i] *= invNorm
-		}
-	}
-
+	merged := reid.BlendCentroid(old, newEmbedding, reid.PersonCentroidUpdateWeight)
 	_ = s.db.UpdatePersonCentroid(personID, detect.Float32ToBytes(merged))
 }

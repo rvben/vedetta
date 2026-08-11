@@ -1656,11 +1656,9 @@ func updatePersonCentroid(db *storage.DB, personID int64, newEmbedding []float32
 	}
 
 	old := detect.BytesToFloat32(p.Centroid)
-	merged := reid.BlendCentroid(old, newEmbedding, 0.3)
+	merged := reid.BlendCentroid(old, newEmbedding, reid.PersonCentroidUpdateWeight)
 	_ = db.UpdatePersonCentroid(personID, detect.Float32ToBytes(merged))
 }
-
-const clusterThreshold = 0.62
 
 func clusterUnmatchedFace(db *storage.DB, newFaceID int64, embedding []float32, camera string) {
 	unmatched, err := db.ListUnmatchedFaces(200)
@@ -1668,8 +1666,7 @@ func clusterUnmatchedFace(db *storage.DB, newFaceID int64, embedding []float32, 
 		return
 	}
 
-	var bestFace *storage.Face
-	var bestSim float64
+	candidates := make([]reid.Candidate, 0, len(unmatched)-1)
 	for i := range unmatched {
 		if unmatched[i].ID == newFaceID {
 			continue
@@ -1678,14 +1675,21 @@ func clusterUnmatchedFace(db *storage.DB, newFaceID int64, embedding []float32, 
 		if len(other) == 0 {
 			continue
 		}
-		sim := detect.CosineSimilarity(embedding, other)
-		if sim > bestSim {
-			bestSim = sim
-			bestFace = &unmatched[i]
-		}
+		candidates = append(candidates, reid.Candidate{ID: unmatched[i].ID, Centroid: other})
 	}
 
-	if bestFace == nil || bestSim < clusterThreshold {
+	bestID, bestSim := reid.BestMatch(embedding, candidates, reid.FaceClusterThreshold)
+	if bestID == 0 {
+		return
+	}
+	var bestFace *storage.Face
+	for i := range unmatched {
+		if unmatched[i].ID == bestID {
+			bestFace = &unmatched[i]
+			break
+		}
+	}
+	if bestFace == nil {
 		return
 	}
 
@@ -1737,18 +1741,17 @@ func matchEventToKnownObjects(db *storage.DB, oe *detect.ObjectEmbedder, event c
 		if obj.ID != bestID {
 			continue
 		}
-		if _, err := db.SaveObjectSighting(storage.ObjectSighting{
+		if _, err := db.SaveObjectRecognition(storage.ObjectSighting{
 			EventID:    event.ID,
 			Camera:     event.CameraName,
 			ObjectID:   obj.ID,
+			ObjectName: obj.Name,
 			Similarity: sim,
 			Timestamp:  event.Timestamp,
 		}); err != nil {
 			slog.Error("failed to save object sighting", "error", err)
 			return nil
 		}
-		_ = db.UpdateEventObjectName(event.ID, obj.Name)
-		_ = db.UpdateEventSubLabel(event.ID, obj.Name)
 		slog.Info("object recognized", "object", obj.Name, "event", event.ID,
 			"similarity", fmt.Sprintf("%.3f", sim))
 		return []string{obj.Name}

@@ -178,6 +178,41 @@ func (d *DB) SaveObjectSighting(s ObjectSighting) (int64, error) {
 	return result.LastInsertId()
 }
 
+// SaveObjectRecognition atomically records a sighting and applies the known
+// object's name to the event. Recognition callers should use this instead of
+// issuing independent writes that can leave the sighting and event labels out
+// of sync after a partial failure.
+func (d *DB) SaveObjectRecognition(s ObjectSighting) (int64, error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.Exec(`
+		INSERT INTO object_sightings (event_id, camera, object_id, similarity, timestamp)
+		VALUES (?, ?, ?, ?, ?)`,
+		s.EventID, s.Camera, s.ObjectID, s.Similarity, utc(s.Timestamp),
+	)
+	if err != nil {
+		return 0, err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(
+		"UPDATE events SET object_name = ?, sub_label = ? WHERE id = ?",
+		s.ObjectName, s.ObjectName, s.EventID,
+	); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 func (d *DB) ListObjectSightings(objectID int64, limit int) ([]ObjectSighting, error) {
 	query := `SELECT s.id, s.event_id, s.camera, s.object_id, o.name, s.similarity, s.timestamp
 		FROM object_sightings s JOIN known_objects o ON s.object_id = o.id

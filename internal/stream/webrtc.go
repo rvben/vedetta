@@ -584,6 +584,7 @@ type webrtcConsumer struct {
 	cameraName string
 	mu         sync.RWMutex
 	peers      []*peerState
+	sourceAttachment
 }
 
 func (wc *webrtcConsumer) OnVideoRTP(pkt *rtp.Packet) {
@@ -960,6 +961,10 @@ func (sm *StreamManager) HandleOffer(cameraName, rtspURL string, offer webrtc.Se
 	// Get or create the consumer for this RTSP URL
 	consumer := sm.getOrCreateConsumer(cameraName, rtspURL)
 	consumer.addPeer(peer)
+	removePeer := func() {
+		consumer.removePeer(peer)
+		sm.removeConsumerIfEmpty(rtspURL, consumer)
+	}
 
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		slog.Info("WebRTC ICE state changed", "camera", cameraName, "state", state.String())
@@ -967,37 +972,26 @@ func (sm *StreamManager) HandleOffer(cameraName, rtspURL string, offer webrtc.Se
 			if peer.statsCancel != nil {
 				peer.statsCancel()
 			}
-			remaining := consumer.removePeer(peer)
+			removePeer()
 			_ = pc.Close()
-
-			// Remove consumer from Hub if no peers remain
-			if remaining == 0 {
-				sm.mu.Lock()
-				source := sm.hub.Get(rtspURL)
-				if source != nil {
-					source.RemoveConsumer(consumer)
-				}
-				delete(sm.consumers, rtspURL)
-				sm.mu.Unlock()
-			}
 		}
 	})
 
 	if err := pc.SetRemoteDescription(offer); err != nil {
-		consumer.removePeer(peer)
+		removePeer()
 		_ = pc.Close()
 		return nil, fmt.Errorf("set remote description: %w", err)
 	}
 
 	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
-		consumer.removePeer(peer)
+		removePeer()
 		_ = pc.Close()
 		return nil, fmt.Errorf("create answer: %w", err)
 	}
 
 	if err := pc.SetLocalDescription(answer); err != nil {
-		consumer.removePeer(peer)
+		removePeer()
 		_ = pc.Close()
 		return nil, fmt.Errorf("set local description: %w", err)
 	}
@@ -1023,22 +1017,45 @@ func (sm *StreamManager) getOrCreateConsumer(cameraName, rtspURL string) *webrtc
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	source := sm.hub.GetOrCreate(rtspURL)
 	if c, ok := sm.consumers[rtspURL]; ok {
-		// Fill cameraName if the consumer was created without one (belt-and-suspenders).
-		if c.cameraName == "" {
-			c.cameraName = cameraName
+		if c.isAttachedTo(source) {
+			// Fill cameraName if the consumer was created without one (belt-and-suspenders).
+			if c.cameraName == "" {
+				c.cameraName = cameraName
+			}
+			return c
 		}
-		return c
+		c.detachFromSource(c)
+		delete(sm.consumers, rtspURL)
 	}
 
 	c := &webrtcConsumer{cameraName: cameraName}
 	sm.consumers[rtspURL] = c
 
-	// Register with the Hub's source
-	source := sm.hub.GetOrCreate(rtspURL)
-	source.AddConsumer(c)
+	c.attachToSource(source, c)
 
 	return c
+}
+
+func (sm *StreamManager) removeConsumerIfEmpty(rtspURL string, expected *webrtcConsumer) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	current, ok := sm.consumers[rtspURL]
+	if !ok || current != expected {
+		return
+	}
+
+	expected.mu.RLock()
+	count := len(expected.peers)
+	expected.mu.RUnlock()
+	if count > 0 {
+		return
+	}
+
+	expected.detachFromSource(expected)
+	delete(sm.consumers, rtspURL)
 }
 
 // ClientCounts returns the number of connected WebRTC peers per camera name.
@@ -1059,7 +1076,7 @@ func (sm *StreamManager) Close() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	for url, consumer := range sm.consumers {
+	for _, consumer := range sm.consumers {
 		consumer.mu.Lock()
 		for _, peer := range consumer.peers {
 			_ = peer.pc.Close()
@@ -1067,11 +1084,7 @@ func (sm *StreamManager) Close() {
 		consumer.peers = nil
 		consumer.mu.Unlock()
 
-		if sm.hub != nil {
-			if source := sm.hub.Get(url); source != nil {
-				source.RemoveConsumer(consumer)
-			}
-		}
+		consumer.detachFromSource(consumer)
 	}
 	sm.consumers = make(map[string]*webrtcConsumer)
 }

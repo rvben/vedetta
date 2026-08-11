@@ -62,11 +62,7 @@ type hlsSegment struct {
 type hlsConsumer struct {
 	mu sync.Mutex
 
-	// source is the RTSP source this consumer is attached to. Recorded so a
-	// stop/start that destroys and recreates the source (the only such path,
-	// via hub.Remove in StopCamera) is detectable by pointer comparison, and so
-	// detach works via this ref even after hub.Remove has unmapped the URL.
-	source *rtsp.Source
+	sourceAttachment
 
 	videoSPS    []byte
 	videoPPS    []byte
@@ -637,9 +633,7 @@ func (m *HLSManager) reapIdle(now time.Time) {
 		if !c.idle(now) {
 			continue
 		}
-		if c.source != nil {
-			c.source.RemoveConsumer(c)
-		}
+		c.detachFromSource(c)
 		delete(m.consumers, url)
 	}
 }
@@ -656,19 +650,17 @@ func (m *HLSManager) getOrCreate(rtspURL string) *hlsConsumer {
 func (m *HLSManager) createOrCurrentLocked(rtspURL string) *hlsConsumer {
 	source := m.hub.GetOrCreate(rtspURL)
 	if c, ok := m.consumers[rtspURL]; ok {
-		if c.source == source {
+		if c.isAttachedTo(source) {
 			c.touch()
 			return c
 		}
 		// Stale: the source was destroyed and recreated by a camera stop/start.
-		if c.source != nil {
-			c.source.RemoveConsumer(c)
-		}
+		c.detachFromSource(c)
 		delete(m.consumers, rtspURL)
 	}
 	video, audio := source.VideoTrack(), source.AudioTrack()
 	c := newHLSConsumer(video, audio)
-	c.source = source
+	c.attachToSource(source, c)
 	c.label = rtsp.SanitizeURL(rtspURL)
 	audioCodec, audioRate := "none", 0
 	if audio != nil {
@@ -678,7 +670,6 @@ func (m *HLSManager) createOrCurrentLocked(rtspURL string) *hlsConsumer {
 		"hasVideoTrack", video != nil, "hasAudioTrack", audio != nil,
 		"audioCodec", audioCodec, "audioRate", audioRate, "hlsAudioUsable", c.hasAudio)
 	m.consumers[rtspURL] = c
-	source.AddConsumer(c)
 	return c
 }
 
@@ -708,7 +699,7 @@ func (m *HLSManager) SetWarmURLs(desired []string) {
 	// Add new, or refresh those whose source was recreated.
 	for u := range want {
 		if cancel, warm := m.warm[u]; warm {
-			if c, ok := m.consumers[u]; ok && c.source != m.hub.Get(u) {
+			if c, ok := m.consumers[u]; ok && !c.isAttachedTo(m.hub.Get(u)) {
 				cancel()
 				m.startWarmLocked(u)
 			}
@@ -725,9 +716,7 @@ func (m *HLSManager) SetWarmURLs(desired []string) {
 		cancel()
 		delete(m.warm, u)
 		if c, ok := m.consumers[u]; ok {
-			if c.source != nil {
-				c.source.RemoveConsumer(c)
-			}
+			c.detachFromSource(c)
 			delete(m.consumers, u)
 		}
 	}
@@ -770,9 +759,7 @@ func (m *HLSManager) getOrCreateWarm(url string) {
 	// since warm consumers are exempt from idle reaping it would stay poisoned
 	// forever. Drop it so createOrCurrentLocked rebuilds it with a decoder.
 	if c, ok := m.consumers[url]; ok && c.h264Decoder == nil {
-		if c.source != nil {
-			c.source.RemoveConsumer(c)
-		}
+		c.detachFromSource(c)
 		delete(m.consumers, url)
 	}
 	m.createOrCurrentLocked(url)
@@ -812,9 +799,7 @@ func (m *HLSManager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for url, c := range m.consumers {
-		if c.source != nil {
-			c.source.RemoveConsumer(c)
-		}
+		c.detachFromSource(c)
 		delete(m.consumers, url)
 	}
 	for u, cancel := range m.warm {

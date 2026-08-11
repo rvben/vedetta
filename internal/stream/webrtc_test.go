@@ -960,6 +960,91 @@ func TestNewStreamManager(t *testing.T) {
 	sm.Close()
 }
 
+func TestStreamManagerReattachesAfterSourceReplacement(t *testing.T) {
+	hub := rtsp.NewHub(context.Background())
+	defer hub.Close()
+	const url = "rtsp://192.0.2.61:554/sub"
+
+	src1 := rtsp.NewSource(url)
+	src1.SetVideoTrack(h264Params())
+	hub.SetSourceForTest(url, src1)
+
+	sm := NewStreamManager(hub, nil)
+	defer sm.Close()
+	c1 := sm.getOrCreateConsumer("front", url)
+	if src1.ConsumerCount() != 1 {
+		t.Fatalf("first source consumer count = %d, want 1", src1.ConsumerCount())
+	}
+
+	hub.Remove(url)
+	src2 := rtsp.NewSource(url)
+	src2.SetVideoTrack(h264Params())
+	hub.SetSourceForTest(url, src2)
+
+	c2 := sm.getOrCreateConsumer("front", url)
+	if c2 == c1 {
+		t.Fatal("new viewer reused the consumer attached to the removed source")
+	}
+	if src1.ConsumerCount() != 0 {
+		t.Errorf("removed source consumer count = %d, want 0", src1.ConsumerCount())
+	}
+	if src2.ConsumerCount() != 1 {
+		t.Errorf("replacement source consumer count = %d, want 1", src2.ConsumerCount())
+	}
+}
+
+func TestStreamManagerCloseDetachesFromOriginalSource(t *testing.T) {
+	hub := rtsp.NewHub(context.Background())
+	defer hub.Close()
+	const url = "rtsp://192.0.2.63:554/sub"
+
+	src1 := rtsp.NewSource(url)
+	src1.SetVideoTrack(h264Params())
+	hub.SetSourceForTest(url, src1)
+	sm := NewStreamManager(hub, nil)
+	sm.getOrCreateConsumer("front", url)
+
+	hub.Remove(url)
+	src2 := rtsp.NewSource(url)
+	src2.SetVideoTrack(h264Params())
+	hub.SetSourceForTest(url, src2)
+
+	sm.Close()
+	if src1.ConsumerCount() != 0 {
+		t.Errorf("original source consumer count = %d, want 0", src1.ConsumerCount())
+	}
+	if src2.ConsumerCount() != 0 {
+		t.Errorf("replacement source consumer count = %d, want 0", src2.ConsumerCount())
+	}
+}
+
+func TestStreamManagerStaleCleanupDoesNotRemoveReplacement(t *testing.T) {
+	hub := rtsp.NewHub(context.Background())
+	defer hub.Close()
+	const url = "rtsp://192.0.2.65:554/sub"
+
+	src1 := rtsp.NewSource(url)
+	src1.SetVideoTrack(h264Params())
+	hub.SetSourceForTest(url, src1)
+	sm := NewStreamManager(hub, nil)
+	defer sm.Close()
+	stale := sm.getOrCreateConsumer("front", url)
+
+	hub.Remove(url)
+	src2 := rtsp.NewSource(url)
+	src2.SetVideoTrack(h264Params())
+	hub.SetSourceForTest(url, src2)
+	replacement := sm.getOrCreateConsumer("front", url)
+
+	sm.removeConsumerIfEmpty(url, stale)
+	if got := sm.getOrCreateConsumer("front", url); got != replacement {
+		t.Fatal("stale cleanup removed the replacement consumer")
+	}
+	if src2.ConsumerCount() != 1 {
+		t.Errorf("replacement source consumer count = %d, want 1", src2.ConsumerCount())
+	}
+}
+
 // TestRewriteAnswerProfileLevelIDReplacesLevel verifies the typical case where
 // Pion echoes Chrome's offered level (1f = 3.1) in the answer while the camera
 // emits a higher level (29 = 4.1). The rewrite must substitute the camera's
@@ -1187,6 +1272,9 @@ func TestHandleOffer_ErrorPathCancelsStatsLogger(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if countStatsLoggerGoroutines() == 0 {
+			if src.ConsumerCount() != 0 {
+				t.Fatalf("failed offer left %d source consumer(s), want 0", src.ConsumerCount())
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

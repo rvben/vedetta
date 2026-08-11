@@ -165,6 +165,7 @@ func (c *mseClient) close() {
 type mseConsumer struct {
 	mu      sync.Mutex
 	clients []*mseClient
+	sourceAttachment
 
 	// cameraName labels diagnostic/timer logs so a jittery stream can be
 	// attributed to a specific camera rather than the generic "mse".
@@ -675,14 +676,18 @@ func (m *MSEManager) getOrCreateConsumer(cameraName, rtspURL string) *mseConsume
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	source := m.hub.GetOrCreate(rtspURL)
 	if c, ok := m.consumers[rtspURL]; ok {
-		return c
+		if c.isAttachedTo(source) {
+			return c
+		}
+		c.detachFromSource(c)
+		delete(m.consumers, rtspURL)
 	}
 
-	source := m.hub.GetOrCreate(rtspURL)
 	mc := newMSEConsumer(cameraName, source.VideoTrack(), source.AudioTrack())
 	m.consumers[rtspURL] = mc
-	source.AddConsumer(mc)
+	mc.attachToSource(source, mc)
 
 	return mc
 }
@@ -707,10 +712,7 @@ func (m *MSEManager) removeConsumerIfEmpty(rtspURL string, expected *mseConsumer
 		return
 	}
 
-	source := m.hub.Get(rtspURL)
-	if source != nil {
-		source.RemoveConsumer(expected)
-	}
+	expected.detachFromSource(expected)
 	delete(m.consumers, rtspURL)
 }
 
@@ -779,7 +781,7 @@ func (m *MSEManager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for url, consumer := range m.consumers {
+	for _, consumer := range m.consumers {
 		consumer.mu.Lock()
 		for _, c := range consumer.clients {
 			c.close()
@@ -787,11 +789,7 @@ func (m *MSEManager) Close() {
 		consumer.clients = nil
 		consumer.mu.Unlock()
 
-		if m.hub != nil {
-			if source := m.hub.Get(url); source != nil {
-				source.RemoveConsumer(consumer)
-			}
-		}
+		consumer.detachFromSource(consumer)
 	}
 	m.consumers = make(map[string]*mseConsumer)
 }

@@ -590,6 +590,10 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 		if cam.RecordURL != "" {
 			sub.hub.RegisterTransport(cam.RecordURL, cam.RTSPTransport)
 		}
+		if cam.OnDemand {
+			sub.hub.RegisterOnDemand(cam.URL)
+			sub.hub.RegisterOnDemand(cam.RecordURL)
+		}
 	}
 
 	snapshotFallbackRoot := snapshot.DefaultFallbackRoot()

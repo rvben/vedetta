@@ -8,6 +8,14 @@ cameras:
     # rtsp_transport: tcp
     # Optional per-camera override for retain_days. Unset = use recording.retain_days.
     # retain_days: 3
+    # Battery cameras (eufy behind a HomeBase, other PIR-triggered models) publish
+    # their RTSP path only while an event is in progress and answer 404 the rest of
+    # the day. Set on_demand so that absence is treated as the camera's resting
+    # state rather than a fault: the retry interval stays short and constant so a
+    # wake window is caught, and sleep cycles are not logged as errors or counted
+    # as reconnects. Leave it off for mains-powered cameras, whose stream really
+    # should be there and whose disappearance is worth backing off from.
+    # on_demand: false
     # doorbell:
     #   enabled: false
     #   webhook_url: ""     # called on every press (optional)

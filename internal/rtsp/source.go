@@ -43,6 +43,14 @@ type Source struct {
 	// distinguishes a flapping camera from one that is steadily offline.
 	reconnects atomic.Int64
 
+	// onDemand marks a stream that its camera publishes only part of the time.
+	// Battery cameras behind a bridge (eufy HomeBase, PIR-triggered models)
+	// register the RTSP path only while an event is in progress and answer 404
+	// the rest of the day, so disconnection is the normal resting state rather
+	// than a fault. It changes the retry policy and the log level, not the
+	// connection itself. See Connect.
+	onDemand bool
+
 	// reconnectSinks receive every reconnect increment in addition to this
 	// source's own counter. A Source is destroyed when its camera stops
 	// (hub.Remove) and recreated on restart, so a per-Source counter resets on
@@ -95,7 +103,20 @@ func NewSource(url string) *Source {
 // NewSourceWithTransport creates a new RTSP source with an explicit lower
 // transport ("tcp", "udp", or "auto"; empty defaults to tcp).
 func NewSourceWithTransport(url, transport string) *Source {
-	return &Source{url: url, transport: transport, paramsReady: make(chan struct{})}
+	return newSource(url, transport, false)
+}
+
+// newSource builds a Source. On-demand is deliberately not exposed as its own
+// constructor: the Hub shares one Source per URL, so the policy has to come from
+// its per-URL registry (Hub.RegisterOnDemand) rather than from whichever
+// subsystem happens to open the stream first.
+func newSource(url, transport string, onDemand bool) *Source {
+	return &Source{
+		url:         url,
+		transport:   transport,
+		onDemand:    onDemand,
+		paramsReady: make(chan struct{}),
+	}
 }
 
 // protocolFor maps a configured transport string to a gortsplib protocol.
@@ -222,6 +243,19 @@ func (s *Source) WaitForVideoParams(ctx context.Context) bool {
 	}
 }
 
+// onDemandRetry is the constant interval between connection attempts for an
+// on-demand source. It must stay well under the shortest wake window a camera
+// offers, because a missed window is a missed event. Observed on an eufy
+// HomeBase 3: the RTSP path stays published for around two minutes while a
+// client is consuming it, but as little as twenty seconds when nothing connects.
+// The default exponential backoff climbs toward a two minute cap, so it would
+// catch the short windows only by luck.
+//
+// Retrying this often is free. The bridge answers the request itself while the
+// camera stays asleep and never sees it, so there is no battery cost to weigh
+// against responsiveness and therefore no reason to back off.
+const onDemandRetry = 3 * time.Second
+
 // Connect starts reading from the RTSP stream, reconnecting on failure.
 // Blocks until ctx is cancelled.
 func (s *Source) Connect(ctx context.Context) {
@@ -245,13 +279,28 @@ func (s *Source) Connect(ctx context.Context) {
 			b = time.Second
 		}
 
-		if err != nil {
+		wait := b
+		if s.onDemand {
+			wait = onDemandRetry
+		}
+
+		switch {
+		case s.onDemand:
+			// The stream being gone is this camera's resting state, so neither
+			// outcome is an error: logging it as one buries real faults under
+			// hundreds of lines a day and leaves the camera permanently red.
+			slog.Debug("on-demand RTSP stream unavailable, retrying",
+				"url", SanitizeURL(s.url),
+				"error", err,
+				"retry_in", wait,
+			)
+		case err != nil:
 			slog.Error("RTSP connection error, reconnecting",
 				"url", SanitizeURL(s.url),
 				"error", err,
-				"retry_in", b,
+				"retry_in", wait,
 			)
-		} else {
+		default:
 			slog.Info("RTSP connection closed, reconnecting", "url", SanitizeURL(s.url))
 		}
 
@@ -262,7 +311,11 @@ func (s *Source) Connect(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff.Jitter(b, rand.Float64())):
+		case <-time.After(backoff.Jitter(wait, rand.Float64())):
+		}
+
+		if s.onDemand {
+			continue
 		}
 
 		b = time.Duration(float64(b) * 1.5)
@@ -278,7 +331,11 @@ func (s *Source) notifyDisconnect() {
 	// connects (bad URL, offline, rejected credentials) loops through
 	// notifyDisconnect on every failed attempt; counting those would make a
 	// steadily-offline camera indistinguishable from a flapping one.
-	wasConnected := s.connected
+	// An on-demand source loses an established connection every time its camera
+	// goes back to sleep, which is once per event rather than a fault. Counting
+	// those would make the reconnect metric track event volume and permanently
+	// flag the camera as flapping.
+	wasConnected := s.connected && !s.onDemand
 	s.connected = false
 	consumers := make([]Consumer, len(s.consumers))
 	copy(consumers, s.consumers)

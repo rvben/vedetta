@@ -62,6 +62,12 @@ type Hub struct {
 	// creates the Source consults this registry. Empty/"tcp" URLs are absent
 	// and fall back to the default transport.
 	transports map[string]string
+
+	// onDemand marks URLs whose stream is published only while the camera is
+	// awake. Registered from config for the same reason as transports: the Hub
+	// shares one Source per URL and any subsystem may open it first, so the
+	// policy cannot live on whichever caller happens to win the race.
+	onDemand map[string]bool
 }
 
 type managedSource struct {
@@ -76,9 +82,22 @@ func NewHub(ctx context.Context) *Hub {
 		sources:        make(map[string]*managedSource),
 		reconnectSinks: make(map[string][]*atomic.Int64),
 		transports:     make(map[string]string),
+		onDemand:       make(map[string]bool),
 		ctx:            ctx,
 		cancel:         cancel,
 	}
+}
+
+// RegisterOnDemand marks a URL as published only part of the time, so the
+// Source created for it later retries on a short constant interval and treats
+// absence as normal. Call before any consumer opens the stream.
+func (h *Hub) RegisterOnDemand(url string) {
+	if url == "" {
+		return
+	}
+	h.mu.Lock()
+	h.onDemand[url] = true
+	h.mu.Unlock()
 }
 
 // RegisterTransport records the lower transport ("udp" or "auto") to use for a
@@ -120,7 +139,7 @@ func (h *Hub) GetOrCreateWithTransport(url, transport string) *Source {
 		transport = h.transports[url]
 	}
 
-	src := NewSourceWithTransport(url, transport)
+	src := newSource(url, transport, h.onDemand[url])
 	srcCtx, srcCancel := context.WithCancel(h.ctx)
 	for _, sink := range h.reconnectSinks[url] {
 		src.AddReconnectSink(sink)

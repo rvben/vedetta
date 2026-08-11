@@ -199,6 +199,7 @@ type CameraConfig struct {
 	Doorbell      DoorbellConfig            `yaml:"doorbell"`
 	TieredStorage CameraTieredStorageConfig `yaml:"tiered_storage"`
 	RetainDays    *int                      `yaml:"retain_days"` // Per-camera override for recording.retain_days; nil means use global value.
+	OnDemand      bool                      `yaml:"on_demand"`   // Stream is published only part of the time (battery/PIR camera); absence is normal, not a fault.
 }
 
 type DoorbellConfig struct {

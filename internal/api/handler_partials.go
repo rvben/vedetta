@@ -41,6 +41,7 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
 		Online      bool
 		HasMotion   bool
 		Stopped     bool
+		Sleeping    bool
 		LastSeen    string // RFC3339, empty when no frame has ever been seen
 	}
 
@@ -56,6 +57,7 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
 			Online:      st.Online,
 			HasMotion:   st.HasMotion,
 			Stopped:     st.Stopped,
+			Sleeping:    st.Sleeping,
 			LastSeen:    lastSeen,
 		})
 	}
@@ -65,8 +67,7 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
     <img src="/api/cameras/{{.Name}}/snapshot" alt="{{.DisplayName}} camera" loading="lazy">
     <span class="cam-last-seen" data-ts="{{.LastSeen}}"></span>
     <div class="cam-live-badge">
-      {{if .Stopped}}<span class="cam-live-dot stopped"></span>STOPPED{{else}}<span class="cam-live-dot {{if .Online}}{{else}}offline{{end}}"></span>
-      {{if .Online}}LIVE{{else}}OFFLINE{{end}}{{end}}
+      {{if .Stopped}}<span class="cam-live-dot stopped"></span>STOPPED{{else if .Online}}<span class="cam-live-dot"></span>LIVE{{else if .Sleeping}}<span class="cam-live-dot sleeping"></span>SLEEPING{{else}}<span class="cam-live-dot offline"></span>OFFLINE{{end}}
     </div>
     <button class="cam-toggle-btn" data-action-click="event.stopPropagation(); toggleCamera('{{.Name}}', {{.Stopped}})" title="{{if .Stopped}}Start camera{{else}}Stop camera{{end}}" aria-label="{{if .Stopped}}Start{{else}}Stop{{end}} {{.DisplayName}}">
       {{if .Stopped}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><polygon points="5 3 19 12 5 21 5 3"/></svg>{{else}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>{{end}}

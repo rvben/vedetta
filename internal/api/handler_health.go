@@ -38,9 +38,13 @@ func (s *Server) GetHealth(w http.ResponseWriter, _ *http.Request) {
 	// Camera check — in-memory, never blocks
 	statuses := s.cameraStatuses()
 	onlineCount := 0
+	sleepingCount := 0
 	for _, st := range statuses {
 		if st.Online {
 			onlineCount++
+		}
+		if st.Sleeping {
+			sleepingCount++
 		}
 	}
 
@@ -99,8 +103,9 @@ func (s *Server) GetHealth(w http.ResponseWriter, _ *http.Request) {
 			"mqtt":      mqttStatus,
 			"detection": detectionCheck,
 			"cameras": map[string]any{
-				"total":  len(statuses),
-				"online": onlineCount,
+				"total":    len(statuses),
+				"online":   onlineCount,
+				"sleeping": sleepingCount,
 			},
 			"storage": map[string]any{
 				"used_bytes":       storageStats.TotalBytes,
@@ -154,14 +159,19 @@ func (s *Server) GetHealthReady(w http.ResponseWriter, _ *http.Request) {
 
 	cameraStatuses := s.cameraStatuses()
 	degraded := 0
+	sleeping := 0
 	for _, st := range cameraStatuses {
 		if st.Degraded {
 			degraded++
+		}
+		if st.Sleeping {
+			sleeping++
 		}
 	}
 	checks["cameras"] = map[string]any{
 		"total":    len(cameraStatuses),
 		"degraded": degraded,
+		"sleeping": sleeping,
 	}
 	if degraded > 0 {
 		status = "degraded"
@@ -197,12 +207,16 @@ func (s *Server) GetMetrics(w http.ResponseWriter, _ *http.Request) {
 	cameraStatuses := s.cameraStatuses()
 	online := 0
 	degraded := 0
+	sleeping := 0
 	for _, st := range cameraStatuses {
 		if st.Online {
 			online++
 		}
 		if st.Degraded {
 			degraded++
+		}
+		if st.Sleeping {
+			sleeping++
 		}
 	}
 
@@ -220,6 +234,7 @@ func (s *Server) GetMetrics(w http.ResponseWriter, _ *http.Request) {
 	writePromScalar(&b, "gauge", "vedetta_ready", "Whether all subsystems have finished initializing.", int64(boolMetric(s.ready.Load())))
 	writePromScalar(&b, "gauge", "vedetta_cameras_total", "Total number of configured cameras.", int64(len(cameraStatuses)))
 	writePromScalar(&b, "gauge", "vedetta_cameras_online", "Number of cameras whose RTSP source is currently connected.", int64(online))
+	writePromScalar(&b, "gauge", "vedetta_cameras_sleeping", "Number of on-demand cameras resting between events. Subtract from total-online to count genuine outages.", int64(sleeping))
 	writePromScalar(&b, "gauge", "vedetta_cameras_degraded", "Number of cameras in a degraded state.", int64(degraded))
 	// vedetta_events and vedetta_segments are gauges: they decrease as retention prunes rows.
 	writePromScalar(&b, "gauge", "vedetta_events", "Current number of event rows (decreases as retention prunes).", int64(eventCount))
@@ -233,6 +248,14 @@ func (s *Server) GetMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(&b, "# HELP vedetta_camera_online Whether the camera's RTSP source is connected (1) or not (0).\n# TYPE vedetta_camera_online gauge\n")
 	for _, st := range cameraStatuses {
 		fmt.Fprintf(&b, "vedetta_camera_online{camera=%q} %d\n", promLabel(st.Name), boolMetric(st.Online))
+	}
+
+	// Emitted for every camera, not just on-demand ones, so an alert can be
+	// written as "online == 0 and sleeping == 0" without the rule silently
+	// matching nothing on a deployment that has no battery cameras.
+	fmt.Fprintf(&b, "# HELP vedetta_camera_sleeping Whether the camera is an on-demand camera resting between events (1) or not (0). A camera with online=0 and sleeping=0 is a genuine outage.\n# TYPE vedetta_camera_sleeping gauge\n")
+	for _, st := range cameraStatuses {
+		fmt.Fprintf(&b, "vedetta_camera_sleeping{camera=%q} %d\n", promLabel(st.Name), boolMetric(st.Sleeping))
 	}
 
 	fmt.Fprintf(&b, "# HELP vedetta_camera_degraded Whether the camera is in a degraded state (1) or not (0).\n# TYPE vedetta_camera_degraded gauge\n")
@@ -349,9 +372,13 @@ func promLabel(value string) string {
 func (s *Server) GetSystem(w http.ResponseWriter, _ *http.Request) {
 	statuses := s.cameraStatuses()
 	onlineCount := 0
+	sleepingCount := 0
 	for _, st := range statuses {
 		if st.Online {
 			onlineCount++
+		}
+		if st.Sleeping {
+			sleepingCount++
 		}
 	}
 
@@ -369,6 +396,7 @@ func (s *Server) GetSystem(w http.ResponseWriter, _ *http.Request) {
 		"decoder":       decoder,
 		"cameras":       len(statuses),
 		"online":        onlineCount,
+		"sleeping":      sleepingCount,
 		"storage_bytes": stats.TotalBytes,
 		"storage":       formatBytes(stats.TotalBytes),
 		"codecs": map[string]any{

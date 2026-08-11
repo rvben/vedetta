@@ -1,6 +1,7 @@
 package camera
 
 import (
+	"context"
 	"image"
 	"sync"
 	"time"
@@ -60,6 +61,15 @@ func (c *Camera) SetTestOnline(online bool) {
 	c.testOnlineOverride = &v
 }
 
+// SetTestOnDemand marks the camera as an on-demand (battery) camera, so
+// Status reports Sleeping while no frames are arriving. Intended for handler
+// tests covering the sleeping state.
+func (c *Camera) SetTestOnDemand(onDemand bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.config.OnDemand = onDemand
+}
+
 // SetTestLastFrameTime primes lastFrameTime so handlers exercising
 // Last-Modified or freshness logic have a deterministic timestamp.
 func (c *Camera) SetTestLastFrameTime(ts time.Time) {
@@ -73,14 +83,21 @@ func (c *Camera) SetTestLastFrameTime(ts time.Time) {
 // camera lookup and doorbell submission work correctly.
 func NewManagerForTest() *Manager {
 	return &Manager{
-		events:     make(chan Event, 8),
-		faceEvents: make(chan FaceEvent, 8),
-		cameras:    make(map[string]*Camera),
+		events:      make(chan Event, 8),
+		faceEvents:  make(chan FaceEvent, 8),
+		cameras:     make(map[string]*Camera),
+		cancelFuncs: make(map[string]context.CancelFunc),
 	}
 }
 
 // RegisterForTest installs a pre-built Camera into the manager without
 // starting its RTSP/detect goroutines. Intended for handler tests.
+//
+// The camera is registered as running. The manager derives Stopped from the
+// presence of a cancel func, so without one every test camera would report as
+// administratively stopped - which is the opposite of what a handler test
+// means by "a registered camera". The func itself is a no-op because there are
+// no goroutines to cancel.
 func (m *Manager) RegisterForTest(cam *Camera) {
 	if cam == nil || m == nil {
 		return
@@ -90,8 +107,12 @@ func (m *Manager) RegisterForTest(cam *Camera) {
 	if m.cameras == nil {
 		m.cameras = map[string]*Camera{}
 	}
+	if m.cancelFuncs == nil {
+		m.cancelFuncs = map[string]context.CancelFunc{}
+	}
 	if _, exists := m.cameras[cam.config.Name]; !exists {
 		m.order = append(m.order, cam.config.Name)
 	}
 	m.cameras[cam.config.Name] = cam
+	m.cancelFuncs[cam.config.Name] = func() {}
 }

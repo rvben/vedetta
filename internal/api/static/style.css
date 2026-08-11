@@ -579,19 +579,35 @@ input, select { font-family: inherit; }
   animation: none;
 }
 
-/* Dim offline camera cards — show last snapshot grayed out */
-.cam-card:has(.cam-live-dot.offline) .cam-preview img {
+/* An on-demand battery camera resting between events. Blue rather than red
+   because this is normal, and still breathing (slower than live) because the
+   camera is dormant rather than dead: it wakes itself on motion. */
+.cam-live-dot.sleeping {
+  background: var(--blue);
+  animation: pulse-dot 4s ease-in-out infinite;
+}
+
+/* Dim cards that are not showing live video, so the last snapshot reads as a
+   still rather than as the current view. Applies to sleeping tiles too: the
+   frame there is just as old as an offline one's. */
+.cam-card:has(.cam-live-dot.offline) .cam-preview img,
+.cam-card:has(.cam-live-dot.sleeping) .cam-preview img {
   opacity: 0.4;
   filter: grayscale(0.6);
 }
 
-.cam-card:has(.cam-live-dot.offline) {
-  opacity: 0.75;
+/* !important is load-bearing: every card gets the .fade-in animation on htmx
+   swap, and its fill-mode holds the final opacity:1 keyframe forever. A CSS
+   animation outranks a normal declaration, so without !important this rule
+   never applies to a single card. */
+.cam-card:has(.cam-live-dot.offline),
+.cam-card:has(.cam-live-dot.sleeping) {
+  opacity: 0.75 !important;
 }
 
 /* "Last seen" caption, centered over the dimmed last-known frame. Hidden until
-   JS fills the text, and only shown for offline tiles — a live tile and an
-   offline tile with no cached frame (placeholder glyph) both stay empty. */
+   JS fills the text, and only shown for tiles that are not live: a live tile,
+   and a down tile with no cached frame (placeholder glyph), both stay empty. */
 .cam-last-seen {
   display: none;
   position: absolute;
@@ -610,7 +626,8 @@ input, select { font-family: inherit; }
   z-index: 2;
 }
 
-.cam-card:has(.cam-live-dot.offline) .cam-last-seen:not(:empty) {
+.cam-card:has(.cam-live-dot.offline) .cam-last-seen:not(:empty),
+.cam-card:has(.cam-live-dot.sleeping) .cam-last-seen:not(:empty) {
   display: block;
 }
 

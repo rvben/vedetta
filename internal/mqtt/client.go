@@ -34,7 +34,7 @@ func guardedDialBroker(uri *url.URL, o pahomqtt.ClientOptions) (net.Conn, error)
 type Publisher interface {
 	PublishEvent(event camera.Event, matchedObjects []string) error
 	PublishPresence(pe camera.PresenceEvent, objectName string) error
-	PublishCameraStatus(cameraName string, online bool, stopped bool)
+	PublishCameraStatus(cameraName string, online, stopped, sleeping bool)
 	PublishDiscovery(cameraNames []string)
 	PublishPresenceDiscovery(zones []ZoneInfo)
 	PublishObjectCount(cameraName, label string, count int) error
@@ -247,12 +247,21 @@ func (c *Client) PublishObjectSighting(objectName string, event camera.Event) {
 	}
 }
 
-func (c *Client) PublishCameraStatus(cameraName string, online bool, stopped bool) {
+// PublishCameraStatus publishes the connectivity binary sensor's state. A
+// sleeping on-demand camera reports "sleeping" rather than "OFF": the sensor is
+// a connectivity class, so OFF reads in Home Assistant as "Disconnected" and
+// turns a battery camera's normal resting state into a fault. Like the existing
+// "stopped" payload this maps to neither payload_on nor payload_off, which
+// leaves the entity unknown instead of asserting something untrue.
+func (c *Client) PublishCameraStatus(cameraName string, online, stopped, sleeping bool) {
 	status := "OFF"
-	if stopped {
+	switch {
+	case stopped:
 		status = "stopped"
-	} else if online {
+	case online:
 		status = "ON"
+	case sleeping:
+		status = "sleeping"
 	}
 	topic := fmt.Sprintf("%s/camera/%s/status", c.topic, cameraName)
 	token := c.client.Publish(topic, 1, true, status)

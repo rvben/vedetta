@@ -753,19 +753,15 @@ func displayName(name string) string {
 	return strings.Join(parts, " ")
 }
 
+// cameraStatuses is the single source of camera state for every HTTP surface.
+// It delegates to the manager rather than looping over cameras itself, because
+// Camera.Status cannot know whether the camera is administratively stopped -
+// only the manager holds the running set, and it fills Stopped in.
 func (s *Server) cameraStatuses() []camera.CameraStatus {
 	if s.cameras == nil {
 		return nil
 	}
-	ordered := s.cameras.ListCameras()
-	statuses := make([]camera.CameraStatus, 0, len(ordered))
-	for _, name := range ordered {
-		cam := s.cameras.GetCamera(name)
-		if cam != nil {
-			statuses = append(statuses, cam.Status())
-		}
-	}
-	return statuses
+	return s.cameras.CameraStatuses()
 }
 
 // staticFileHandler wraps a standard file server with two behaviours:

@@ -194,17 +194,24 @@ func TestClientPublishPresence_PropagatesError(t *testing.T) {
 
 func TestClientPublishCameraStatus_States(t *testing.T) {
 	cases := []struct {
-		online, stopped bool
-		want            string
+		online, stopped, sleeping bool
+		want                      string
 	}{
-		{true, false, "ON"},
-		{false, false, "OFF"},
-		{true, true, "stopped"},
-		{false, true, "stopped"},
+		{true, false, false, "ON"},
+		{false, false, false, "OFF"},
+		{true, true, false, "stopped"},
+		{false, true, false, "stopped"},
+		// An on-demand camera between events reports its own state rather than
+		// the OFF that Home Assistant renders as "Disconnected".
+		{false, false, true, "sleeping"},
+		// Precedence: an on-demand camera mid-event is genuinely connected, and
+		// an operator stopping a camera outranks any of this.
+		{true, false, true, "ON"},
+		{false, true, true, "stopped"},
 	}
 	for _, tc := range cases {
 		c, f := newTestClient()
-		c.PublishCameraStatus("front", tc.online, tc.stopped)
+		c.PublishCameraStatus("front", tc.online, tc.stopped, tc.sleeping)
 		got := requireOnePublish(t, f)
 		if got.topic != "vedetta/camera/front/status" {
 			t.Errorf("topic = %q", got.topic)
@@ -213,7 +220,8 @@ func TestClientPublishCameraStatus_States(t *testing.T) {
 			t.Error("camera status must be retained")
 		}
 		if string(got.payload) != tc.want {
-			t.Errorf("online=%v stopped=%v: payload = %q, want %q", tc.online, tc.stopped, got.payload, tc.want)
+			t.Errorf("online=%v stopped=%v sleeping=%v: payload = %q, want %q",
+				tc.online, tc.stopped, tc.sleeping, got.payload, tc.want)
 		}
 	}
 }

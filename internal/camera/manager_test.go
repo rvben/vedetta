@@ -99,3 +99,40 @@ func TestIsStopped(t *testing.T) {
 		t.Fatal("nonexistent camera should not report as stopped")
 	}
 }
+
+// An on-demand camera satisfies Camera.Status's sleeping condition (on_demand
+// set, no recent frames) whether it is resting between events or an operator
+// stopped it. Only the manager can tell those apart, so it must resolve the
+// overlap: reporting both leaves every consumer to invent its own precedence,
+// and the ones that get it wrong caption a deliberately-stopped camera as a
+// battery camera that will wake itself on motion.
+func TestStoppedOnDemandCameraIsNotAlsoSleeping(t *testing.T) {
+	cfg := config.CameraConfig{Name: "battery-cam", OnDemand: true}
+	m := &Manager{
+		cameras:     map[string]*Camera{"battery-cam": {config: cfg}},
+		cancelFuncs: make(map[string]context.CancelFunc),
+		order:       []string{"battery-cam"},
+	}
+
+	statuses := m.CameraStatuses()
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 status, got %d", len(statuses))
+	}
+	if !statuses[0].Stopped {
+		t.Fatal("camera without a cancel func should report stopped")
+	}
+	if statuses[0].Sleeping {
+		t.Error("stopped on-demand camera reported sleeping: stopped and sleeping must be mutually exclusive")
+	}
+
+	_, cancel := context.WithCancel(context.Background())
+	m.cancelFuncs["battery-cam"] = cancel
+
+	statuses = m.CameraStatuses()
+	if statuses[0].Stopped {
+		t.Fatal("running camera should not report stopped")
+	}
+	if !statuses[0].Sleeping {
+		t.Error("running on-demand camera with no frames should report sleeping")
+	}
+}

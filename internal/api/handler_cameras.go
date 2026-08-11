@@ -18,6 +18,13 @@ func (s *Server) ListCameras(w http.ResponseWriter, _ *http.Request) {
 		Online    bool   `json:"online"`
 		HasMotion bool   `json:"has_motion"`
 		PTZ       bool   `json:"ptz"`
+		// Sleeping lets the dashboard caption an on-demand camera resting between
+		// events as asleep rather than offline, which is what Online alone says.
+		Sleeping bool `json:"sleeping"`
+		// Stopped marks a camera an operator turned off. The dashboard polls this
+		// list to refresh each tile's badge, so without it the poll would overwrite
+		// the server-rendered STOPPED badge with OFFLINE a second after page load.
+		Stopped bool `json:"stopped"`
 		// LastSeen lets the dashboard caption offline tiles with "last seen".
 		// Omitted for a camera that has never produced a frame so the UI does
 		// not render a zero timestamp as a nonsense age.
@@ -26,7 +33,14 @@ func (s *Server) ListCameras(w http.ResponseWriter, _ *http.Request) {
 	result := make([]cameraInfo, len(statuses))
 	for i, st := range statuses {
 		_, hasPTZ := s.ptzClients[st.Name]
-		info := cameraInfo{Name: st.Name, Online: st.Online, HasMotion: st.HasMotion, PTZ: hasPTZ}
+		info := cameraInfo{
+			Name:      st.Name,
+			Online:    st.Online,
+			HasMotion: st.HasMotion,
+			PTZ:       hasPTZ,
+			Sleeping:  st.Sleeping,
+			Stopped:   st.Stopped,
+		}
 		if !st.LastSeen.IsZero() {
 			info.LastSeen = st.LastSeen.UTC().Format(time.RFC3339)
 		}
@@ -53,6 +67,7 @@ func (s *Server) GetCamera(w http.ResponseWriter, r *http.Request, name string) 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":            st.Name,
 		"online":          st.Online,
+		"sleeping":        st.Sleeping,
 		"has_motion":      st.HasMotion,
 		"degraded":        st.Degraded,
 		"degraded_reason": st.DegradedReason,
@@ -143,7 +158,8 @@ func (s *Server) GetCameraSnapshot(w http.ResponseWriter, r *http.Request, name 
 	// cached error response would otherwise stick around indefinitely.
 	setSnapshotNoCacheHeaders(w)
 
-	online := cam.IsOnline()
+	st := cam.Status()
+	online := st.Online
 
 	// Serve the last-known frame even when the camera is offline: it survives in
 	// memory (last live decode) or is loaded from disk at startup. The dashboard
@@ -153,7 +169,10 @@ func (s *Server) GetCameraSnapshot(w http.ResponseWriter, r *http.Request, name 
 	img := cam.LiveFrame()
 	if img == nil {
 		state := "warming-up"
-		if !online {
+		switch {
+		case st.Sleeping:
+			state = "sleeping"
+		case !online:
 			state = "offline"
 		}
 		w.Header().Set("X-Vedetta-Camera-State", state)
@@ -162,7 +181,10 @@ func (s *Server) GetCameraSnapshot(w http.ResponseWriter, r *http.Request, name 
 	}
 
 	state := "live"
-	if !online {
+	switch {
+	case st.Sleeping:
+		state = "sleeping"
+	case !online:
 		state = "stale"
 	}
 	w.Header().Set("X-Vedetta-Camera-State", state)

@@ -46,3 +46,19 @@ test('online status unknown (null) -> offline', () => {
 test('online status unknown (undefined) -> offline', () => {
   assert.equal(liveOverlayState({}), 'offline');
 });
+
+// An on-demand battery camera is down between events by design. Showing
+// "Camera offline" there trains the user to ignore the one overlay that is
+// supposed to mean something is broken.
+
+test('on-demand camera asleep -> sleeping, not offline', () => {
+  assert.equal(liveOverlayState({ apiOnline: false, apiSleeping: true }), 'sleeping');
+});
+
+test('on-demand camera mid-event -> reconnecting, online wins over sleeping', () => {
+  assert.equal(liveOverlayState({ apiOnline: true, apiSleeping: true }), 'reconnecting');
+});
+
+test('normal camera down is still offline, not sleeping', () => {
+  assert.equal(liveOverlayState({ apiOnline: false, apiSleeping: false }), 'offline');
+});

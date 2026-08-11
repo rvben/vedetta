@@ -534,7 +534,10 @@ function isIOSWebKit() {
   return /iPhone|iPod/.test(navigator.userAgent || '');
 }
 
-function showLiveOffline(name) {
+// showLiveOffline renders the terminal overlay. `sleeping` retitles it for an
+// on-demand camera resting between events, which is normal rather than a
+// fault; the title is reset every call because the same element serves both.
+function showLiveOffline(name, sleeping) {
   hideStreamConnecting();
   // Keep snapshot fallback visible but dimmed behind the offline overlay.
   var viewport = el('live-viewport');
@@ -543,19 +546,24 @@ function showLiveOffline(name) {
   var offlineEl = el('live-offline');
   if (!offlineEl) return;
 
+  var title = el('live-offline-title');
+  if (title) title.textContent = sleeping ? 'Camera sleeping' : 'Camera offline';
+
   // Populate the "last seen" sub-line if the camera detail includes last_frame.
   var sub = el('live-offline-sub');
   if (sub) {
+    var idle = sleeping ? 'Battery camera - wakes on motion.' : 'Stream unavailable';
     fetch('/api/cameras/' + encodeURIComponent(name))
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(data) {
         if (data && data.last_frame) {
-          sub.textContent = 'Last seen: ' + formatTimeAgo(data.last_frame);
+          sub.textContent = (sleeping ? 'Wakes on motion. Last seen: ' : 'Last seen: ') +
+            formatTimeAgo(data.last_frame);
         } else {
-          sub.textContent = 'Stream unavailable';
+          sub.textContent = idle;
         }
       })
-      .catch(function() { sub.textContent = 'Stream unavailable'; });
+      .catch(function() { sub.textContent = idle; });
   }
 
   offlineEl.classList.remove('hidden');
@@ -632,12 +640,14 @@ function enterDegradedState(name) {
     .then(function(r) { return r.ok ? r.json() : null; })
     .then(function(data) {
       var apiOnline = data && typeof data.online === 'boolean' ? data.online : null;
-      if (liveOverlayState({ apiOnline: apiOnline }) === 'reconnecting') {
+      var apiSleeping = data && typeof data.sleeping === 'boolean' ? data.sleeping : null;
+      var overlay = liveOverlayState({ apiOnline: apiOnline, apiSleeping: apiSleeping });
+      if (overlay === 'reconnecting') {
         showLiveReconnecting();
         scheduleDegradedRetry(name);
       } else {
         clearDegradedRetry();
-        showLiveOffline(name);
+        showLiveOffline(name, overlay === 'sleeping');
       }
     })
     .catch(function() {
@@ -4081,9 +4091,11 @@ function initGridSnapshotStates() {
     var name = card.getAttribute('data-camera-name');
     if (!name) return;
 
-    // Caption offline tiles immediately from the server-rendered timestamp so
-    // there is no wait for the first refresh tick.
-    updateCamLastSeen(card, !!card.querySelector('.cam-live-dot.offline'), null);
+    // Caption tiles that are not showing live video immediately from the
+    // server-rendered timestamp so there is no wait for the first refresh tick.
+    // A sleeping camera counts: its frame is just as old as an offline one's,
+    // and how long ago it last woke is exactly what the caption answers.
+    updateCamLastSeen(card, !!card.querySelector('.cam-live-dot.offline, .cam-live-dot.sleeping'), null);
 
     // Seed the per-camera clock so idle cameras wait a full GRID_IDLE_MS
     // and motion cameras refresh on the next tick instead of immediately
@@ -4131,17 +4143,20 @@ function refreshGridSnapshots() {
         var cam = statusMap[name];
         if (!cam) return;
 
-        // Update LIVE/OFFLINE badge.
+        // Update the tile badge. Precedence lives in cameraBadgeState so this
+        // and the server-rendered grid partial cannot drift apart.
+        var state = cameraBadgeState(cam);
         var dot = card.querySelector('.cam-live-dot');
         var badge = card.querySelector('.cam-live-badge');
         if (dot && badge) {
-          dot.className = 'cam-live-dot' + (cam.online ? '' : ' offline');
+          dot.className = 'cam-live-dot' + (state === 'live' ? '' : ' ' + state);
           var label = badge.lastChild;
-          if (label) label.textContent = cam.online ? 'LIVE' : 'OFFLINE';
+          if (label) label.textContent = state.toUpperCase();
         }
 
-        // Keep the "last seen" caption in sync with the live online state.
-        updateCamLastSeen(card, !cam.online, cam.last_seen || null);
+        // Keep the "last seen" caption in sync: shown whenever the tile is not
+        // showing live video, since the frame under it is then a still.
+        updateCamLastSeen(card, state !== 'live', cam.last_seen || null);
 
         // Refresh snapshot for online cameras, but only when due: cameras
         // reporting motion refresh every tick; idle cameras only every

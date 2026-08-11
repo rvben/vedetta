@@ -205,6 +205,12 @@ type CameraStatus struct {
 	PTZ            bool      `json:"ptz"`
 	Stopped        bool      `json:"stopped"`
 	SourceFPS      float64   `json:"source_fps"`
+	// Sleeping distinguishes an on-demand camera resting between events from one
+	// that is genuinely unreachable. Both are Online=false, because no frames are
+	// arriving and that is the honest reading, but only the latter is a fault
+	// worth alerting on. Always false for a normal mains-powered camera, whose
+	// stream really should be there.
+	Sleeping bool `json:"sleeping"`
 }
 
 func NewCamera(cfg config.CameraConfig, detector *detect.Detector, motion config.MotionConfig, events chan<- Event, eventEnds chan<- EventEnd, presenceEvents chan<- PresenceEvent, hub *rtsp.Hub, snapshotPath string, snapshotQuality int, recordingPath string, faceRecognizer *detect.FaceRecognizer, faceEvents chan<- FaceEvent, faceCropDir string, motionActivity chan<- MotionActivity, detections chan<- DetectionFrame) *Camera {
@@ -1053,6 +1059,7 @@ func (c *Camera) Status() CameraStatus {
 		Degraded:       c.degradedReason != "",
 		DegradedReason: c.degradedReason,
 		SourceFPS:      fps,
+		Sleeping:       c.config.OnDemand && !online,
 	}
 }
 

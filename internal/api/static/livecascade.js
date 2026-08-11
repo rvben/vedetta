@@ -16,10 +16,15 @@ function nextWebrtcAction(state) {
 // liveOverlayState maps server-reported camera status to the overlay shown
 // when the cascade has exhausted live transports. apiOnline === true means
 // /api/cameras/{name} reports the camera up, so the failure is a transport
-// hiccup -> 'reconnecting'. Anything else (false, or null/undefined when the
-// status could not be read) -> 'offline'.
+// hiccup -> 'reconnecting'. apiSleeping === true means an on-demand battery
+// camera is resting between events, which is not a fault -> 'sleeping'.
+// Anything else (false, or null/undefined when the status could not be read)
+// -> 'offline'. Online is checked first: an on-demand camera mid-event is
+// genuinely streaming, so a transport failure then is still a hiccup.
 function liveOverlayState(state) {
-  return state.apiOnline === true ? 'reconnecting' : 'offline';
+  if (state.apiOnline === true) return 'reconnecting';
+  if (state.apiSleeping === true) return 'sleeping';
+  return 'offline';
 }
 
 if (typeof module !== 'undefined' && module.exports) {

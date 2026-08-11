@@ -2761,7 +2761,7 @@ components:
 
     CameraInfo:
       type: object
-      required: [name, online, has_motion, ptz]
+      required: [name, online, has_motion, ptz, sleeping, stopped]
       properties:
         name:
           type: string
@@ -2771,6 +2771,21 @@ components:
           type: boolean
         ptz:
           type: boolean
+        sleeping:
+          type: boolean
+          description: >-
+            True when an on-demand camera (a battery or PIR-triggered model
+            configured with on_demand) is resting between events. Such a camera
+            also reports online=false, because no frames are arriving, but it is
+            not a fault. A camera with online=false and sleeping=false is a
+            genuine outage. Always false for a mains-powered camera, and always
+            false while the camera is stopped.
+        stopped:
+          type: boolean
+          description: >-
+            True when an operator has stopped the camera. A stopped camera also
+            reports online=false and never reports sleeping=true, so the four
+            states (stopped, online, sleeping, down) are mutually exclusive.
         last_seen:
           type: string
           format: date-time
@@ -2799,12 +2814,17 @@ components:
 
     CameraDetail:
       type: object
-      required: [name, online, has_motion, degraded, ptz, zone_count, recording]
+      required: [name, online, has_motion, degraded, ptz, zone_count, recording, sleeping]
       properties:
         name:
           type: string
         online:
           type: boolean
+        sleeping:
+          type: boolean
+          description: >-
+            True when an on-demand camera is resting between events. See
+            CameraInfo.sleeping.
         has_motion:
           type: boolean
         degraded:
@@ -2930,12 +2950,17 @@ components:
 
     CameraStatus:
       type: object
-      required: [name, online, has_motion, degraded, ptz, stopped]
+      required: [name, online, has_motion, degraded, ptz, stopped, sleeping]
       properties:
         name:
           type: string
         online:
           type: boolean
+        sleeping:
+          type: boolean
+          description: >-
+            True when an on-demand camera is resting between events. See
+            CameraInfo.sleeping.
         has_motion:
           type: boolean
         degraded:
@@ -2997,12 +3022,18 @@ components:
 
     CameraHealthCheck:
       type: object
-      required: [total, online]
+      required: [total, online, sleeping]
       properties:
         total:
           type: integer
         online:
           type: integer
+        sleeping:
+          type: integer
+          description: >-
+            Count of on-demand cameras resting between events. These are also
+            excluded from online, so total minus online minus sleeping is the
+            number of cameras genuinely unreachable.
 
     StorageHealthCheck:
       type: object
@@ -3247,7 +3278,7 @@ components:
 
     SystemResponse:
       type: object
-      required: [version, uptime, decoder, cameras, online, storage_bytes, storage]
+      required: [version, uptime, decoder, cameras, online, sleeping, storage_bytes, storage]
       properties:
         version:
           type: string
@@ -3259,6 +3290,9 @@ components:
           type: integer
         online:
           type: integer
+        sleeping:
+          type: integer
+          description: Count of on-demand cameras resting between events.
         storage_bytes:
           type: integer
           format: int64

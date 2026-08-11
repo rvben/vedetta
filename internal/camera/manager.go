@@ -132,6 +132,15 @@ func (m *Manager) CameraStatuses() []CameraStatus {
 			st := cam.Status()
 			_, running := m.cancelFuncs[name]
 			st.Stopped = !running
+			// Stopped and Sleeping are mutually exclusive. Camera.Status sets
+			// Sleeping from OnDemand plus the absence of frames, which a stopped
+			// camera also satisfies; only the manager knows the difference between
+			// a battery camera resting between events and one an operator turned
+			// off, so it resolves the overlap here rather than leaving every
+			// consumer to order the two states itself.
+			if st.Stopped {
+				st.Sleeping = false
+			}
 			statuses = append(statuses, st)
 		}
 	}

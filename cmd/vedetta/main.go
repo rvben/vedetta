@@ -778,7 +778,7 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 					return
 				}
 				for _, st := range sub.manager.CameraStatuses() {
-					c.PublishCameraStatus(st.Name, st.Online, st.Stopped)
+					c.PublishCameraStatus(st.Name, st.Online, st.Stopped, st.Sleeping)
 				}
 			}
 

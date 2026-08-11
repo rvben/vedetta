@@ -1,0 +1,140 @@
+package event
+
+import (
+	"bytes"
+	"context"
+	"image"
+	"image/jpeg"
+	"log/slog"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/rvben/vedetta/internal/camera"
+)
+
+// EmitEventArtifacts persists an event snapshot, publishes the event and image
+// to MQTT, and enqueues alert notifications. Callers run it asynchronously
+// after the event itself has been stored successfully.
+func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
+	saver SnapshotSaver, publisher ArtifactPublisher, notifier Enqueuer,
+	snapshotQuality int, submitted camera.Event) {
+
+	if saver != nil && submitted.SnapshotImage != nil && submitted.SnapshotPath != "" {
+		_, snapshotSpan := tracer.Start(ctx, "snapshot.save")
+		resolved, err := saver.SaveEventSnapshot(submitted, submitted.SnapshotImage, submitted.SnapshotPath)
+		if err != nil {
+			snapshotSpan.RecordError(err)
+			snapshotSpan.SetStatus(codes.Error, "save snapshot")
+			slog.Error("failed to save event snapshot", "event", submitted.ID, "error", err)
+		} else {
+			submitted.SnapshotPath = resolved
+			submitted.SnapshotAvailable = true
+		}
+		snapshotSpan.End()
+	}
+
+	if publisher != nil {
+		mqttCtx, mqttSpan := tracer.Start(ctx, "mqtt.publish")
+
+		_, eventSpan := tracer.Start(mqttCtx, "mqtt.publish_event")
+		if err := publisher.PublishEvent(submitted, nil); err != nil {
+			eventSpan.RecordError(err)
+			eventSpan.SetStatus(codes.Error, "publish event")
+			mqttSpan.SetStatus(codes.Error, "publish event")
+			slog.Error("failed to publish event", "error", err)
+		}
+		eventSpan.End()
+
+		mqttImage := submitted.AnnotatedImage
+		if mqttImage == nil {
+			mqttImage = submitted.SnapshotImage
+		}
+		if mqttImage != nil {
+			_, encodeSpan := tracer.Start(mqttCtx, "snapshot.encode")
+			jpegData := encodeJPEG(mqttImage, snapshotQuality)
+			encodeSpan.End()
+			if jpegData != nil {
+				_, snapshotSpan := tracer.Start(mqttCtx, "mqtt.publish_snapshot")
+				publisher.PublishSnapshot(submitted.CameraName, submitted.Label, jpegData)
+				snapshotSpan.End()
+			}
+		}
+
+		if submitted.Kind == camera.EventKindDoorbell {
+			var jpegData []byte
+			if mqttImage != nil {
+				jpegData = encodeJPEG(mqttImage, snapshotQuality)
+			}
+			_, doorbellSpan := tracer.Start(mqttCtx, "mqtt.publish_doorbell")
+			publisher.PublishDoorbell(submitted.CameraName, submitted.SubLabel, jpegData)
+			doorbellSpan.End()
+		}
+
+		mqttSpan.End()
+	}
+
+	if notifier != nil && submitted.Category != camera.CategoryDetection {
+		notifier.Enqueue(submitted)
+	}
+}
+
+// WaitForEmit bounds ordering waits between asynchronous create and end
+// publications.
+func WaitForEmit(ctx context.Context, done <-chan struct{}, timeout time.Duration) {
+	if done == nil {
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+// ExtractClipSpan records one clip-extraction attempt as a linked root span.
+func ExtractClipSpan(ctx context.Context, tracer trace.Tracer, saver ClipSaver, submitted camera.Event, attempt int) error {
+	_, span := tracer.Start(ctx, "clip.extract",
+		trace.WithNewRoot(),
+		trace.WithLinks(trace.Link{SpanContext: trace.SpanContextFromContext(ctx)}),
+		trace.WithAttributes(
+			attribute.Int("clip.attempt", attempt),
+			attribute.String("vedetta.camera", submitted.CameraName),
+			attribute.String("vedetta.label", submitted.Label),
+		))
+	defer span.End()
+	stats, err := saver.SaveClip(ctx, submitted)
+	span.SetAttributes(
+		attribute.Int("clip.segment_count", stats.SegmentCount),
+		attribute.Int64("clip.output_bytes", stats.OutputBytes),
+		attribute.Int64("clip.duration_ms", stats.ClipDuration.Milliseconds()),
+	)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "save clip")
+	}
+	return err
+}
+
+// SpanPublish records a synchronous publish performed by the processor loop.
+func SpanPublish(ctx context.Context, tracer trace.Tracer, name string, publish func() error) {
+	_, span := tracer.Start(ctx, name)
+	defer span.End()
+	if err := publish(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, name)
+	}
+}
+
+func encodeJPEG(img *image.RGBA, quality int) []byte {
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+		slog.Error("failed to encode JPEG", "error", err)
+		return nil
+	}
+	return buf.Bytes()
+}

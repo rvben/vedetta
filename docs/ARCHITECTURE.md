@@ -32,8 +32,8 @@ object detection. Written in Go for single-binary distribution.
        ▼                   ▼
 ┌──────────────┐    ┌──────────────┐     ┌──────────────┐
 │  Segment     │    │  Object      │────▶│  Event       │
-│  Recorder    │    │  Tracker     │     │  Manager     │
-│  10min .mp4  │    │  IoU-based   │     │  Dedup/Cool  │
+│  Recorder    │    │  Tracker     │     │  Processor   │
+│  10min .mp4  │    │  IoU-based   │     │  Lifecycle   │
 └──────┬──────┘    └──────────────┘     └──────┬───────┘
        │                                       │
        ▼                                       ▼
@@ -86,7 +86,7 @@ internal/
 │   ├── tracker.go      IoU object tracker
 │   ├── yolo.go         YOLOv8 pre/post processing
 │   └── labels.go       COCO-80 class labels
-├── event/              Event dedup, cooldown, lifecycle
+├── event/              Event lifecycle, cooldown, recognition + fan-out
 ├── mqtt/               MQTT publishing
 ├── recording/
 │   ├── segment.go      Continuous segment recorder

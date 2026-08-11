@@ -106,22 +106,9 @@ func GenerateInitialConfigYAML(username, passwordHash string) (string, error) {
 // the given top-level key, replaces its value with the provided struct, and writes
 // the file back, preserving existing structure and comments.
 func updateConfigSection(path, sectionKey string, value any) error {
-	data, err := os.ReadFile(path)
+	doc, root, err := readConfigDocument(path)
 	if err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
-
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return fmt.Errorf("unexpected YAML structure: expected document node")
-	}
-	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return fmt.Errorf("unexpected YAML structure: expected mapping node")
+		return err
 	}
 
 	var valueNode yaml.Node
@@ -146,22 +133,58 @@ func updateConfigSection(path, sectionKey string, value any) error {
 		root.Content = append(root.Content, keyNode, &valueNode)
 	}
 
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return fmt.Errorf("encoding config: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return fmt.Errorf("closing encoder: %w", err)
-	}
+	return writeDocToFile(path, doc)
+}
 
-	info, err := os.Stat(path)
+// updateConfigSectionFields merges the encoded fields into an existing mapping
+// instead of replacing the whole section. Unedited and unknown fields retain
+// their yaml.Node values and comments.
+func updateConfigSectionFields(path, sectionKey string, value any) error {
+	doc, root, err := readConfigDocument(path)
 	if err != nil {
-		return fmt.Errorf("stat config: %w", err)
+		return err
 	}
 
-	return os.WriteFile(path, buf.Bytes(), info.Mode().Perm())
+	var fields yaml.Node
+	if err := fields.Encode(value); err != nil {
+		return fmt.Errorf("marshaling %s: %w", sectionKey, err)
+	}
+	if fields.Kind != yaml.MappingNode {
+		return fmt.Errorf("marshaling %s: expected mapping node", sectionKey)
+	}
+
+	var section *yaml.Node
+	for i := 0; i < len(root.Content)-1; i += 2 {
+		if root.Content[i].Value == sectionKey {
+			section = root.Content[i+1]
+			break
+		}
+	}
+	if section == nil {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: sectionKey}
+		root.Content = append(root.Content, keyNode, &fields)
+	} else {
+		if section.Kind != yaml.MappingNode {
+			return fmt.Errorf("unexpected YAML structure: %s must be a mapping", sectionKey)
+		}
+		for i := 0; i < len(fields.Content)-1; i += 2 {
+			fieldKey := fields.Content[i]
+			fieldValue := fields.Content[i+1]
+			updated := false
+			for j := 0; j < len(section.Content)-1; j += 2 {
+				if section.Content[j].Value == fieldKey.Value {
+					section.Content[j+1] = fieldValue
+					updated = true
+					break
+				}
+			}
+			if !updated {
+				section.Content = append(section.Content, fieldKey, fieldValue)
+			}
+		}
+	}
+
+	return writeDocToFile(path, doc)
 }
 
 // UpdateMQTT updates the mqtt section of the config file.
@@ -193,10 +216,11 @@ type yamlRecordingWrite struct {
 	PostCapture   string `yaml:"post_capture"`
 	RetainDays    int    `yaml:"retain_days"`
 	EventRetain   int    `yaml:"event_retain_days"`
-	MaxStorage    string `yaml:"max_storage,omitempty"`
+	MaxStorage    string `yaml:"max_storage"`
 }
 
-// UpdateRecording updates the recording section of the config file.
+// UpdateRecording updates the UI-editable recording fields while preserving
+// advanced and unknown fields in the same section.
 func UpdateRecording(path string, rec RecordingConfig) error {
 	y := yamlRecordingWrite{
 		Path:          rec.Path,
@@ -208,7 +232,8 @@ func UpdateRecording(path string, rec RecordingConfig) error {
 		EventRetain:   rec.EventRetain,
 		MaxStorage:    rec.MaxStorage,
 	}
-	return updateConfigSection(path, "recording", y)
+
+	return updateConfigSectionFields(path, "recording", y)
 }
 
 // UpdateDetect updates only the UI-editable fields of the detect section
@@ -370,6 +395,28 @@ func findMappingValue(mapping *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+// readConfigDocument loads and validates the common document shape used by
+// every field-preserving config edit.
+func readConfigDocument(path string) (doc, root *yaml.Node, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading config: %w", err)
+	}
+
+	doc = &yaml.Node{}
+	if err := yaml.Unmarshal(data, doc); err != nil {
+		return nil, nil, fmt.Errorf("parsing config: %w", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil, nil, fmt.Errorf("unexpected YAML structure: expected document node")
+	}
+	root = doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil, nil, fmt.Errorf("unexpected YAML structure: expected mapping node")
+	}
+	return doc, root, nil
 }
 
 // writeDocToFile encodes a yaml.Node document and writes it to the given path,

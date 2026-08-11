@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -92,6 +93,145 @@ func TestUpdateRecording_RoundTrip(t *testing.T) {
 	}
 	if len(cfg.Auth.Users) == 0 || cfg.Auth.Users[0].Username != "admin" {
 		t.Errorf("Auth.Users: unexpected value (other sections must be preserved)")
+	}
+}
+
+func TestUpdateRecording_PreservesAdvancedSettings(t *testing.T) {
+	path := writeTempConfig(t, `auth:
+  users:
+    - username: admin
+      password_hash: "$2a$10$7EqJtq98hPqEX7fNZaFWoOHi8V6I5WJFlQ7Y7S6d6n9zQ0jD4S3yu"
+recording:
+  path: ./recordings
+  continuous: true
+  segment_length: 10m
+  pre_capture: 5s
+  post_capture: 10s
+  max_event_duration: 3m
+  retain_days: 7
+  event_retain_days: 30
+  max_storage: 50GB
+  min_disk_free: 7GB
+  urgent_cleanup:
+    enabled: true
+    min_retention: 45m
+    batch_size: 17
+  tiered_storage:
+    enabled: true
+    after_days: 4
+    target_width: 960
+    target_height: 540
+    schedule: 23:00-05:00
+    interval: 45s
+    priority: oldest
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load before UpdateRecording: %v", err)
+	}
+	cfg.Recording.RetainDays = 14
+
+	if err := UpdateRecording(path, cfg.Recording); err != nil {
+		t.Fatalf("UpdateRecording: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after UpdateRecording: %v", err)
+	}
+	rec := got.Recording
+	if rec.MaxEventDuration != 3*time.Minute {
+		t.Errorf("MaxEventDuration: got %v, want 3m", rec.MaxEventDuration)
+	}
+	if rec.MinDiskFree != "7GB" {
+		t.Errorf("MinDiskFree: got %q, want 7GB", rec.MinDiskFree)
+	}
+	wantUrgentCleanup := UrgentCleanupConfig{
+		Enabled:      true,
+		MinRetention: 45 * time.Minute,
+		BatchSize:    17,
+	}
+	if rec.UrgentCleanup != wantUrgentCleanup {
+		t.Errorf("UrgentCleanup: got %+v, want %+v", rec.UrgentCleanup, wantUrgentCleanup)
+	}
+	wantTieredStorage := TieredStorageConfig{
+		Enabled:      true,
+		AfterDays:    4,
+		TargetWidth:  960,
+		TargetHeight: 540,
+		Schedule:     "23:00-05:00",
+		Interval:     45 * time.Second,
+		Priority:     "oldest",
+	}
+	if rec.TieredStorage != wantTieredStorage {
+		t.Errorf("TieredStorage: got %+v, want %+v", rec.TieredStorage, wantTieredStorage)
+	}
+}
+
+func TestUpdateRecording_PreservesCommentsWithinSection(t *testing.T) {
+	path := writeTempConfig(t, `recording:
+  path: ./recordings
+  continuous: true
+  segment_length: 10m
+  pre_capture: 5s
+  post_capture: 10s
+  retain_days: 7
+  event_retain_days: 30
+  # Keep this operator note when editing basic recording settings.
+  future_storage_policy: archive-after-review
+`)
+
+	rec := RecordingConfig{
+		Path:          "./recordings",
+		Continuous:    false,
+		SegmentLength: 5 * time.Minute,
+		PreCapture:    5 * time.Second,
+		PostCapture:   10 * time.Second,
+		RetainDays:    14,
+		EventRetain:   30,
+	}
+	if err := UpdateRecording(path, rec); err != nil {
+		t.Fatalf("UpdateRecording: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "# Keep this operator note when editing basic recording settings.") {
+		t.Error("recording section comment was removed")
+	}
+	if !strings.Contains(text, "future_storage_policy: archive-after-review") {
+		t.Error("unknown recording setting was removed")
+	}
+}
+
+func TestUpdateRecording_ClearsMaxStorage(t *testing.T) {
+	path := writeTempConfig(t, strings.Replace(
+		testConfigBase,
+		"  event_retain_days: 30",
+		"  event_retain_days: 30\n  max_storage: 50GB",
+		1,
+	))
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load before UpdateRecording: %v", err)
+	}
+	cfg.Recording.MaxStorage = ""
+
+	if err := UpdateRecording(path, cfg.Recording); err != nil {
+		t.Fatalf("UpdateRecording: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after UpdateRecording: %v", err)
+	}
+	if got.Recording.MaxStorage != "" {
+		t.Errorf("MaxStorage: got %q, want empty", got.Recording.MaxStorage)
 	}
 }
 

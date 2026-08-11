@@ -128,18 +128,23 @@ func (s *Server) UpdateCameraManage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Start from the stored config and overwrite only what this form edits.
+	// UpdateCamera replaces the camera's whole YAML entry, so every field left
+	// out here is erased from config.yml: renaming a battery camera would drop
+	// on_demand and turn it back into one that alarms every time it sleeps,
+	// and editing a doorbell would drop its doorbell block.
+	//
 	// The UI edits credential-stripped URLs. Re-attach the stored secret when
 	// the operator left the userinfo blank; a URL with fresh userinfo replaces
 	// the credentials instead.
 	existing := s.cameraConfigs[index]
-	cam := config.CameraConfig{
-		Name:      name,
-		URL:       config.MergeURLCredentials(req.URL, existing.URL),
-		RecordURL: config.MergeURLCredentials(req.RecordURL, existing.RecordURL),
-		Enabled:   &req.Enabled,
-		Detect:    req.Detect,
-		Record:    req.Record,
-	}
+	cam := existing
+	cam.Name = name
+	cam.URL = config.MergeURLCredentials(req.URL, existing.URL)
+	cam.RecordURL = config.MergeURLCredentials(req.RecordURL, existing.RecordURL)
+	cam.Enabled = &req.Enabled
+	cam.Detect = req.Detect
+	cam.Record = req.Record
 
 	if err := config.UpdateCamera(s.configPath, index, cam); err != nil {
 		slog.Error("failed to update camera", "error", err)

@@ -148,6 +148,79 @@ func TestUpdateCameraManage_AcceptsNewCredentials(t *testing.T) {
 	}
 }
 
+// The edit form exposes six fields; CameraConfig has eleven. UpdateCamera
+// replaces the camera's entire YAML entry, so a handler that rebuilds the
+// config from the request alone silently erases the rest. This asserts against
+// the file on disk rather than the in-memory slice, because config.yml is what
+// survives the restart the handler asks for.
+func TestUpdateCameraManage_PreservesFieldsTheFormDoesNotEdit(t *testing.T) {
+	srv, cfgPath := newTestServerWithCameras(t)
+	enabled := true
+	retain := 21
+	stored := config.CameraConfig{
+		Name:          "front",
+		URL:           "rtsp://admin:s3cret@front.lan/stream1",
+		RTSPTransport: "udp",
+		Enabled:       &enabled,
+		OnDemand:      true,
+		RetainDays:    &retain,
+		Doorbell:      config.DoorbellConfig{Enabled: true, WebhookURL: "http://hooks.invalid/ring"},
+		Zones:         []config.Zone{{Name: "driveway", Points: [][]float64{{0, 0}, {1, 0}, {1, 1}}}},
+	}
+	srv.cameraConfigs[0] = stored
+	if err := config.UpdateCamera(cfgPath, 0, stored); err != nil {
+		t.Fatalf("seeding config: %v", err)
+	}
+
+	payload := `{"name":"front","url":"rtsp://front.lan/stream1","enabled":true,"detect":{"width":640,"height":360,"fps":5},"record":{"width":1920,"height":1080,"fps":15}}`
+	req := httptest.NewRequest(http.MethodPut, "/api/cameras/manage/0", bytes.NewBufferString(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reloading written config: %v", err)
+	}
+	var got *config.CameraConfig
+	for i := range cfg.Cameras {
+		if cfg.Cameras[i].Name == "front" {
+			got = &cfg.Cameras[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("camera front missing from written config")
+	}
+
+	if !got.OnDemand {
+		t.Error("on_demand dropped: the battery camera would alarm on every sleep")
+	}
+	if got.RTSPTransport != "udp" {
+		t.Errorf("rtsp_transport = %q, want udp", got.RTSPTransport)
+	}
+	if !got.Doorbell.Enabled || got.Doorbell.WebhookURL != "http://hooks.invalid/ring" {
+		t.Errorf("doorbell dropped: %+v", got.Doorbell)
+	}
+	if got.RetainDays == nil || *got.RetainDays != 21 {
+		t.Errorf("retain_days dropped: %v", got.RetainDays)
+	}
+	if len(got.Zones) != 1 || got.Zones[0].Name != "driveway" {
+		t.Errorf("zones dropped: %+v", got.Zones)
+	}
+
+	// The edited fields must still take effect, or "preserve everything" would
+	// pass by ignoring the request entirely.
+	if got.Detect.Width != 640 || got.Detect.Height != 360 {
+		t.Errorf("detect not applied: %+v", got.Detect)
+	}
+	if got.URL != "rtsp://admin:s3cret@front.lan/stream1" {
+		t.Errorf("url = %q, want the stored credentials re-attached", got.URL)
+	}
+}
+
 func TestAddCameraManage(t *testing.T) {
 	srv, _ := newTestServerWithCameras(t)
 

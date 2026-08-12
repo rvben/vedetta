@@ -2858,6 +2858,13 @@ components:
             this is the only signal separating one napping between events from
             one that has been unplugged or removed from its bridge, since both
             report the stream as unpublished indefinitely.
+        last_seen:
+          type: string
+          format: date-time
+          description: >-
+            Time of the last-known frame available for this camera, including
+            a cached snapshot restored after restart. Absent when the camera
+            has never produced a frame.
         stream_error:
           type: string
           description: >-

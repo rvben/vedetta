@@ -81,3 +81,50 @@ func TestListCamerasOmitsLastSeenWhenNeverSeen(t *testing.T) {
 		}
 	}
 }
+
+// The detail endpoint drives the immediate sleeping/offline camera-page state,
+// so it needs the same last-known timestamp as the grid. last_frame alone is
+// insufficient after restart because a cached snapshot can outlive live decode.
+func TestGetCameraIncludesLastSeen(t *testing.T) {
+	srv, _ := newTestServer(t)
+	ts := time.Date(2026, 8, 12, 18, 52, 18, 0, time.UTC)
+	cam := camera.NewTestCamera("driveway")
+	cam.SetTestOnline(false)
+	cam.SetTestLastFrameTime(ts)
+	srv.cameras.RegisterForTest(cam)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cameras/driveway", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	var detail map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := ts.Format(time.RFC3339)
+	if got := detail["last_seen"]; got != want {
+		t.Errorf("last_seen = %v, want %q", got, want)
+	}
+}
+
+func TestGetCameraOmitsLastSeenWhenNeverSeen(t *testing.T) {
+	srv, _ := newTestServer(t)
+	cam := camera.NewTestCamera("new-camera")
+	cam.SetTestOnline(false)
+	srv.cameras.RegisterForTest(cam)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cameras/new-camera", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	var detail map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if value, present := detail["last_seen"]; present {
+		t.Errorf("last_seen present (%v) for a camera that never produced a frame; want omitted", value)
+	}
+}

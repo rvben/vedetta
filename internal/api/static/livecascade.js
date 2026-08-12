@@ -27,6 +27,24 @@ function liveOverlayState(state) {
   return 'offline';
 }
 
+// initialLiveState decides whether a camera page should start a live transport
+// at all. Unlike liveOverlayState (which runs after a transport has failed), an
+// unreadable status must stay distinct from a camera outage: blaming the camera
+// when Vedetta could not read its own API is both misleading and expensive on
+// iPhone, where it otherwise starts a 30-second HLS fallback cascade.
+function initialLiveState(status) {
+  if (!status || typeof status.online !== 'boolean' || typeof status.sleeping !== 'boolean') {
+    return 'unavailable';
+  }
+  if (status.online === true) return 'live';
+  if (status.sleeping === true) return 'sleeping';
+  return 'offline';
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { nextWebrtcAction: nextWebrtcAction, liveOverlayState: liveOverlayState };
+  module.exports = {
+    nextWebrtcAction: nextWebrtcAction,
+    liveOverlayState: liveOverlayState,
+    initialLiveState: initialLiveState,
+  };
 }

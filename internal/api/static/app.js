@@ -17,6 +17,10 @@ let snapshotStreamSeq = 0; // bumped to invalidate in-flight snapshot loaders on
 let snapshotFrameTimeoutTimer = null; // per-frame timeout so a hung Image cannot freeze the loop
 let snapshotStallInterval = null; // post-startup stall watchdog (auto-recovery + offline)
 let currentStream = null; // 'mse' | 'webrtc' | 'mjpeg' | 'hls' | null
+let cameraAvailabilityTimer = null; // status-only polling while live video cannot start
+let cameraAvailabilityName = null;
+let cameraAvailabilityInFlight = false;
+let cameraAvailabilitySeq = 0;
 let playbackMode = false; // true when playing back a recording
 let playbackStartTime = null; // Date when playback segment starts
 let playbackOffset = 0; // offset into segment where playback begins
@@ -539,37 +543,134 @@ function isIOSWebKit() {
   return /iPhone|iPod/.test(navigator.userAgent || '');
 }
 
-// showLiveOffline renders the terminal overlay. `sleeping` retitles it for an
-// on-demand camera resting between events, which is normal rather than a
-// fault; the title is reset every call because the same element serves both.
-function showLiveOffline(name, sleeping) {
+var CAMERA_AVAILABILITY_POLL_MS = 5000;
+var CAMERA_AVAILABILITY_HIDDEN_POLL_MS = 15000;
+
+function cameraStateLastSeen(data) {
+  if (!data) return '';
+  var candidates = [data.last_seen, data.last_frame, data.last_connected];
+  for (var i = 0; i < candidates.length; i++) {
+    if (!candidates[i]) continue;
+    var date = new Date(candidates[i]);
+    // Go's zero time serializes as year 1. Treat it as absent instead of
+    // telling the user that a camera was last seen thousands of years ago.
+    if (!isNaN(date.getTime()) && date.getUTCFullYear() >= 2000) return date;
+  }
+  return null;
+}
+
+function formatCameraStateTime(date) {
+  if (!date) return '';
+  var deltaSeconds = Math.round((date.getTime() - Date.now()) / 1000);
+  var absoluteSeconds = Math.abs(deltaSeconds);
+  if (absoluteSeconds < 60) return 'just now';
+
+  var unit = 'minute';
+  var divisor = 60;
+  if (absoluteSeconds >= 86400 && absoluteSeconds < 604800) {
+    unit = 'day';
+    divisor = 86400;
+  } else if (absoluteSeconds >= 3600 && absoluteSeconds < 86400) {
+    unit = 'hour';
+    divisor = 3600;
+  } else if (absoluteSeconds >= 604800) {
+    try {
+      return new Intl.DateTimeFormat(navigator.language, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }).format(date);
+    } catch (e) {
+      return date.toLocaleString();
+    }
+  }
+
+  try {
+    return new Intl.RelativeTimeFormat(navigator.language, { numeric: 'auto' })
+      .format(Math.round(deltaSeconds / divisor), unit);
+  } catch (e) {
+    return formatTimeAgo(date.toISOString());
+  }
+}
+
+function setCameraStateChecking(checking) {
+  var button = el('live-state-retry');
+  if (!button) return;
+  button.disabled = !!checking;
+  button.setAttribute('aria-busy', checking ? 'true' : 'false');
+  if (checking) {
+    button.dataset.idleLabel = button.textContent;
+    button.textContent = 'Checking…';
+  } else if (button.dataset.idleLabel) {
+    button.textContent = button.dataset.idleLabel;
+    delete button.dataset.idleLabel;
+  }
+}
+
+// Render a truthful, terminal camera state before starting any live transport.
+// Sleeping is normal for an on-demand battery camera; unavailable means the
+// status API itself could not be read and must not be mislabeled as an outage.
+function showCameraIdleState(name, state, data) {
   hideStreamConnecting();
-  // Keep snapshot fallback visible but dimmed behind the offline overlay.
+  hideLiveReconnecting();
+
+  // Keep the last-known snapshot visible but dimmed behind the state panel.
   var viewport = el('live-viewport');
-  if (viewport) viewport.classList.add('live-snapshot-fallback');
+  if (viewport) viewport.classList.add('live-snapshot-fallback', 'has-camera-state');
 
   var offlineEl = el('live-offline');
   if (!offlineEl) return;
+  offlineEl.dataset.state = state;
 
   var title = el('live-offline-title');
-  if (title) title.textContent = sleeping ? 'Camera sleeping' : 'Camera offline';
-
-  // Populate the "last seen" sub-line if the camera detail includes last_frame.
-  var sub = el('live-offline-sub');
-  if (sub) {
-    var idle = sleeping ? 'Battery camera - wakes on motion.' : 'Stream unavailable';
-    fetch('/api/cameras/' + encodeURIComponent(name))
-      .then(function(r) { return r.ok ? r.json() : null; })
-      .then(function(data) {
-        if (data && data.last_frame) {
-          sub.textContent = (sleeping ? 'Wakes on motion. Last seen: ' : 'Last seen: ') +
-            formatTimeAgo(data.last_frame);
-        } else {
-          sub.textContent = idle;
-        }
-      })
-      .catch(function() { sub.textContent = idle; });
+  var copy = '';
+  var titleCopy = 'Camera offline';
+  if (state === 'sleeping') {
+    titleCopy = 'Camera is sleeping';
+    copy = 'This battery camera wakes when it detects motion.';
+  } else if (state === 'unavailable') {
+    titleCopy = 'Status unavailable';
+    copy = 'Vedetta couldn’t check this camera. Live video has not been started.';
+  } else {
+    copy = 'Vedetta can’t reach this camera.';
   }
+  if (title) title.textContent = titleCopy;
+
+  var lastSeen = cameraStateLastSeen(data);
+  if (lastSeen && state !== 'unavailable') {
+    copy += ' Last seen ' + formatCameraStateTime(lastSeen) + '.';
+  }
+  var sub = el('live-offline-sub');
+  if (sub) sub.textContent = copy;
+
+  ['offline', 'sleeping', 'unavailable'].forEach(function(iconState) {
+    var icon = el('live-state-icon-' + iconState);
+    if (icon) icon.classList.toggle('hidden', iconState !== state);
+  });
+
+  var retry = el('live-state-retry');
+  var recordings = el('live-state-recordings');
+  if (retry) {
+    retry.textContent = state === 'sleeping' ? 'Check again' : 'Try again';
+    retry.classList.toggle('live-state-action-primary', state !== 'sleeping');
+    retry.classList.toggle('live-state-action-secondary', state === 'sleeping');
+    retry.disabled = false;
+    retry.setAttribute('aria-busy', 'false');
+    delete retry.dataset.idleLabel;
+  }
+  if (recordings) {
+    recordings.href = '/recordings.html';
+    recordings.classList.toggle('live-state-action-primary', state === 'sleeping');
+    recordings.classList.toggle('live-state-action-secondary', state !== 'sleeping');
+  }
+
+  var detail = el('live-state-details');
+  var detailCopy = el('live-state-detail-copy');
+  var reason = data && state === 'offline' ? (data.stream_error || data.degraded_reason || '') : '';
+  if (detail) {
+    detail.classList.toggle('hidden', !reason);
+    if (!reason) detail.open = false;
+  }
+  if (detailCopy) detailCopy.textContent = reason;
 
   offlineEl.classList.remove('hidden');
 }
@@ -578,8 +679,93 @@ function hideLiveOffline() {
   var offlineEl = el('live-offline');
   if (offlineEl) offlineEl.classList.add('hidden');
   var viewport = el('live-viewport');
-  if (viewport) viewport.classList.remove('live-snapshot-fallback');
+  if (viewport) viewport.classList.remove('live-snapshot-fallback', 'has-camera-state');
 }
+
+function clearCameraAvailabilityWatch() {
+  cameraAvailabilitySeq++;
+  cameraAvailabilityName = null;
+  cameraAvailabilityInFlight = false;
+  if (cameraAvailabilityTimer) {
+    clearTimeout(cameraAvailabilityTimer);
+    cameraAvailabilityTimer = null;
+  }
+}
+
+function scheduleCameraAvailabilityCheck(delay) {
+  if (!cameraAvailabilityName) return;
+  if (cameraAvailabilityTimer) clearTimeout(cameraAvailabilityTimer);
+  cameraAvailabilityTimer = setTimeout(function() {
+    cameraAvailabilityTimer = null;
+    checkCameraAvailability(false);
+  }, delay);
+}
+
+function checkCameraAvailability(manual) {
+  var name = cameraAvailabilityName || getCameraName();
+  if (!name || cameraAvailabilityInFlight) return Promise.resolve();
+  cameraAvailabilityName = name;
+  cameraAvailabilityInFlight = true;
+  var seq = cameraAvailabilitySeq;
+  if (manual) setCameraStateChecking(true);
+
+  return fetch('/api/cameras/' + encodeURIComponent(name), { cache: 'no-store' })
+    .then(function(response) {
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      return response.json();
+    })
+    .then(function(data) {
+      if (seq !== cameraAvailabilitySeq || name !== cameraAvailabilityName) return;
+      cameraAvailabilityInFlight = false;
+      var state = initialLiveState(data);
+      if (state === 'live') {
+        clearCameraAvailabilityWatch();
+        hideLiveOffline();
+        prewarmLiveHLS(name);
+        startLiveStream();
+        return;
+      }
+      showCameraIdleState(name, state, data);
+      scheduleCameraAvailabilityCheck(document.hidden ?
+        CAMERA_AVAILABILITY_HIDDEN_POLL_MS : CAMERA_AVAILABILITY_POLL_MS);
+    })
+    .catch(function() {
+      if (seq !== cameraAvailabilitySeq || name !== cameraAvailabilityName) return;
+      cameraAvailabilityInFlight = false;
+      setCameraStateChecking(false);
+      if (manual) toast('Couldn’t refresh camera status', 'error');
+      var currentState = el('live-offline') && el('live-offline').dataset.state;
+      if (!currentState || currentState === 'unavailable') {
+        showCameraIdleState(name, 'unavailable', null);
+      }
+      scheduleCameraAvailabilityCheck(document.hidden ?
+        CAMERA_AVAILABILITY_HIDDEN_POLL_MS : CAMERA_AVAILABILITY_POLL_MS);
+    });
+}
+
+function startCameraAvailabilityWatch(name) {
+  clearCameraAvailabilityWatch();
+  cameraAvailabilityName = name;
+  scheduleCameraAvailabilityCheck(CAMERA_AVAILABILITY_POLL_MS);
+}
+
+function retryCameraStatus() {
+  if (!cameraAvailabilityName) cameraAvailabilityName = getCameraName();
+  if (cameraAvailabilityTimer) {
+    clearTimeout(cameraAvailabilityTimer);
+    cameraAvailabilityTimer = null;
+  }
+  return checkCameraAvailability(true);
+}
+
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden || !cameraAvailabilityName) return;
+  if (cameraAvailabilityTimer) {
+    clearTimeout(cameraAvailabilityTimer);
+    cameraAvailabilityTimer = null;
+  }
+  checkCameraAvailability(false);
+});
 
 function showLiveReconnecting() {
   hideStreamConnecting();
@@ -652,12 +838,14 @@ function enterDegradedState(name) {
         scheduleDegradedRetry(name);
       } else {
         clearDegradedRetry();
-        showLiveOffline(name, overlay === 'sleeping');
+        showCameraIdleState(name, overlay, data);
+        startCameraAvailabilityWatch(name);
       }
     })
     .catch(function() {
       clearDegradedRetry();
-      showLiveOffline(name);
+      showCameraIdleState(name, 'unavailable', null);
+      startCameraAvailabilityWatch(name);
     });
 }
 
@@ -699,6 +887,7 @@ function prewarmLiveHLS(name) {
 }
 
 function startLiveStream() {
+  clearCameraAvailabilityWatch();
   if (isIOSWebKit()) {
     startNativeHLS();
     return;
@@ -1797,6 +1986,7 @@ function initViewportPause() {
   viewport.addEventListener('click', function(e) {
     if (e.target.closest('.video-controls')) return;
     if (e.target.closest('.stream-stats')) return;
+    if (e.target.closest('.live-offline, .live-reconnecting, .stream-connecting')) return;
     togglePause();
   });
   // Periodically check if behind live edge
@@ -3035,6 +3225,13 @@ function startPlayback(timestamp, opts) {
   var name = getCameraName();
   if (!name) return;
 
+  // Recorded history remains available while a camera is sleeping or offline.
+  // Suspend the availability watch and remove its overlay for the duration of
+  // playback; returnToLive performs a fresh status check afterwards.
+  clearCameraAvailabilityWatch();
+  hideLiveOffline();
+  hideLiveReconnecting();
+
   var isoStr = timestamp.toISOString();
   // duration=3600 is the server max: one click reviews up to an hour before
   // the chain in onended fetches the next window.
@@ -3193,6 +3390,12 @@ function returnToLive() {
 
   toast('Returned to live view');
   restoreTimelineFollow();
+
+  var name = getCameraName();
+  if (name) {
+    cameraAvailabilityName = name;
+    checkCameraAvailability(false);
+  }
 }
 
 function updatePlaybackUI() {

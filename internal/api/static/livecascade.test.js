@@ -2,7 +2,7 @@
 // Run: node --test internal/api/static/livecascade.test.js
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { nextWebrtcAction, liveOverlayState } = require('./livecascade.js');
+const { nextWebrtcAction, liveOverlayState, initialLiveState } = require('./livecascade.js');
 
 // nextWebrtcAction bounds the WebRTC reconnect loop. The cap must be a
 // strict, SDP-independent limit: the attempt counter is reset only by a
@@ -61,4 +61,26 @@ test('on-demand camera mid-event -> reconnecting, online wins over sleeping', ()
 
 test('normal camera down is still offline, not sleeping', () => {
   assert.equal(liveOverlayState({ apiOnline: false, apiSleeping: false }), 'offline');
+});
+
+// The initial page load must not start a transport for a camera that cannot
+// currently produce video. This is especially important on iPhone, where the
+// native-HLS high/low warmup cascade otherwise looks like a 30-second hang.
+
+test('initial online camera starts live video', () => {
+  assert.equal(initialLiveState({ online: true, sleeping: false }), 'live');
+});
+
+test('initial sleeping camera waits without starting video', () => {
+  assert.equal(initialLiveState({ online: false, sleeping: true }), 'sleeping');
+});
+
+test('initial down camera shows offline without starting video', () => {
+  assert.equal(initialLiveState({ online: false, sleeping: false }), 'offline');
+});
+
+test('missing or malformed status is not mislabeled as a camera outage', () => {
+  assert.equal(initialLiveState(null), 'unavailable');
+  assert.equal(initialLiveState({}), 'unavailable');
+  assert.equal(initialLiveState({ online: false }), 'unavailable');
 });

@@ -83,6 +83,9 @@ func (s *Server) GetCamera(w http.ResponseWriter, r *http.Request, name string) 
 	if !st.LastConnected.IsZero() {
 		resp["last_connected"] = st.LastConnected
 	}
+	if !st.LastSeen.IsZero() {
+		resp["last_seen"] = st.LastSeen.UTC().Format(time.RFC3339)
+	}
 	if st.StreamError != "" {
 		resp["stream_error"] = st.StreamError
 	}

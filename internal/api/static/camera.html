@@ -82,11 +82,20 @@
             <div class="spinner"></div>
             <span id="stream-connecting-label">Connecting...</span>
           </div>
-          <div class="live-offline hidden" id="live-offline" role="status" aria-live="polite">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.56 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg>
+          <div class="live-offline hidden" id="live-offline" role="status" aria-live="polite" data-state="offline">
+            <svg id="live-state-icon-offline" class="live-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48" aria-hidden="true"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.56 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg>
+            <svg id="live-state-icon-sleeping" class="live-state-icon hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg id="live-state-icon-unavailable" class="live-state-icon hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5M12 16h.01"/></svg>
             <p class="live-offline-title" id="live-offline-title">Camera offline</p>
             <p class="live-offline-sub" id="live-offline-sub"></p>
-            <button class="btn-retry" data-action-click="retryStream()">Retry</button>
+            <div class="live-state-actions">
+              <button type="button" class="live-state-action live-state-action-primary" id="live-state-retry" data-action-click="retryCameraStatus()">Try again</button>
+              <a class="live-state-action live-state-action-secondary" id="live-state-recordings" href="/recordings.html">View recordings</a>
+            </div>
+            <details class="live-state-details hidden" id="live-state-details">
+              <summary>Connection details</summary>
+              <p id="live-state-detail-copy"></p>
+            </details>
           </div>
           <div class="live-offline live-reconnecting hidden" id="live-reconnecting" role="status" aria-live="polite">
             <div class="spinner"></div>
@@ -591,22 +600,26 @@
       document.getElementById('cam-breadcrumb').textContent = displayName;
       document.title = displayName + ' - Vedetta';
 
-      // Verify the camera exists before starting the live view. A 404 means the
-      // slug is unknown — replace the viewport with a not-found panel and skip
-      // starting the stream entirely. Any other non-OK status is treated as a
-      // transient error and we proceed optimistically.
+      // Verify the camera and read its current availability before starting any
+      // live transport. Sleeping and offline cameras get an immediate useful
+      // state instead of entering the iPhone HLS fallback cascade.
       fetch('/api/cameras/' + encodeURIComponent(name))
         .then(function(r) {
           if (r.status === 404) {
             showCameraNotFound(name);
-            return; // stop the chain
+            return null;
           }
-          initCameraPage(name);
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(cameraStatus) {
+          if (cameraStatus) initCameraPage(name, cameraStatus);
         })
         .catch(function() {
-          // Network error — proceed optimistically so users on flaky connections
-          // still get the live view attempt.
-          initCameraPage(name);
+          // Keep a status failure distinct from a camera outage. The page stays
+          // useful (events, timeline, settings) and retries the lightweight API
+          // request without launching an expensive, misleading stream attempt.
+          initCameraPage(name, null);
         });
 
       function showCameraNotFound(camName) {
@@ -630,26 +643,47 @@
           '</div>';
       }
 
-      function initCameraPage(camName) {
+      function initCameraPage(camName, cameraStatus) {
+        const playbackDate = resolvePlaybackTime(
+          new URLSearchParams(location.search).get('t'));
+        const initialState = initialLiveState(cameraStatus);
+
         // Pre-warm live HLS immediately if this page will land on the live
         // view (no recording deep-link). This runs in parallel with the
         // snapshot/events/timeline/zones init below, giving the server a
         // multi-second head start to mux the first segment before
         // startLiveStream() attaches the player - so a slow-keyframe camera
-        // does not cascade to the 2s snapshot loop on a cold load.
-        if (!resolvePlaybackTime(new URLSearchParams(location.search).get('t'))) {
+        // does not cascade to the 2s snapshot loop on a cold load. Crucially,
+        // only an online camera is warmed.
+        if (!playbackDate && initialState === 'live') {
           prewarmLiveHLS(camName);
         }
 
         // Snapshot refresh
         const snap = document.getElementById('live-snapshot');
         if (snap) {
+          snap.addEventListener('error', function() {
+            // Keep polling for a future frame, but never leak the browser's
+            // broken-image glyph or alt text through a translucent state panel.
+            snap.classList.add('snapshot-missing');
+          });
+          snap.addEventListener('load', function() {
+            snap.classList.remove('snapshot-missing');
+          });
           snap.src = '/api/cameras/' + encodeURIComponent(camName) + '/snapshot';
           setInterval(function() {
             if (!snap.classList.contains('hidden')) {
               snap.src = '/api/cameras/' + encodeURIComponent(camName) + '/snapshot?t=' + Date.now();
             }
           }, 2000);
+        }
+
+        // Render terminal camera states before initializing the rest of the
+        // page. History remains fully usable, while a quiet status-only poll
+        // moves to live video automatically if the camera becomes available.
+        if (!playbackDate && initialState !== 'live') {
+          showCameraIdleState(camName, initialState, cameraStatus);
+          startCameraAvailabilityWatch(camName);
         }
 
         // Load events (embed=1 disables auto-pagination so the per-camera
@@ -667,8 +701,6 @@
         // resolves to a real timestamp. A present-but-unresolvable t (epoch
         // cruft frozen into a home-screen launch URL, or garbage) yields null
         // and must fall through to the live view, never strand the page.
-        const playbackDate = resolvePlaybackTime(
-          new URLSearchParams(location.search).get('t'));
         if (playbackDate) {
           // Set timeline date BEFORE initTimeline so it fetches the right day
           timelineDate = new Date(playbackDate);
@@ -687,7 +719,7 @@
 
         if (playbackDate) {
           setTimeout(function() { startPlayback(playbackDate); }, 500);
-        } else {
+        } else if (initialState === 'live') {
           // Auto-start live stream (platform picks the best transport)
           startLiveStream();
         }

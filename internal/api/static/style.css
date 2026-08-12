@@ -1288,18 +1288,97 @@ input, select { font-family: inherit; }
   opacity: 1;
   pointer-events: auto;
 }
-.vc-progress {
-  height: 3px;
-  background: rgba(255, 255, 255, 0.2);
+.vc-progress-shell {
+  position: relative;
+  height: 20px;
   margin: 0 0.75rem;
   cursor: pointer;
-  position: relative;
+  touch-action: none;
+}
+.vc-progress-shell::before,
+.vc-progress-buffered,
+.vc-progress-bar {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 3px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.vc-progress-shell::before {
+  right: 0;
+  background: rgba(255, 255, 255, 0.22);
+}
+.vc-progress-buffered {
+  width: 0;
+  background: rgba(255, 255, 255, 0.42);
 }
 .vc-progress-bar {
-  height: 100%;
-  background: var(--red, #ff5252);
+  width: 0;
+  background: var(--cyan);
+}
+.vc-progress {
+  appearance: none;
+  -webkit-appearance: none;
+  position: absolute;
+  inset: 0;
   width: 100%;
-  transition: width 0.3s linear;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+}
+.vc-progress::-webkit-slider-runnable-track {
+  height: 3px;
+  background: transparent;
+}
+.vc-progress::-moz-range-track {
+  height: 3px;
+  background: transparent;
+}
+.vc-progress::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--cyan);
+  transform: scale(0.75);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.vc-progress::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--cyan);
+  transform: scale(0.75);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.vc-progress:hover::-webkit-slider-thumb,
+.vc-progress:focus-visible::-webkit-slider-thumb,
+.vc-progress.is-scrubbing::-webkit-slider-thumb { transform: scale(1); }
+.vc-progress:hover::-moz-range-thumb,
+.vc-progress:focus-visible::-moz-range-thumb,
+.vc-progress.is-scrubbing::-moz-range-thumb { transform: scale(1); }
+.vc-progress:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 0;
+  border-radius: var(--radius-xs);
+}
+.vc-progress:disabled { cursor: default; opacity: 0; }
+.vc-time {
+  min-width: 4.5rem;
+  margin-left: 0.25rem;
+  color: rgba(255, 255, 255, 0.82);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .vc-bar {
   display: flex;
@@ -2582,20 +2661,25 @@ kbd {
 }
 
 /* Enlarge timeline/video progress scrubbers on touch devices for usable taps.
-   We keep the visible bar small but extend the hit area via a pseudo-element so
-   taps are reliable on mobile. */
+   The track stays visually quiet while the native range input owns a full
+   44px-high hit area. */
 @media (pointer: coarse) {
-  .vc-progress { position: relative; }
-  .vc-progress::after {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: -10px;
-    bottom: -10px;
-    cursor: pointer;
+  .vc-progress-shell,
+  .vc-progress { height: 44px; }
+  .vc-progress::-webkit-slider-thumb {
+    width: 18px;
+    height: 18px;
+    margin-top: -7.5px;
   }
+  .vc-progress::-moz-range-thumb { width: 18px; height: 18px; }
   .timeline-track { min-height: 56px; }
+}
+
+@media (hover: none) {
+  .video-controls {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* ─── Disk Warning Banner ─── */

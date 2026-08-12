@@ -692,8 +692,10 @@ type HLSSegmentRef struct {
 // EXT-X-DISCONTINUITY is emitted at every file boundary. fileStarts optionally
 // supplies each file's wall-clock start (the instant of media tick 0); when
 // present, an EXT-X-PROGRAM-DATE-TIME tag anchors the first segment of each
-// file so players can map playback positions back to wall-clock time. Pass nil
-// to omit the tags.
+// file so players can map playback positions back to wall-clock time. When the
+// requested start falls inside the retained first GOP, EXT-X-START asks the
+// player to present the exact offset after decoding that keyframe. Pass nil to
+// omit the program-date-time tags.
 func GenerateHLSPlaylist(paths []string, baseURIs []string, fileStarts []time.Time, start time.Duration) (*HLSPlaylistResult, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("no paths provided")
@@ -835,6 +837,15 @@ func GenerateHLSPlaylist(paths []string, baseURIs []string, fileStarts []time.Ti
 	b.WriteString("#EXT-X-VERSION:7\n")
 	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", targetDuration)
 	b.WriteString("#EXT-X-PLAYLIST-TYPE:VOD\n")
+	if start > 0 && segments[0].fileIdx == 0 && segments[0].videoTS > 0 {
+		firstMediaStart := float64(segments[0].startTick) / float64(segments[0].videoTS)
+		preferredStart := start.Seconds() - firstMediaStart
+		if preferredStart > 0.001 {
+			// PRECISE=YES is important here: starting only at the containing GOP
+			// recreates the visible "snap to a few start times" this tag removes.
+			fmt.Fprintf(&b, "#EXT-X-START:TIME-OFFSET=%.6f,PRECISE=YES\n", preferredStart)
+		}
+	}
 
 	var refs []HLSSegmentRef
 	lastFileIdx := -1

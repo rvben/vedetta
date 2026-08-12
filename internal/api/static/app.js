@@ -21,6 +21,10 @@ let playbackMode = false; // true when playing back a recording
 let playbackStartTime = null; // Date when playback segment starts
 let playbackOffset = 0; // offset into segment where playback begins
 let playbackHls = null; // Hls instance for recording playback
+let playbackRequestedTime = null; // exact wall-clock instant requested by the user
+let playbackSeekMap = []; // hls.js fragment wall-clock -> media-time map
+let videoScrubbing = false; // suppress progress writers while the user owns the range input
+let resumeAfterScrub = false; // restore the pre-scrub playing state on release
 let timelineDragging = false; // true while a pointer gesture (pan/pinch) is active; suppresses the live and playback playhead writers
 var cachedSegments = []; // raw segment data from API
 var cachedActivity = [];
@@ -31,6 +35,7 @@ var mergedBlocks = []; // merged blocks {start: sec, end: sec} for hit-testing (
 // ReferenceError on pages without the module; timeline code only ever runs on
 // the camera page (every entry point bails when #timeline-track is absent).
 var TLW = (typeof TimelineWindow !== 'undefined') ? TimelineWindow : null;
+var PBS = (typeof PlaybackSeek !== 'undefined') ? PlaybackSeek : null;
 var timelineWin = TLW ? TLW.makeWindow(0, TLW.SECONDS_PER_DAY) : null; // visible window in seconds-of-day
 var timelineModel = null; // { scores, hasCoverage, mergedBlocks, eventIntervals } from prepareTimelineModel
 var followLive = false; // true: window auto-pans to keep "now" in view (today only)
@@ -1559,7 +1564,7 @@ function attachAutoplayBlockedDetector(video) {
   var overlay = el('video-tap-to-start');
   if (!overlay) return;
   var check = function() {
-    if (video.paused && !userPaused && video.readyState >= 2 && !video.ended) {
+    if (video.paused && !userPaused && !videoScrubbing && video.readyState >= 2 && !video.ended) {
       overlay.classList.remove('hidden');
     }
   };
@@ -1665,18 +1670,117 @@ function updatePauseUI() {
     liveBtn.classList.toggle('is-live', atLive);
   }
 
-  // Update progress bar (red = buffered, shows how far behind live)
-  var bar = el('vc-progress-bar');
-  if (bar) {
-    var video = el('live-video');
-    if (video && !video.classList.contains('hidden') && video.buffered.length > 0) {
-      var liveEdge = video.buffered.end(video.buffered.length - 1);
-      var pct = liveEdge > 0 ? Math.min(100, (video.currentTime / liveEdge) * 100) : 100;
-      bar.style.width = pct + '%';
-    } else {
-      bar.style.width = '100%';
+  updateVideoProgress();
+}
+
+// Return the media element's current seekable window. VOD usually exposes the
+// whole playlist; live playback exposes the rolling DVR buffer. duration is a
+// safe fallback while a browser is still populating TimeRanges.
+function videoSeekWindow(video) {
+  if (!video) return null;
+  if (video.seekable && video.seekable.length > 0) {
+    var first = video.seekable.start(0);
+    var last = video.seekable.end(video.seekable.length - 1);
+    if (isFinite(first) && isFinite(last) && last > first) return { start: first, end: last };
+  }
+  if (isFinite(video.duration) && video.duration > 0) return { start: 0, end: video.duration };
+  return null;
+}
+
+function bufferedEndFor(video, currentTime) {
+  if (!video || !video.buffered) return currentTime;
+  var furthest = currentTime;
+  for (var i = 0; i < video.buffered.length; i++) {
+    if (video.buffered.start(i) <= currentTime + 0.25) {
+      furthest = Math.max(furthest, video.buffered.end(i));
     }
   }
+  return furthest;
+}
+
+function updateVideoProgress() {
+  var video = el('live-video');
+  var input = el('vc-progress');
+  var played = el('vc-progress-bar');
+  var buffered = el('vc-progress-buffered');
+  var time = el('vc-time');
+  if (!input || !played || !buffered || !time) return;
+
+  var active = video && !video.classList.contains('hidden');
+  var win = active ? videoSeekWindow(video) : null;
+  if (!win) {
+    input.disabled = true;
+    played.style.width = active ? '100%' : '0%';
+    buffered.style.width = active ? '100%' : '0%';
+    time.textContent = playbackMode ? 'Loading…' : 'Live';
+    return;
+  }
+
+  input.disabled = false;
+  input.min = String(win.start);
+  input.max = String(win.end);
+  input.step = '0.05';
+  var current = Math.max(win.start, Math.min(win.end, video.currentTime));
+  if (!videoScrubbing) input.value = String(current);
+  var span = win.end - win.start;
+  var playedPct = (current - win.start) / span * 100;
+  var bufferedPct = (Math.min(win.end, bufferedEndFor(video, current)) - win.start) / span * 100;
+  played.style.width = Math.max(0, Math.min(100, playedPct)) + '%';
+  buffered.style.width = Math.max(0, Math.min(100, bufferedPct)) + '%';
+
+  if (playbackMode) {
+    var wall = playbackWallTime(video);
+    var wallLabel = wall ? wall.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+    time.textContent = wallLabel || (PBS ? PBS.formatMediaTime(current - win.start) : 'Playback');
+    input.setAttribute('aria-valuetext', wallLabel ? 'Recording at ' + wallLabel : 'Recording position');
+  } else {
+    var behind = Math.max(0, win.end - current);
+    var atLive = behind <= 2;
+    time.textContent = atLive ? 'Live' : '−' + (PBS ? PBS.formatMediaTime(behind) : Math.round(behind) + 's');
+    input.setAttribute('aria-valuetext', atLive ? 'Live' : Math.round(behind) + ' seconds behind live');
+  }
+}
+
+function initVideoScrubber() {
+  var input = el('vc-progress');
+  var video = el('live-video');
+  if (!input || !video || input.dataset.ready === '1') return;
+  input.dataset.ready = '1';
+
+  function seekFromInput() {
+    var target = Number(input.value);
+    if (!isFinite(target)) return;
+    video.currentTime = target; // precise seek; fastSeek intentionally snaps to keyframes
+    updateVideoProgress();
+    if (playbackMode) updatePlayheadForPlayback(target);
+  }
+
+  function beginScrub() {
+    videoScrubbing = true;
+    resumeAfterScrub = !video.paused && !video.ended;
+    if (resumeAfterScrub) video.pause();
+    input.classList.add('is-scrubbing');
+  }
+
+  function endScrub() {
+    if (!videoScrubbing) return;
+    seekFromInput();
+    videoScrubbing = false;
+    input.classList.remove('is-scrubbing');
+    if (resumeAfterScrub) video.play().catch(function() {});
+    resumeAfterScrub = false;
+    updateVideoProgress();
+  }
+
+  input.addEventListener('pointerdown', beginScrub);
+  input.addEventListener('input', seekFromInput);
+  input.addEventListener('change', endScrub);
+  input.addEventListener('pointerup', endScrub);
+  input.addEventListener('pointercancel', endScrub);
+  video.addEventListener('timeupdate', updateVideoProgress);
+  video.addEventListener('progress', updateVideoProgress);
+  video.addEventListener('durationchange', updateVideoProgress);
+  video.addEventListener('loadedmetadata', updateVideoProgress);
 }
 
 function isBehindLive() {
@@ -1689,6 +1793,7 @@ function isBehindLive() {
 function initViewportPause() {
   var viewport = el('live-viewport');
   if (!viewport) return;
+  initVideoScrubber();
   viewport.addEventListener('click', function(e) {
     if (e.target.closest('.video-controls')) return;
     if (e.target.closest('.stream-stats')) return;
@@ -2457,7 +2562,10 @@ function commitSeekToSecond(sec) {
   var hh = Math.floor(r.sec / 3600), mm = Math.floor((r.sec % 3600) / 60), ss = Math.floor(r.sec % 60);
   var d = new Date(timelineDate);
   d.setHours(hh, mm, ss, 0);
-  startPlayback(d);
+  // A loaded one-hour playlist is already seekable. Reuse it when its fragment
+  // map contains the requested wall-clock instant; this turns repeated timeline
+  // clicks into immediate in-player seeks instead of a source teardown/reload.
+  if (!seekWithinLoadedPlayback(d)) startPlayback(d);
 }
 
 // Any deliberate pan/zoom/seek opts out of viewport auto-defaulting and follow.
@@ -2871,6 +2979,42 @@ function cleanupPlaybackHls() {
     playbackHls.destroy();
     playbackHls = null;
   }
+  playbackSeekMap = [];
+}
+
+function setPlaybackMediaTime(video, mediaTime) {
+  if (!video || !isFinite(mediaTime)) return false;
+  var end = isFinite(video.duration) && video.duration > 0 ? video.duration : mediaTime;
+  var target = Math.max(0, Math.min(mediaTime, end));
+  if (Math.abs(video.currentTime - target) > 0.05) video.currentTime = target;
+  updateVideoProgress();
+  updatePlayheadForPlayback(target);
+  return true;
+}
+
+// Seek without rebuilding the HLS source when the requested wall-clock instant
+// already exists in the loaded playlist. The fragment map handles recording
+// gaps correctly; subtracting wall-clock times alone would not.
+function seekWithinLoadedPlayback(timestamp) {
+  if (!playbackMode || !PBS || playbackSeekMap.length === 0) return false;
+  var video = el('live-video');
+  var mediaTime = PBS.wallTimeToMediaTime(playbackSeekMap, timestamp);
+  if (mediaTime === null || !setPlaybackMediaTime(video, mediaTime)) return false;
+  playbackRequestedTime = timestamp;
+  if (!userPaused) video.play().catch(function() {});
+  return true;
+}
+
+// HLS must include the GOP/keyframe before the requested frame. Once metadata
+// is available, advance within that GOP to the exact requested instant. This is
+// an idempotent fallback for players that ignore EXT-X-START:PRECISE=YES.
+function alignPlaybackToRequestedTime(video) {
+  if (!video || !playbackRequestedTime) return;
+  var mediaTime = PBS ? PBS.wallTimeToMediaTime(playbackSeekMap, playbackRequestedTime) : null;
+  if (mediaTime === null && playbackStartTime) {
+    mediaTime = (playbackRequestedTime.getTime() - playbackStartTime.getTime()) / 1000;
+  }
+  if (mediaTime !== null && mediaTime >= 0) setPlaybackMediaTime(video, mediaTime);
 }
 
 // Wall-clock time of the current playback position. Prefers the player's
@@ -2905,6 +3049,7 @@ function startPlayback(timestamp, opts) {
   if (!video) return;
 
   playbackOffset = 0;
+  playbackRequestedTime = new Date(timestamp);
   playbackStartTime = timestamp;
 
   video.muted = true;
@@ -2917,6 +3062,19 @@ function startPlayback(timestamp, opts) {
 
   video.ontimeupdate = function() {
     updatePlayheadForPlayback(video.currentTime);
+    updateVideoProgress();
+  };
+
+  video.onloadedmetadata = function() {
+    // Native HLS exposes the playlist's real program-date-time here. hls.js
+    // supplies the equivalent via LEVEL_LOADED below.
+    if (!playbackHls && typeof video.getStartDate === 'function') {
+      var actualStart = video.getStartDate();
+      if (actualStart && !isNaN(actualStart.getTime())) playbackStartTime = actualStart;
+    }
+    alignPlaybackToRequestedTime(video);
+    updateVideoProgress();
+    video.play().catch(function() {});
   };
 
   video.onended = function() {
@@ -2943,6 +3101,7 @@ function startPlayback(timestamp, opts) {
     hls.loadSource(url);
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, function() {
+      alignPlaybackToRequestedTime(video);
       video.play().catch(function() {});
     });
     hls.on(Hls.Events.LEVEL_LOADED, function(event, data) {
@@ -2951,7 +3110,12 @@ function startPlayback(timestamp, opts) {
       // requested timestamp by a couple of seconds.
       var frags = data.details && data.details.fragments;
       if (frags && frags.length && frags[0].programDateTime) {
-        playbackStartTime = new Date(frags[0].programDateTime);
+        playbackSeekMap = PBS ? PBS.buildFragmentMap(frags) : [];
+        playbackStartTime = playbackSeekMap.length
+          ? new Date(playbackSeekMap[0].wallStart)
+          : new Date(frags[0].programDateTime);
+        alignPlaybackToRequestedTime(video);
+        updateVideoProgress();
       }
     });
     hls.on(Hls.Events.ERROR, function(event, data) {
@@ -2978,9 +3142,6 @@ function startPlayback(timestamp, opts) {
       updatePlayheadToNow();
       returnToLive();
     };
-    video.onloadedmetadata = function() {
-      video.play().catch(function() {});
-    };
   } else {
     toast('HLS playback not supported in this browser', 'error');
     return;
@@ -2988,6 +3149,7 @@ function startPlayback(timestamp, opts) {
 
   playbackMode = true;
   updatePlaybackUI();
+  updateVideoProgress();
   if (!opts || !opts.quiet) {
     toast('Playing recording from ' + timestamp.toLocaleTimeString());
   }
@@ -3019,9 +3181,12 @@ function returnToLive() {
   if (snap) snap.classList.remove('hidden');
 
   playbackMode = false;
+  playbackRequestedTime = null;
+  playbackStartTime = null;
   currentStream = null;
   updatePlaybackUI();
   updateStreamButtons();
+  updateVideoProgress();
 
   // Reset playhead to current time if viewing today
   updatePlayheadToNow();

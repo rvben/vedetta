@@ -492,8 +492,8 @@ func TestGenerateHLSPlaylist(t *testing.T) {
 
 // Multi-file playlists must signal the decode-time reset at every file
 // boundary (EXT-X-DISCONTINUITY) and anchor each file to wall-clock time
-// (EXT-X-PROGRAM-DATE-TIME), with the first file's PDT advanced by the
-// trimmed-away media so players map positions to true wall time.
+// (EXT-X-PROGRAM-DATE-TIME), with the first file's PDT advanced to the retained
+// GOP and EXT-X-START carrying the exact sub-GOP offset.
 func TestGenerateHLSPlaylist_DiscontinuityAndPDT(t *testing.T) {
 	dir := t.TempDir()
 	path1 := filepath.Join(dir, "a.mp4")
@@ -506,12 +506,13 @@ func TestGenerateHLSPlaylist_DiscontinuityAndPDT(t *testing.T) {
 	t0 := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	fileStarts := []time.Time{t0, t0.Add(20 * time.Second)}
 
-	// Trim 5s into the first file.
+	// Request 5.25s into the first file. The retained GOP starts at 5s, and the
+	// player must then advance another 250ms for frame-accurate presentation.
 	result, err := GenerateHLSPlaylist(
 		[]string{path1, path2},
 		[]string{"/a", "/b"},
 		fileStarts,
-		5*time.Second,
+		5250*time.Millisecond,
 	)
 	if err != nil {
 		t.Fatalf("GenerateHLSPlaylist: %v", err)
@@ -524,6 +525,9 @@ func TestGenerateHLSPlaylist_DiscontinuityAndPDT(t *testing.T) {
 	// First file's PDT reflects the 5s trim.
 	if !strings.Contains(playlist, "#EXT-X-PROGRAM-DATE-TIME:2026-06-10T12:00:05.000Z") {
 		t.Errorf("missing trimmed first-file PDT:\n%s", playlist)
+	}
+	if !strings.Contains(playlist, "#EXT-X-START:TIME-OFFSET=0.250000,PRECISE=YES") {
+		t.Errorf("missing precise sub-GOP start offset:\n%s", playlist)
 	}
 	// Second file's PDT is its own wall start (media restarts at tick 0).
 	if !strings.Contains(playlist, "#EXT-X-PROGRAM-DATE-TIME:2026-06-10T12:00:20.000Z") {

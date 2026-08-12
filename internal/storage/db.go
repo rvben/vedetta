@@ -183,6 +183,8 @@ type EventFilters struct {
 	Category string // "alert" or "detection"; empty matches all
 	Kind     string // "object" or "doorbell"; empty matches all
 	Search   string // free-text LIKE across camera, label, object_name, sub_label
+	After    time.Time
+	Before   time.Time
 }
 
 // QueryEvents returns events matching the given filters.
@@ -252,6 +254,14 @@ func eventFilterClause(f EventFilters) (string, []any) {
 		like := "%" + q + "%"
 		clauses = append(clauses, "(camera LIKE ? OR label LIKE ? OR IFNULL(object_name,'') LIKE ? OR IFNULL(sub_label,'') LIKE ?)")
 		args = append(args, like, like, like, like)
+	}
+	if !f.After.IsZero() {
+		clauses = append(clauses, "timestamp >= ?")
+		args = append(args, f.After)
+	}
+	if !f.Before.IsZero() {
+		clauses = append(clauses, "timestamp < ?")
+		args = append(args, f.Before)
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
 }
@@ -1094,10 +1104,18 @@ func (d *DB) GetRecordingDays(camera string, year int, month int, loc *time.Loca
 // GetAdjacentEvents returns the previous and next event IDs relative to the given event,
 // ordered by timestamp.
 func (d *DB) GetAdjacentEvents(id string) (prevID, nextID string, err error) {
+	return d.GetAdjacentEventsFiltered(id, EventFilters{})
+}
+
+// GetAdjacentEventsFiltered returns the previous and next event IDs relative
+// to the given event while preserving the active event-review filters.
+func (d *DB) GetAdjacentEventsFiltered(id string, filters EventFilters) (prevID, nextID string, err error) {
+	where, args := eventFilterClause(filters)
+	prevArgs := append(append([]any{}, args...), id)
 	err = d.db.QueryRow(`
-		SELECT id FROM events
-		WHERE timestamp < (SELECT timestamp FROM events WHERE id = ?)
-		ORDER BY timestamp DESC LIMIT 1`, id).Scan(&prevID)
+		SELECT id FROM events`+where+`
+		AND timestamp < (SELECT timestamp FROM events WHERE id = ?)
+		ORDER BY timestamp DESC LIMIT 1`, prevArgs...).Scan(&prevID)
 	if err == sql.ErrNoRows {
 		prevID = ""
 		err = nil
@@ -1106,10 +1124,11 @@ func (d *DB) GetAdjacentEvents(id string) (prevID, nextID string, err error) {
 		return "", "", err
 	}
 
+	nextArgs := append(append([]any{}, args...), id)
 	err = d.db.QueryRow(`
-		SELECT id FROM events
-		WHERE timestamp > (SELECT timestamp FROM events WHERE id = ?)
-		ORDER BY timestamp ASC LIMIT 1`, id).Scan(&nextID)
+		SELECT id FROM events`+where+`
+		AND timestamp > (SELECT timestamp FROM events WHERE id = ?)
+		ORDER BY timestamp ASC LIMIT 1`, nextArgs...).Scan(&nextID)
 	if err == sql.ErrNoRows {
 		nextID = ""
 		err = nil

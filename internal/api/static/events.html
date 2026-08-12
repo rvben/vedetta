@@ -41,49 +41,73 @@
     <div class="page-header">
       <div>
         <h1>Events</h1>
-        <p class="events-summary" id="events-summary">Loading…</p>
+        <p class="events-summary" id="events-summary" aria-live="polite">Reviewing recorded activity…</p>
       </div>
-      <button class="btn btn-sm btn-ghost" data-action-click="toggleEventsLegend()" aria-controls="events-legend" aria-expanded="false" id="events-legend-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        What do these badges mean?
-      </button>
-    </div>
-
-    <div class="events-legend" id="events-legend" hidden aria-label="Badge legend">
-      <span class="events-legend-item"><span class="events-legend-dot label"></span>Label (person, car…)</span>
-      <span class="events-legend-item"><span class="events-legend-dot duration"></span>Duration</span>
-      <span class="events-legend-item"><span class="events-legend-dot score"></span>Confidence %</span>
-      <span class="events-legend-item"><span class="events-legend-dot identity"></span>Identity (name when recognised)</span>
     </div>
 
     <div class="events-toolbar">
-      <div class="search-wrap">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" id="event-search" class="search-input" placeholder="Search by camera, label, name…" aria-label="Search events">
+      <div class="events-toolbar-primary">
+        <div class="search-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="search" id="event-search" class="search-input" placeholder="Search events…" aria-label="Search by camera, label, or recognized name" autocomplete="off">
+        </div>
+        <label class="events-range-control">
+          <span class="sr-only">Time range</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <select id="event-range" data-action-change="reloadEvents()" aria-label="Event time range">
+            <option value="">All time</option>
+            <option value="today">Today</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-sm events-filter-toggle" id="events-filter-toggle" data-action-click="toggleEventsFilters()" aria-controls="events-filter-panel" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+          Filters <span class="events-filter-count" id="events-filter-count" hidden>0</span>
+        </button>
       </div>
-      <div class="events-filter-row">
-        <div class="chip-bar" id="filter-chips" role="toolbar" aria-label="Event labels">
+
+      <div class="events-quick-row">
+        <div class="chip-bar events-label-chips" id="filter-chips" role="toolbar" aria-label="Event labels">
           <button class="chip active" data-filter="label" data-value="" data-action-click="toggleChip(this, 'label')" aria-pressed="true">All</button>
           <button class="chip" data-filter="label" data-value="person" data-action-click="toggleChip(this, 'label')" aria-pressed="false"><span class="chip-dot person"></span>Person</button>
           <button class="chip" data-filter="label" data-value="car" data-action-click="toggleChip(this, 'label')" aria-pressed="false"><span class="chip-dot car"></span>Car</button>
           <button class="chip" data-filter="label" data-value="dog" data-action-click="toggleChip(this, 'label')" aria-pressed="false"><span class="chip-dot dog"></span>Dog</button>
           <button class="chip" data-filter="label" data-value="cat" data-action-click="toggleChip(this, 'label')" aria-pressed="false"><span class="chip-dot cat"></span>Cat</button>
         </div>
-        <div class="chip-bar" id="category-chips" role="toolbar" aria-label="Priority">
-          <button class="chip active" data-filter="category" data-value="" data-action-click="toggleChip(this, 'category')" aria-pressed="true">All priorities</button>
-          <button class="chip" data-filter="category" data-value="alert" data-action-click="toggleChip(this, 'category')" aria-pressed="false" title="People, animals, and vehicles that are moving">Alerts</button>
-          <button class="chip" data-filter="category" data-value="detection" data-action-click="toggleChip(this, 'category')" aria-pressed="false" title="Low priority, e.g. a parked vehicle">Detections</button>
-        </div>
-        <div class="chip-bar" id="camera-chips" role="toolbar" aria-label="Cameras">
-          <button class="chip active" data-filter="camera" data-value="" data-action-click="toggleChip(this, 'camera')" aria-pressed="true">All Cameras</button>
-        </div>
-        <div class="chip-bar" id="object-chips" role="toolbar" aria-label="Tracked objects" style="display:none"></div>
+        <span class="events-active-filter-summary" id="events-active-filter-summary" hidden></span>
         <button class="btn btn-sm btn-ghost events-clear-filters" id="events-clear-filters" data-action-click="clearAllEventFilters()" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          Clear filters
+          Reset
         </button>
       </div>
+
+      <div class="events-filter-panel" id="events-filter-panel" hidden>
+        <section class="events-filter-group" aria-labelledby="events-priority-label">
+          <h2 id="events-priority-label">Priority</h2>
+          <div class="chip-bar" id="category-chips" role="toolbar" aria-label="Priority">
+            <button class="chip active" data-filter="category" data-value="" data-action-click="toggleChip(this, 'category')" aria-pressed="true">Any priority</button>
+            <button class="chip" data-filter="category" data-value="alert" data-action-click="toggleChip(this, 'category')" aria-pressed="false">Alerts</button>
+            <button class="chip" data-filter="category" data-value="detection" data-action-click="toggleChip(this, 'category')" aria-pressed="false">Low priority</button>
+          </div>
+        </section>
+        <section class="events-filter-group" aria-labelledby="events-camera-label">
+          <h2 id="events-camera-label">Camera</h2>
+          <div class="chip-bar" id="camera-chips" role="toolbar" aria-label="Cameras">
+            <button class="chip active" data-filter="camera" data-value="" data-action-click="toggleChip(this, 'camera')" aria-pressed="true">Any camera</button>
+          </div>
+        </section>
+        <section class="events-filter-group" id="events-object-group" aria-labelledby="events-object-label" hidden>
+          <h2 id="events-object-label">Recognized as</h2>
+          <div class="chip-bar" id="object-chips" role="toolbar" aria-label="Recognized identities"></div>
+        </section>
+      </div>
     </div>
+
+    <button type="button" class="events-new-banner" id="events-new-banner" data-action-click="showNewestEvents()" hidden aria-live="polite">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+      <span id="events-new-banner-label">New activity</span>
+    </button>
 
     <!-- Event Gallery -->
     <div class="event-gallery"
@@ -115,48 +139,113 @@
   <div class="toast-container" id="toasts"></div>
   <script src="/app.js"></script>
   <script>
-    // Initialize search and infinite scroll
-    initEventSearch();
-    initInfiniteScroll();
-
     var eventsTotalAll = 0;
     var eventsTodayCount = 0;
+    var eventsVisibleTotal = 0;
+    var pendingEventCount = 0;
 
-    function toggleEventsLegend() {
-      var el = document.getElementById('events-legend');
-      var btn = document.getElementById('events-legend-btn');
-      var open = el.hasAttribute('hidden');
-      if (open) { el.removeAttribute('hidden'); btn.setAttribute('aria-expanded', 'true'); }
-      else { el.setAttribute('hidden', ''); btn.setAttribute('aria-expanded', 'false'); }
+    function setEventChipValue(type, value) {
+      var matched = false;
+      document.querySelectorAll('.chip[data-filter="' + type + '"]').forEach(function(chip) {
+        var active = chip.dataset.value === value;
+        chip.classList.toggle('active', active);
+        chip.setAttribute('aria-pressed', active ? 'true' : 'false');
+        if (active) matched = true;
+      });
+      return matched;
     }
 
+    function applyEventFiltersFromURL() {
+      var params = new URLSearchParams(location.search);
+      ['label', 'camera', 'object', 'category'].forEach(function(type) {
+        var value = params.get(type) || '';
+        if (!setEventChipValue(type, value)) setEventChipValue(type, '');
+      });
+      var search = document.getElementById('event-search');
+      var range = document.getElementById('event-range');
+      if (search) search.value = params.get('q') || '';
+      if (range) range.value = params.get('range') || '';
+    }
+
+    function initialEventRequestURL() {
+      var source = new URLSearchParams(location.search);
+      var params = new URLSearchParams();
+      ['label', 'camera', 'object', 'category', 'q', 'range'].forEach(function(key) {
+        if (source.get(key)) params.set(key, source.get(key));
+      });
+      return eventGalleryRequestURL(params);
+    }
+
+    function toggleEventsFilters() {
+      var panel = document.getElementById('events-filter-panel');
+      var button = document.getElementById('events-filter-toggle');
+      var opening = panel.hasAttribute('hidden');
+      panel.toggleAttribute('hidden', !opening);
+      button.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      if (opening) {
+        var first = panel.querySelector('.chip');
+        if (first) first.focus({ preventScroll: true });
+      }
+    }
+
+    document.addEventListener('keydown', function(event) {
+      if (event.key !== 'Escape') return;
+      var panel = document.getElementById('events-filter-panel');
+      if (panel.hasAttribute('hidden')) return;
+      panel.setAttribute('hidden', '');
+      var button = document.getElementById('events-filter-toggle');
+      button.setAttribute('aria-expanded', 'false');
+      button.focus();
+    });
+
     function eventsHasActiveFilter() {
-      var labelChip = document.querySelector('.chip[data-filter="label"].active');
-      var cameraChip = document.querySelector('.chip[data-filter="camera"].active');
-      var objectChip = document.querySelector('.chip[data-filter="object"].active');
-      var categoryChip = document.querySelector('.chip[data-filter="category"].active');
-      var search = (document.getElementById('event-search') || {}).value || '';
-      return !!(
-        (labelChip && labelChip.dataset.value) ||
-        (cameraChip && cameraChip.dataset.value) ||
-        (objectChip && objectChip.dataset.value) ||
-        (categoryChip && categoryChip.dataset.value) ||
-        search.trim()
-      );
+      return collectEventFilterParams().toString() !== '';
+    }
+
+    function selectedEventFilterLabel(type) {
+      var chip = document.querySelector('.chip[data-filter="' + type + '"].active');
+      return chip && chip.dataset.value ? chip.textContent.trim() : '';
+    }
+
+    window.updateEventsFilterUI = function() {
+      var advancedLabels = ['category', 'camera', 'object']
+        .map(selectedEventFilterLabel)
+        .filter(Boolean);
+      var count = advancedLabels.length;
+      var countEl = document.getElementById('events-filter-count');
+      var toggle = document.getElementById('events-filter-toggle');
+      var activeSummary = document.getElementById('events-active-filter-summary');
+      var clearBtn = document.getElementById('events-clear-filters');
+
+      countEl.textContent = count;
+      countEl.hidden = count === 0;
+      toggle.classList.toggle('has-active', count > 0);
+      activeSummary.textContent = advancedLabels.join(' · ');
+      activeSummary.hidden = advancedLabels.length === 0;
+      clearBtn.hidden = !eventsHasActiveFilter();
+      updateEventsSummary(eventsVisibleTotal);
+    };
+
+    window.syncEventsURL = function(params) {
+      var pageParams = new URLSearchParams(params);
+      pageParams.delete('kind');
+      var query = pageParams.toString();
+      history.replaceState(null, '', location.pathname + (query ? '?' + query : ''));
     }
 
     function updateEventsSummary(visibleTotal) {
       var summary = document.getElementById('events-summary');
       if (!summary) return;
-      var clearBtn = document.getElementById('events-clear-filters');
       var hasFilter = eventsHasActiveFilter();
-      if (clearBtn) clearBtn.hidden = !hasFilter;
+      if (isFinite(visibleTotal)) eventsVisibleTotal = visibleTotal;
 
       if (hasFilter) {
-        var n = isFinite(visibleTotal) ? visibleTotal : 0;
-        summary.textContent = n.toLocaleString() + ' of ' + eventsTotalAll.toLocaleString() + ' events match';
+        var n = isFinite(eventsVisibleTotal) ? eventsVisibleTotal : 0;
+        summary.textContent = n.toLocaleString() + ' event' + (n === 1 ? '' : 's') + ' in this view';
+        if (eventsTotalAll > 0) summary.textContent += ' · ' + eventsTotalAll.toLocaleString() + ' recorded';
       } else {
-        var parts = [eventsTotalAll.toLocaleString() + ' event' + (eventsTotalAll === 1 ? '' : 's') + ' recorded'];
+        var total = eventsTotalAll || eventsVisibleTotal;
+        var parts = [total.toLocaleString() + ' event' + (total === 1 ? '' : 's') + ' recorded'];
         if (eventsTodayCount > 0) parts.push(eventsTodayCount.toLocaleString() + ' today');
         summary.textContent = parts.join(' · ');
       }
@@ -185,69 +274,111 @@
       });
       var search = document.getElementById('event-search');
       if (search) search.value = '';
+      var range = document.getElementById('event-range');
+      if (range) range.value = '';
       if (typeof reloadEvents === 'function') reloadEvents();
-      updateEventsSummary(eventsTotalAll);
     }
 
-    document.getElementById('events-gallery').addEventListener('htmx:afterSwap', function(e) {
-      var xhr = e.detail && e.detail.xhr;
-      var total = xhr ? parseInt(xhr.getResponseHeader('X-Total-Count') || '', 10) : NaN;
-      if (!isFinite(total)) total = e.target.querySelectorAll('.event-card').length;
-      updateEventsSummary(total);
+    function eventDayKey(date) {
+      return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+    }
 
-      if (total === 0 && eventsHasActiveFilter()) {
-        e.target.innerHTML = ''
-          + '<div class="empty-state" style="grid-column:1/-1">'
-          + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>'
-          + '<p>No events match the current filters.</p>'
-          + '<button class="btn btn-sm btn-primary" data-action-click="clearAllEventFilters()">Clear filters</button>'
-          + '</div>';
-      }
-    });
+    function eventDayLabel(date) {
+      var now = new Date();
+      var today = eventDayKey(now);
+      var yesterdayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+      var key = eventDayKey(date);
+      if (key === today) return 'Today';
+      if (key === eventDayKey(yesterdayDate)) return 'Yesterday';
+      return new Intl.DateTimeFormat(undefined, {
+        weekday: 'long', month: 'long', day: 'numeric',
+        year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric'
+      }).format(date);
+    }
 
-    // Refresh the gallery when a new event arrives via SSE, but only when
-    // the user is at the top of the list and no filters are applied, to avoid
-    // disturbing their scroll position mid-browse.
-    document.addEventListener('vedetta:event', function() {
+    function groupEventCardsByDay() {
       var gallery = document.getElementById('events-gallery');
       if (!gallery) return;
-      if (window.scrollY > 200) return;
-      var params = new URLSearchParams(window.location.search);
-      if (params.get('q') || params.get('camera') || params.get('label')) return;
-      if (window.htmx && typeof htmx.ajax === 'function') {
-        htmx.ajax('GET', '/partials/events-gallery', { target: gallery, swap: 'innerHTML' });
-      }
-    });
+      gallery.querySelectorAll(':scope > .event-date-heading').forEach(function(heading) { heading.remove(); });
 
-    // Populate camera and object chips, and fetch top-of-page summary counts.
-    Promise.all([
-      fetch('/api/cameras').then(function(r) { return r.json(); }),
-      fetch('/api/events/counts').then(function(r) { return r.json(); }),
-      fetch('/api/objects').then(function(r) { return r.json(); }).then(function(d) { return d.items || d || []; })
-    ]).then(function(results) {
-      var camData = results[0];
-      var counts = results[1] || {};
-      var objects = results[2];
-
-      var byLabel = counts.by_label || {};
-      var byCamera = counts.by_camera || {};
-      eventsTotalAll = counts.total || 0;
-      eventsTodayCount = counts.today || 0;
-      updateEventsSummary(eventsTotalAll);
-
-      // Append per-label counts inline so users can see distribution at a glance.
-      document.querySelectorAll('.chip[data-filter="label"]').forEach(function(chip) {
-        var val = chip.dataset.value;
-        if (val && byLabel[val]) {
-          var count = document.createElement('span');
-          count.className = 'count';
-          count.textContent = byLabel[val].toLocaleString();
-          chip.appendChild(document.createTextNode(' '));
-          chip.appendChild(count);
+      var previousKey = '';
+      gallery.querySelectorAll(':scope > .event-card').forEach(function(card) {
+        var date = new Date(card.dataset.eventTime || '');
+        if (isNaN(date)) return;
+        var key = eventDayKey(date);
+        if (key !== previousKey) {
+          var heading = document.createElement('h2');
+          heading.className = 'event-date-heading';
+          heading.dataset.eventDay = key;
+          heading.textContent = eventDayLabel(date);
+          gallery.insertBefore(heading, card);
+          previousKey = key;
         }
       });
+    }
 
-      // Camera chips
+    function decorateEventLinks() {
+      var params = collectEventFilterParams();
+      var after = eventRangeAfter(params.get('range'));
+      if (after) params.set('after', after);
+      document.querySelectorAll('#events-gallery .event-card').forEach(function(card) {
+        var url = new URL(card.getAttribute('href'), location.origin);
+        params.forEach(function(value, key) { url.searchParams.set(key, value); });
+        card.href = url.pathname + '?' + url.searchParams.toString();
+      });
+    }
+
+    function enhanceEventGallery() {
+      groupEventCardsByDay();
+      decorateEventLinks();
+    }
+
+    function showFilteredEmptyState() {
+      var gallery = document.getElementById('events-gallery');
+      if (!gallery || gallery.querySelector('.event-card') || !eventsHasActiveFilter()) return;
+      gallery.innerHTML = ''
+        + '<div class="empty-state events-empty-state">'
+        + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>'
+        + '<h2>No matching events</h2>'
+        + '<p>Try a broader time range or remove one of the filters.</p>'
+        + '<button class="btn btn-sm btn-primary" data-action-click="clearAllEventFilters()">Reset filters</button>'
+        + '</div>';
+    }
+
+    document.body.addEventListener('htmx:afterSwap', function(e) {
+      var xhr = e.detail && e.detail.xhr;
+      if (!xhr || xhr.responseURL.indexOf('/partials/events-gallery') === -1) return;
+      var total = xhr ? parseInt(xhr.getResponseHeader('X-Total-Count') || '', 10) : NaN;
+      if (!isFinite(total)) total = document.querySelectorAll('#events-gallery .event-card').length;
+      updateEventsSummary(total);
+      showFilteredEmptyState();
+      enhanceEventGallery();
+    });
+
+    document.addEventListener('vedetta:event', function() {
+      if (eventsHasActiveFilter()) return;
+      pendingEventCount++;
+      var banner = document.getElementById('events-new-banner');
+      var label = document.getElementById('events-new-banner-label');
+      label.textContent = pendingEventCount === 1 ? '1 new event' : pendingEventCount + ' new events';
+      banner.hidden = false;
+    });
+
+    function showNewestEvents() {
+      pendingEventCount = 0;
+      document.getElementById('events-new-banner').hidden = true;
+      reloadEvents();
+      document.querySelector('.events-toolbar').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function fetchEventPageJSON(url) {
+      return fetch(url).then(function(response) {
+        if (!response.ok) throw new Error(url + ' returned ' + response.status);
+        return response.json();
+      });
+    }
+
+    function populateEventCameras(camData) {
       var bar = document.getElementById('camera-chips');
       (camData.items || []).map(function(c) { return c.name; }).forEach(function(name) {
         var btn = document.createElement('button');
@@ -256,20 +387,12 @@
         btn.dataset.value = name;
         btn.setAttribute('aria-pressed', 'false');
         btn.textContent = name.replace(/[_-]/g, ' ').replace(/\b\w/g, function(ch) { return ch.toUpperCase(); });
-        if (byCamera[name]) {
-          var count = document.createElement('span');
-          count.className = 'count';
-          count.textContent = byCamera[name].toLocaleString();
-          btn.appendChild(document.createTextNode(' '));
-          btn.appendChild(count);
-        }
         btn.onclick = function() { toggleChip(this, 'camera'); };
         bar.appendChild(btn);
       });
+    }
 
-      // Object chips (only render section if any tracked objects exist).
-      // Deduplicate by name (case-insensitive) since the API returns one entry
-      // per (object, camera) and the gallery filter accepts the name string.
+    function populateEventObjects(objects) {
       if (objects && objects.length > 0) {
         var seenNames = {};
         var uniqueObjects = [];
@@ -280,8 +403,8 @@
             uniqueObjects.push(obj);
           }
         });
+        document.getElementById('events-object-group').hidden = false;
         var objBar = document.getElementById('object-chips');
-        objBar.style.display = '';
         var allObjBtn = document.createElement('button');
         allObjBtn.className = 'chip active';
         allObjBtn.dataset.filter = 'object';
@@ -301,6 +424,27 @@
           objBar.appendChild(btn);
         });
       }
+    }
+
+    applyEventFiltersFromURL();
+    document.getElementById('events-gallery').setAttribute('hx-get', initialEventRequestURL());
+    initEventSearch();
+    updateEventsFilterUI();
+
+    Promise.allSettled([
+      fetchEventPageJSON('/api/cameras'),
+      fetchEventPageJSON('/api/events/counts'),
+      fetchEventPageJSON('/api/objects').then(function(data) { return data.items || data || []; })
+    ]).then(function(results) {
+      if (results[0].status === 'fulfilled') populateEventCameras(results[0].value);
+      if (results[1].status === 'fulfilled') {
+        eventsTotalAll = results[1].value.total || 0;
+        eventsTodayCount = results[1].value.today || 0;
+      }
+      if (results[2].status === 'fulfilled') populateEventObjects(results[2].value);
+      applyEventFiltersFromURL();
+      updateEventsFilterUI();
+      enhanceEventGallery();
     });
   </script>
 </body>

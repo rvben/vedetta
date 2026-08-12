@@ -121,13 +121,50 @@ func (s *Server) handleDashboardStatsPartial(w http.ResponseWriter, _ *http.Requ
 	}
 }
 
+func eventFiltersFromRequest(r *http.Request) storage.EventFilters {
+	query := r.URL.Query()
+	filters := storage.EventFilters{
+		Camera:   query.Get("camera"),
+		Label:    query.Get("label"),
+		Object:   query.Get("object"),
+		Category: query.Get("category"),
+		Kind:     query.Get("kind"),
+		Search:   query.Get("q"),
+	}
+
+	if after, err := time.Parse(time.RFC3339, query.Get("after")); err == nil {
+		filters.After = after
+	} else {
+		now := time.Now()
+		switch query.Get("range") {
+		case "today":
+			filters.After = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		case "24h":
+			filters.After = now.Add(-24 * time.Hour)
+		case "7d":
+			filters.After = now.AddDate(0, 0, -7)
+		}
+	}
+	if before, err := time.Parse(time.RFC3339, query.Get("before")); err == nil {
+		filters.Before = before
+	}
+
+	return filters
+}
+
+func eventReviewQuery(query url.Values) string {
+	allowed := []string{"camera", "label", "object", "category", "q", "range", "after", "before"}
+	params := url.Values{}
+	for _, key := range allowed {
+		if value := query.Get(key); value != "" {
+			params.Set(key, value)
+		}
+	}
+	return params.Encode()
+}
+
 func (s *Server) handleEventsGalleryPartial(w http.ResponseWriter, r *http.Request) {
-	cameraFilter := r.URL.Query().Get("camera")
-	labelFilter := r.URL.Query().Get("label")
-	objectFilter := r.URL.Query().Get("object")
-	categoryFilter := r.URL.Query().Get("category")
-	kindFilter := r.URL.Query().Get("kind")
-	searchTerm := r.URL.Query().Get("q")
+	filters := eventFiltersFromRequest(r)
 	embed := r.URL.Query().Get("embed") == "1"
 	limit := 50
 	if l := r.URL.Query().Get("limit"); l != "" {
@@ -142,14 +179,6 @@ func (s *Server) handleEventsGalleryPartial(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	filters := storage.EventFilters{
-		Camera:   cameraFilter,
-		Label:    labelFilter,
-		Object:   objectFilter,
-		Category: categoryFilter,
-		Kind:     kindFilter,
-		Search:   searchTerm,
-	}
 	events, err := s.db.QueryEventsFiltered(filters, limit, offset)
 	if err != nil {
 		s.serverErrorText(w, r, err)
@@ -169,20 +198,21 @@ func (s *Server) handleEventsGalleryPartial(w http.ResponseWriter, r *http.Reque
 
 	tmpl := template.Must(template.New("gallery").Funcs(s.funcMap).Parse(
 		`{{range .}}` +
-			`<a class="event-card" href="/event.html?id={{.ID}}" role="listitem">` +
+			`<a class="event-card" href="/event.html?id={{.ID}}" role="listitem" data-event-time="{{.Timestamp.UTC.Format "2006-01-02T15:04:05Z"}}" data-event-category="{{.Category}}">` +
 			`<div class="event-thumb">` +
 			`{{if .SnapshotAvailable}}<img src="/api/events/{{.ID}}/snapshot" alt="{{.Label}} detected by {{displayName .CameraName}}" loading="lazy">` +
 			`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="{{.Label}} detected by {{displayName .CameraName}}" loading="lazy">{{end}}` +
-			`<span class="event-label-badge {{.Label}}" title="Detected: {{.Label}}">{{.Label}}</span>` +
-			`<span class="event-score-badge{{if lt .Score 0.5}} low{{else if lt .Score 0.7}} mid{{end}}" title="Detection confidence: {{scorePercent .Score}}">{{scorePercent .Score}}</span>` +
-			`{{with eventDuration .}}<span class="event-duration-badge" title="Event duration: {{.}}">{{.}}</span>{{end}}` +
-			`{{if .SubLabel}}<span class="event-object-badge" title="Identified: {{.SubLabel}}">{{.SubLabel}}</span>{{end}}` +
-			`{{if eq .Category "detection"}}<span class="event-detection-badge" title="Low-priority detection (e.g. a stationary vehicle)">detection</span>{{end}}` +
 			`{{if eq .Kind "doorbell"}}{{if .AnsweredAt.IsZero}}<span class="event-missed-badge">missed</span>{{else}}<span class="event-answered-badge" title="answered by {{.AnsweredBy}}">answered</span>{{end}}{{end}}` +
 			`</div>` +
 			`<div class="event-card-footer">` +
+			`<div class="event-card-heading"><span class="event-card-title">{{if .SubLabel}}{{.SubLabel}}{{else}}{{displayName .Label}}{{end}}</span><span class="event-time">{{timeAgo .Timestamp}}</span></div>` +
+			`<div class="event-card-context">` +
 			`<span class="event-camera-name">{{displayName .CameraName}}</span>` +
-			`<span class="event-time">{{timeAgo .Timestamp}}</span>` +
+			`{{if .SubLabel}}<span>{{displayName .Label}}</span>{{end}}` +
+			`{{with eventDuration .}}<span>{{.}}</span>{{end}}` +
+			`{{if eq .Category "detection"}}<span class="event-tier">Low priority</span>{{end}}` +
+			`{{if lt .Score 0.7}}<span class="event-confidence{{if lt .Score 0.5}} low{{end}}" title="Detection confidence">{{scorePercent .Score}}</span>{{end}}` +
+			`</div>` +
 			`</div>` +
 			`</a>{{end}}`))
 
@@ -196,29 +226,11 @@ func (s *Server) handleEventsGalleryPartial(w http.ResponseWriter, r *http.Reque
 	// of cards as the user scrolls.
 	if !embed && len(events) == limit {
 		nextOffset := offset + limit
-		params := url.Values{}
+		params := r.URL.Query()
 		params.Set("limit", strconv.Itoa(limit))
 		params.Set("offset", strconv.Itoa(nextOffset))
-		if cameraFilter != "" {
-			params.Set("camera", cameraFilter)
-		}
-		if labelFilter != "" {
-			params.Set("label", labelFilter)
-		}
-		if objectFilter != "" {
-			params.Set("object", objectFilter)
-		}
-		if categoryFilter != "" {
-			params.Set("category", categoryFilter)
-		}
-		if kindFilter != "" {
-			params.Set("kind", kindFilter)
-		}
-		if searchTerm != "" {
-			params.Set("q", searchTerm)
-		}
 		nextURL := "/partials/events-gallery?" + params.Encode()
-		_, _ = fmt.Fprintf(w, `<div id="load-more-trigger" hx-get="%s" hx-trigger="revealed" hx-swap="outerHTML"></div>`, template.HTMLEscapeString(nextURL))
+		_, _ = fmt.Fprintf(w, `<div id="load-more-trigger" class="scroll-sentinel" hx-get="%s" hx-trigger="revealed" hx-swap="outerHTML" role="status" aria-label="Loading more events"><span class="loading-spinner" aria-hidden="true"></span></div>`, template.HTMLEscapeString(nextURL))
 	}
 }
 
@@ -235,7 +247,8 @@ func (s *Server) handleEventDetailPartial(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	prevID, nextID, _ := s.db.GetAdjacentEvents(id)
+	filters := eventFiltersFromRequest(r)
+	prevID, nextID, _ := s.db.GetAdjacentEventsFiltered(id, filters)
 
 	sightings, _ := s.db.GetEventSightings(id)
 	knownObjects, _ := s.db.ListKnownObjectsByLabel(event.Label)
@@ -267,6 +280,7 @@ func (s *Server) handleEventDetailPartial(w http.ResponseWriter, r *http.Request
 		Sightings    []storage.ObjectSighting
 		KnownObjects []storage.KnownObject
 		NamedPeople  []namedPerson
+		QuerySuffix  string
 	}
 
 	recURL := fmt.Sprintf("/camera.html?name=%s&t=%s",
@@ -292,6 +306,9 @@ func (s *Server) handleEventDetailPartial(w http.ResponseWriter, r *http.Request
 		Sightings:    sightings,
 		KnownObjects: knownObjects,
 		NamedPeople:  namedPeople,
+	}
+	if query := eventReviewQuery(r.URL.Query()); query != "" {
+		data.QuerySuffix = "&" + query
 	}
 
 	tmpl := template.Must(template.New("detail").Funcs(s.funcMap).Parse(
@@ -324,8 +341,8 @@ func (s *Server) handleEventDetailPartial(w http.ResponseWriter, r *http.Request
 			`</div>` +
 			`<div class="event-sidebar">` +
 			`<div class="event-nav">` +
-			`{{if .PrevID}}<a href="/event.html?id={{.PrevID}}" class="btn" data-prev-id="{{.PrevID}}">&#8592; Previous</a>{{else}}<button class="btn" disabled>&#8592; Previous</button>{{end}}` +
-			`{{if .NextID}}<a href="/event.html?id={{.NextID}}" class="btn" data-next-id="{{.NextID}}">Next &#8594;</a>{{else}}<button class="btn" disabled>Next &#8594;</button>{{end}}` +
+			`{{if .PrevID}}<a href="/event.html?id={{.PrevID}}{{.QuerySuffix}}" class="btn" data-prev-id="{{.PrevID}}">&#8592; Previous</a>{{else}}<button class="btn" disabled>&#8592; Previous</button>{{end}}` +
+			`{{if .NextID}}<a href="/event.html?id={{.NextID}}{{.QuerySuffix}}" class="btn" data-next-id="{{.NextID}}">Next &#8594;</a>{{else}}<button class="btn" disabled>Next &#8594;</button>{{end}}` +
 			`</div>` +
 			`<div class="meta-card">` +
 			`<div class="meta-card-header">Details</div>` +

@@ -719,6 +719,15 @@ func TestHandleEventsGalleryPartial_WithEvents(t *testing.T) {
 	if !contains(body, "front_door") {
 		t.Error("response missing camera name 'front_door'")
 	}
+	if !contains(body, "data-event-time=") {
+		t.Error("response missing client-local date grouping timestamp")
+	}
+	if !contains(body, "event-card-title") || !contains(body, "event-card-context") {
+		t.Error("response missing caption-led event card hierarchy")
+	}
+	if contains(body, "event-label-badge") || contains(body, "event-score-badge") {
+		t.Error("response still contains the legacy badge-heavy card markup")
+	}
 }
 
 func TestHandleEventsGalleryPartial_Filters(t *testing.T) {
@@ -1341,6 +1350,34 @@ func TestHandleEventDetailPartial_AdjacentEvents(t *testing.T) {
 	}
 	if !contains(body, "data-next-id=\"adj-3\"") {
 		t.Errorf("response missing next event link to adj-3, body: %s", body)
+	}
+}
+
+func TestHandleEventDetailPartial_AdjacentEventsRespectFilters(t *testing.T) {
+	srv, db := newTestServer(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	seedEvent(t, db, "filtered-1", "front_door", "person", 0.9, now.Add(-3*time.Minute))
+	seedEvent(t, db, "other-camera", "driveway", "person", 0.9, now.Add(-2*time.Minute))
+	seedEvent(t, db, "filtered-2", "front_door", "person", 0.9, now.Add(-time.Minute))
+	seedEvent(t, db, "other-label", "front_door", "car", 0.9, now)
+
+	req := httptest.NewRequest(http.MethodGet, "/partials/event/filtered-1?camera=front_door&label=person", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	body := w.Body.String()
+	if !contains(body, "data-next-id=\"filtered-2\"") {
+		t.Errorf("response did not preserve filtered next-event context: %s", body)
+	}
+	if contains(body, "data-next-id=\"other-camera\"") || contains(body, "data-next-id=\"other-label\"") {
+		t.Errorf("response included an adjacent event outside the active filters: %s", body)
+	}
+	if !contains(body, "camera=front_door") || !contains(body, "label=person") {
+		t.Errorf("response did not preserve filters in navigation URLs: %s", body)
 	}
 }
 

@@ -190,6 +190,7 @@ var allowedDataActionFunctions = new Set([
   'playEventRecording',
   'renameObject',
   'renamePerson',
+  'reloadEvents',
   'returnToLive',
   'retryStream',
   'runBackfill',
@@ -214,7 +215,8 @@ var allowedDataActionFunctions = new Set([
   'openThumbnailPicker',
   'closeThumbnailPicker',
   'setThumbnail',
-  'toggleEventsLegend',
+  'toggleEventsFilters',
+  'showNewestEvents',
   'clearAllEventFilters',
   'togglePeopleHelp',
   'filterPeople',
@@ -3447,30 +3449,6 @@ function toggleChip(chipEl, filterType) {
   reloadEvents();
 }
 
-function reloadEvents() {
-  const gallery = el('events-gallery');
-  if (!gallery) return;
-
-  const labelChip = document.querySelector('.chip[data-filter="label"].active');
-  const cameraChip = document.querySelector('.chip[data-filter="camera"].active');
-  const objectChip = document.querySelector('.chip[data-filter="object"].active');
-
-  let url = '/partials/events-gallery?limit=50';
-  if (labelChip && labelChip.dataset.value) {
-    url += '&label=' + encodeURIComponent(labelChip.dataset.value);
-  }
-  if (cameraChip && cameraChip.dataset.value) {
-    url += '&camera=' + encodeURIComponent(cameraChip.dataset.value);
-  }
-  if (objectChip && objectChip.dataset.value) {
-    url += '&object=' + encodeURIComponent(objectChip.dataset.value);
-  }
-
-  gallery.setAttribute('hx-get', url);
-  htmx.trigger(gallery, 'htmx:abort');
-  htmx.ajax('GET', url, { target: '#events-gallery', swap: 'innerHTML' });
-}
-
 // ─── Calendar & Recordings page ───
 function initCalendar() {
   calendarDate = new Date();
@@ -4737,10 +4715,10 @@ document.addEventListener('htmx:afterSwap', function(e) {
     card.classList.add('fade-in', 'stagger-' + Math.min(i + 1, 4));
   });
 
-  // Stagger event cards
+  // Fade newly loaded event cards without delaying the review workflow.
   var eventCards = target.querySelectorAll('.event-card');
-  eventCards.forEach(function(card, i) {
-    card.classList.add('fade-in', 'stagger-' + Math.min(i + 1, 4));
+  eventCards.forEach(function(card) {
+    card.classList.add('fade-in');
   });
 });
 
@@ -5647,125 +5625,6 @@ function startPlayheadAnimation() {
   tick();
 }
 
-// ─── Infinite Scroll for Events ───
-var infiniteScrollObserver = null;
-var eventsOffset = 0;
-var eventsLoading = false;
-var eventsExhausted = false;
-
-function initInfiniteScroll() {
-  var gallery = el('events-gallery');
-  if (!gallery) return;
-
-  eventsOffset = 0;
-  eventsExhausted = false;
-  eventsLoading = false;
-
-  // Watch for initial load completion, then set up sentinel
-  var checkReady = setInterval(function() {
-    var cards = gallery.querySelectorAll('.event-card');
-    if (cards.length > 0 || gallery.querySelector('.empty-state')) {
-      clearInterval(checkReady);
-      eventsOffset = cards.length;
-      if (cards.length >= 50) {
-        addScrollSentinel();
-      }
-    }
-  }, 500);
-}
-
-function addScrollSentinel() {
-  var gallery = el('events-gallery');
-  if (!gallery || gallery.querySelector('.scroll-sentinel')) return;
-
-  var sentinel = document.createElement('div');
-  sentinel.className = 'scroll-sentinel';
-  sentinel.innerHTML = '<div class="loading-spinner"></div>';
-  gallery.appendChild(sentinel);
-
-  if (infiniteScrollObserver) infiniteScrollObserver.disconnect();
-  infiniteScrollObserver = new IntersectionObserver(function(entries) {
-    if (entries[0].isIntersecting && !eventsLoading && !eventsExhausted) {
-      loadMoreEvents();
-    }
-  }, { rootMargin: '200px' });
-
-  infiniteScrollObserver.observe(sentinel);
-}
-
-function loadMoreEvents() {
-  if (eventsLoading || eventsExhausted) return;
-  eventsLoading = true;
-
-  var gallery = el('events-gallery');
-  var labelChip = document.querySelector('.chip[data-filter="label"].active');
-  var cameraChip = document.querySelector('.chip[data-filter="camera"].active');
-  var objectChip = document.querySelector('.chip[data-filter="object"].active');
-  var categoryChip = document.querySelector('.chip[data-filter="category"].active');
-  var pinnedKind = gallery && gallery.dataset ? gallery.dataset.kind : '';
-
-  var url = '/partials/events-gallery?limit=50&offset=' + eventsOffset;
-  if (pinnedKind) {
-    url += '&kind=' + encodeURIComponent(pinnedKind);
-  }
-  if (labelChip && labelChip.dataset.value) {
-    url += '&label=' + encodeURIComponent(labelChip.dataset.value);
-  }
-  if (cameraChip && cameraChip.dataset.value) {
-    url += '&camera=' + encodeURIComponent(cameraChip.dataset.value);
-  }
-  if (objectChip && objectChip.dataset.value) {
-    url += '&object=' + encodeURIComponent(objectChip.dataset.value);
-  }
-  if (categoryChip && categoryChip.dataset.value) {
-    url += '&category=' + encodeURIComponent(categoryChip.dataset.value);
-  }
-
-  fetch(url)
-    .then(function(resp) { return resp.text(); })
-    .then(function(html) {
-      var gallery = el('events-gallery');
-      if (!gallery) return;
-
-      // Remove old sentinel
-      var oldSentinel = gallery.querySelector('.scroll-sentinel');
-      if (oldSentinel) oldSentinel.remove();
-
-      // Parse and count new cards
-      var tmp = document.createElement('div');
-      tmp.innerHTML = html;
-      var newCards = tmp.querySelectorAll('.event-card');
-
-      if (newCards.length === 0) {
-        eventsExhausted = true;
-        eventsLoading = false;
-        var endMsg = document.createElement('div');
-        endMsg.className = 'events-end-message';
-        endMsg.textContent = 'All events loaded';
-        gallery.appendChild(endMsg);
-        return;
-      }
-
-      // Append new cards with stagger animation
-      newCards.forEach(function(card, i) {
-        card.classList.add('fade-in', 'stagger-' + Math.min(i + 1, 4));
-        gallery.appendChild(card);
-      });
-
-      eventsOffset += newCards.length;
-      eventsLoading = false;
-
-      // Add new sentinel if we got a full page
-      if (newCards.length >= 50) {
-        addScrollSentinel();
-      }
-    })
-    .catch(function(err) {
-      console.error('Failed to load more events:', err);
-      eventsLoading = false;
-    });
-}
-
 // ─── Event Search ───
 var searchDebounceTimer = null;
 
@@ -5781,9 +5640,6 @@ function initEventSearch() {
   });
 }
 
-// Patch reloadEvents to include search term
-var _origReloadEvents = typeof reloadEvents === 'function' ? reloadEvents : null;
-
 function buildEventSkeletonHTML() {
   var skeletonCard = '<div class="event-skeleton">'
     + '<div class="event-skeleton-thumb"></div>'
@@ -5797,40 +5653,52 @@ function buildEventSkeletonHTML() {
   return html;
 }
 
-function reloadEventsWithSearch() {
+function collectEventFilterParams() {
+  var params = new URLSearchParams();
+  ['label', 'camera', 'object', 'category'].forEach(function(type) {
+    var chip = document.querySelector('.chip[data-filter="' + type + '"].active');
+    if (chip && chip.dataset.value) params.set(type, chip.dataset.value);
+  });
+
+  var searchInput = el('event-search');
+  if (searchInput && searchInput.value.trim()) params.set('q', searchInput.value.trim());
+
+  var range = el('event-range');
+  if (range && range.value) params.set('range', range.value);
+
+  var gallery = el('events-gallery');
+  var pinnedKind = gallery && gallery.dataset ? gallery.dataset.kind : '';
+  if (pinnedKind) params.set('kind', pinnedKind);
+  return params;
+}
+
+function eventRangeAfter(range) {
+  if (!range) return '';
+  var now = new Date();
+  if (range === 'today') {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  }
+  if (range === '24h') return new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  if (range === '7d') return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  return '';
+}
+
+function eventGalleryRequestURL(params) {
+  var request = new URLSearchParams(params || collectEventFilterParams());
+  request.set('limit', '50');
+  var after = eventRangeAfter(request.get('range'));
+  if (after) request.set('after', after);
+  return '/partials/events-gallery?' + request.toString();
+}
+
+function reloadEvents() {
   var gallery = el('events-gallery');
   if (!gallery) return;
 
-  var labelChip = document.querySelector('.chip[data-filter="label"].active');
-  var cameraChip = document.querySelector('.chip[data-filter="camera"].active');
-  var objectChip = document.querySelector('.chip[data-filter="object"].active');
-  var categoryChip = document.querySelector('.chip[data-filter="category"].active');
-  var searchInput = el('event-search');
-  var pinnedKind = gallery.dataset ? gallery.dataset.kind : '';
-
-  var url = '/partials/events-gallery?limit=50';
-  if (pinnedKind) {
-    url += '&kind=' + encodeURIComponent(pinnedKind);
-  }
-  if (labelChip && labelChip.dataset.value) {
-    url += '&label=' + encodeURIComponent(labelChip.dataset.value);
-  }
-  if (cameraChip && cameraChip.dataset.value) {
-    url += '&camera=' + encodeURIComponent(cameraChip.dataset.value);
-  }
-  if (objectChip && objectChip.dataset.value) {
-    url += '&object=' + encodeURIComponent(objectChip.dataset.value);
-  }
-  if (categoryChip && categoryChip.dataset.value) {
-    url += '&category=' + encodeURIComponent(categoryChip.dataset.value);
-  }
-  if (searchInput && searchInput.value.trim()) {
-    url += '&q=' + encodeURIComponent(searchInput.value.trim());
-  }
-
-  // Reset infinite scroll state
-  eventsOffset = 0;
-  eventsExhausted = false;
+  var params = collectEventFilterParams();
+  var url = eventGalleryRequestURL(params);
+  if (typeof window.syncEventsURL === 'function') window.syncEventsURL(params);
+  if (typeof window.updateEventsFilterUI === 'function') window.updateEventsFilterUI();
 
   // Show skeleton cards while new results load to avoid a blank flash.
   gallery.innerHTML = buildEventSkeletonHTML();
@@ -5838,11 +5706,6 @@ function reloadEventsWithSearch() {
   gallery.setAttribute('hx-get', url);
   htmx.ajax('GET', url, { target: '#events-gallery', swap: 'innerHTML' });
 }
-
-// Override reloadEvents to include search
-reloadEvents = function() {
-  reloadEventsWithSearch();
-};
 
 // ─── Timeline Date Picker ───
 function openTimelineDatePicker() {

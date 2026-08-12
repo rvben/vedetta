@@ -618,6 +618,51 @@ func TestGetAdjacentEvents_MiddleEvent(t *testing.T) {
 	}
 }
 
+func TestGetAdjacentEventsFiltered_PreservesReviewContext(t *testing.T) {
+	db := newTestDB(t)
+	base := time.Date(2026, 3, 20, 10, 0, 0, 0, time.UTC)
+
+	mustSaveEvent(t, db, makeEvent("front-old", "front_door", "person", 0.9, base))
+	mustSaveEvent(t, db, makeEvent("driveway-between", "driveway", "person", 0.9, base.Add(time.Minute)))
+	mustSaveEvent(t, db, makeEvent("front-middle", "front_door", "person", 0.9, base.Add(2*time.Minute)))
+	mustSaveEvent(t, db, makeEvent("front-car", "front_door", "car", 0.9, base.Add(3*time.Minute)))
+	mustSaveEvent(t, db, makeEvent("front-new", "front_door", "person", 0.9, base.Add(4*time.Minute)))
+
+	prev, next, err := db.GetAdjacentEventsFiltered("front-middle", EventFilters{
+		Camera: "front_door",
+		Label:  "person",
+	})
+	if err != nil {
+		t.Fatalf("GetAdjacentEventsFiltered: %v", err)
+	}
+	if prev != "front-old" {
+		t.Errorf("prevID = %q, want front-old", prev)
+	}
+	if next != "front-new" {
+		t.Errorf("nextID = %q, want front-new", next)
+	}
+}
+
+func TestQueryEventsFiltered_TimeRange(t *testing.T) {
+	db := newTestDB(t)
+	base := time.Date(2026, 3, 20, 10, 0, 0, 0, time.UTC)
+	mustSaveEvent(t, db, makeEvent("before", "cam1", "person", 0.9, base.Add(-time.Minute)))
+	mustSaveEvent(t, db, makeEvent("inside", "cam1", "person", 0.9, base.Add(time.Minute)))
+	mustSaveEvent(t, db, makeEvent("after", "cam1", "person", 0.9, base.Add(3*time.Minute)))
+
+	filters := EventFilters{After: base, Before: base.Add(2 * time.Minute)}
+	events, err := db.QueryEventsFiltered(filters, 10, 0)
+	if err != nil {
+		t.Fatalf("QueryEventsFiltered: %v", err)
+	}
+	if len(events) != 1 || events[0].ID != "inside" {
+		t.Fatalf("events = %+v, want only inside", events)
+	}
+	if count, err := db.CountEventsFiltered(filters); err != nil || count != 1 {
+		t.Fatalf("CountEventsFiltered = %d, %v; want 1, nil", count, err)
+	}
+}
+
 func TestGetAdjacentEvents_FirstEvent(t *testing.T) {
 	db := newTestDB(t)
 	t1 := time.Date(2026, 3, 20, 10, 0, 0, 0, time.UTC)

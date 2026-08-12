@@ -67,11 +67,22 @@
   <script src="/app.js"></script>
   <script>
     (function() {
-      const id = new URLSearchParams(location.search).get('id');
+      const pageParams = new URLSearchParams(location.search);
+      const id = pageParams.get('id');
       if (!id) { location.href = '/events.html'; return; }
 
+      pageParams.delete('id');
+      const reviewQuery = pageParams.toString();
+      const eventsParams = new URLSearchParams(pageParams);
+      eventsParams.delete('after');
+      eventsParams.delete('before');
+      const eventsQuery = eventsParams.toString();
+      const eventsURL = '/events.html' + (eventsQuery ? '?' + eventsQuery : '');
+      const breadcrumbLink = document.querySelector('.breadcrumb a');
+      if (breadcrumbLink) breadcrumbLink.href = eventsURL;
+
       const el = document.getElementById('event-detail');
-      el.setAttribute('hx-get', '/partials/event/' + encodeURIComponent(id));
+      el.setAttribute('hx-get', '/partials/event/' + encodeURIComponent(id) + (reviewQuery ? '?' + reviewQuery : ''));
       el.setAttribute('hx-trigger', 'load');
       htmx.process(el);
 

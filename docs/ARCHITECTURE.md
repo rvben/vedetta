@@ -87,6 +87,7 @@ internal/
 │   ├── yolo.go         YOLOv8 pre/post processing
 │   └── labels.go       COCO-80 class labels
 ├── event/              Event lifecycle, cooldown, recognition + fan-out
+├── lifecycle/          Graceful process shutdown coordination
 ├── mqtt/               MQTT publishing
 ├── recording/
 │   ├── segment.go      Continuous segment recorder

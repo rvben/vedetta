@@ -1,0 +1,173 @@
+package lifecycle_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/rvben/vedetta/internal/lifecycle"
+)
+
+func TestCoordinatorShutsDownWhenApplicationContextIsCancelled(t *testing.T) {
+	server := &recordingServer{shutdown: make(chan struct{})}
+	recorder := &recordingCloser{closed: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	coordinator, err := lifecycle.New(lifecycle.Options{
+		Server:          server,
+		Recorder:        recorder,
+		StopBackground:  cancel,
+		ShutdownTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	cancel()
+	if err := coordinator.Await(ctx); err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+
+	select {
+	case <-server.shutdown:
+	default:
+		t.Fatal("HTTP server was not shut down")
+	}
+	select {
+	case <-recorder.closed:
+	default:
+		t.Fatal("recorder was not closed")
+	}
+}
+
+func TestCoordinatorSupportsServerOnlyShutdown(t *testing.T) {
+	server := &recordingServer{shutdown: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	coordinator, err := lifecycle.New(lifecycle.Options{
+		Server: server, StopBackground: cancel, ShutdownTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cancel()
+	if err := coordinator.Await(ctx); err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+	select {
+	case <-server.shutdown:
+	default:
+		t.Fatal("HTTP server was not shut down")
+	}
+}
+
+func TestCoordinatorFinishesCleanupWhenServerShutdownFails(t *testing.T) {
+	wantErr := errors.New("shutdown failed")
+	server := &recordingServer{shutdown: make(chan struct{}), err: wantErr}
+	recorder := &recordingCloser{closed: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	coordinator, err := lifecycle.New(lifecycle.Options{
+		Server: server, Recorder: recorder, StopBackground: cancel, ShutdownTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cancel()
+
+	if err := coordinator.Await(ctx); !errors.Is(err, wantErr) {
+		t.Fatalf("Await error = %v, want %v", err, wantErr)
+	}
+	select {
+	case <-recorder.closed:
+	default:
+		t.Fatal("recorder was not closed after server shutdown failure")
+	}
+}
+
+func TestCoordinatorBoundsServerShutdownAndStillClosesRecorder(t *testing.T) {
+	server := &blockingServer{}
+	recorder := &recordingCloser{closed: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	coordinator, err := lifecycle.New(lifecycle.Options{
+		Server: server, Recorder: recorder, StopBackground: cancel, ShutdownTimeout: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cancel()
+
+	if err := coordinator.Await(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Await error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	select {
+	case <-recorder.closed:
+	default:
+		t.Fatal("recorder was not closed after shutdown timeout")
+	}
+}
+
+func TestCoordinatorShutsComponentsDownInSafeOrder(t *testing.T) {
+	var order []string
+	server := shutdownFunc(func(context.Context) error {
+		order = append(order, "server")
+		return nil
+	})
+	recorder := closeFunc(func() { order = append(order, "recorder") })
+	ctx, cancelContext := context.WithCancel(context.Background())
+	stopBackground := func() {
+		order = append(order, "background")
+		cancelContext()
+	}
+	coordinator, err := lifecycle.New(lifecycle.Options{
+		Server: server, Recorder: recorder, StopBackground: stopBackground, ShutdownTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cancelContext()
+
+	if err := coordinator.Await(ctx); err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+	want := []string{"server", "background", "recorder"}
+	if len(order) != len(want) {
+		t.Fatalf("shutdown order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("shutdown order = %v, want %v", order, want)
+		}
+	}
+}
+
+type recordingServer struct {
+	shutdown chan struct{}
+	err      error
+}
+
+func (s *recordingServer) Shutdown(context.Context) error {
+	close(s.shutdown)
+	return s.err
+}
+
+type blockingServer struct{}
+
+func (*blockingServer) Shutdown(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type shutdownFunc func(context.Context) error
+
+func (fn shutdownFunc) Shutdown(ctx context.Context) error { return fn(ctx) }
+
+type closeFunc func()
+
+func (fn closeFunc) Close() { fn() }
+
+type recordingCloser struct {
+	closed chan struct{}
+}
+
+func (c *recordingCloser) Close() {
+	close(c.closed)
+}

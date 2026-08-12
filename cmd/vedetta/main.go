@@ -158,7 +158,9 @@ func main() {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
 
 	// Out-of-process liveness backstop. The in-process watchdog below cannot
@@ -278,6 +280,7 @@ func main() {
 		case <-setupDone:
 			slog.Info("setup complete, loading config")
 		case <-ctx.Done():
+			awaitShutdown(ctx, cancel, server, nil)
 			return
 		}
 
@@ -366,20 +369,7 @@ func main() {
 
 		slog.Info("vedetta started", "cameras", len(cfg.Cameras))
 
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		<-sig
-
-		slog.Info("shutting down")
-
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("HTTP server shutdown error", "error", err)
-		}
-
-		cancel()
-		sub.recorder.Close()
+		awaitShutdown(ctx, cancel, server, sub.recorder)
 		return
 	}
 
@@ -474,23 +464,7 @@ func main() {
 
 	slog.Info("vedetta started", "cameras", len(cfg.Cameras))
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-
-	slog.Info("shutting down")
-
-	// Gracefully shut down the HTTP server (5s timeout for in-flight requests)
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		slog.Error("HTTP server shutdown error", "error", err)
-	}
-
-	cancel()
-
-	// Wait for recording goroutines to finalize segments before closing DB
-	sub.recorder.Close()
+	awaitShutdown(ctx, cancel, server, sub.recorder)
 }
 
 // wireLogging installs OTLP log export (when enabled) by wrapping the base
@@ -520,23 +494,35 @@ func wireLogging(ctx context.Context, cfg *config.Config, base slog.Handler) *lo
 // face recognizer, object embedder, RTSP hub, recorder, and camera manager.
 func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.Config, db *storage.DB) *subsystems {
 	var sub subsystems
-	var err error
 
 	if cfg.MQTT.Enabled {
 		c, mqttErr := mqtt.New(cfg.MQTT)
 		if mqttErr != nil {
 			slog.Warn("MQTT unavailable, continuing without it", "error", mqttErr)
-			// Start background reconnect
+			// Retry in the background without outliving the application. A client
+			// that connects concurrently with shutdown is closed instead of being
+			// installed after closeSubsystems has already run.
 			go func() {
 				for {
-					time.Sleep(30 * time.Second)
-					c, err := mqtt.New(cfg.MQTT)
-					if err != nil {
-						slog.Debug("MQTT reconnect failed", "error", err)
+					timer := time.NewTimer(30 * time.Second)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+
+					client, connectErr := mqtt.New(cfg.MQTT)
+					if connectErr != nil {
+						slog.Debug("MQTT reconnect failed", "error", connectErr)
 						continue
 					}
+					if ctx.Err() != nil {
+						client.Close()
+						return
+					}
 					slog.Info("MQTT reconnected")
-					sub.mqttClient.Store(c)
+					sub.mqttClient.Store(client)
 					return
 				}
 			}()
@@ -912,6 +898,9 @@ func closeSubsystems(sub *subsystems) {
 	sub.detector.Close()
 	if sub.faceRecognizer != nil {
 		sub.faceRecognizer.Close()
+	}
+	if sub.objectEmbedder != nil {
+		sub.objectEmbedder.Close()
 	}
 	sub.hub.Close()
 }

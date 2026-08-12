@@ -37,6 +37,9 @@ Thumbs.db
 
 # Test artifacts
 internal/camera/test/
+node_modules/
+test-results/
+playwright-report/
 
 # Superpowers docs (local specs/plans)
 docs/superpowers/

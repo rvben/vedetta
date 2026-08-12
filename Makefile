@@ -1,4 +1,4 @@
-.PHONY: build build-capi build-hwaccel build-deploy run test test-js test-race bench lint clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
+.PHONY: build build-capi build-hwaccel build-deploy run test test-js test-browser test-race bench lint clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
 
 BINARY := vedetta
 BUILD_DIR := ./build
@@ -46,6 +46,11 @@ test: test-js
 # with no extra toolchain.
 test-js:
 	node --test internal/api/static/*.test.js
+
+# Real camera-page interaction coverage in mobile Chromium and WebKit. Install
+# the pinned browser runtimes once with: npx playwright install chromium webkit
+test-browser:
+	npm run test:browser
 
 # Race-enabled run of the full Go suite. The detector instruments every memory
 # access, so this catches concurrency bugs the plain run cannot - the server

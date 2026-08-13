@@ -3,6 +3,7 @@ const { test, expect } = require('@playwright/test');
 async function mockCameraPage(page, initialStatus) {
   let status = { name: 'test', ...initialStatus };
   const liveRequests = [];
+  let statusRequestCount = 0;
 
   page.on('request', request => {
     const url = request.url();
@@ -13,7 +14,10 @@ async function mockCameraPage(page, initialStatus) {
 
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname;
-    if (path === '/api/cameras/test') return route.fulfill({ json: status });
+    if (path === '/api/cameras/test') {
+      statusRequestCount++;
+      return route.fulfill({ json: status });
+    }
     if (path.endsWith('/timeline')) {
       return route.fulfill({ json: { segments: [], activity: [], events: [] } });
     }
@@ -32,6 +36,7 @@ async function mockCameraPage(page, initialStatus) {
   return {
     liveRequests,
     setStatus(next) { status = { ...status, ...next }; },
+    statusRequestCount() { return statusRequestCount; },
   };
 }
 
@@ -84,9 +89,26 @@ test('offline camera is actionable, preserves history, and recovers when online'
     window.prewarmLiveHLS = () => {};
     window.startLiveStream = () => { window.__availabilityStartedLive += 1; };
   });
+
+  // Simulate the periodic status poll being in flight when the user retries.
+  // The manual action must supersede that slower background request.
+  await page.evaluate(() => {
+    const applicationFetch = window.fetch;
+    window.__blockNextAvailability = true;
+    window.fetch = (input, init) => {
+      if (window.__blockNextAvailability && String(input).includes('/api/cameras/test')) {
+        window.__blockNextAvailability = false;
+        return new Promise(() => {});
+      }
+      return applicationFetch(input, init);
+    };
+    window.checkCameraAvailability(false);
+  });
+  await expect.poll(() => page.evaluate(() => window.__blockNextAvailability)).toBe(false);
   mocked.setStatus({ online: true, sleeping: false, stream_error: '' });
   await page.getByRole('button', { name: 'Try again' }).click();
 
+  await expect.poll(() => mocked.statusRequestCount()).toBe(2);
   await expect(page.locator('#live-offline')).toBeHidden();
   await expect.poll(() => page.evaluate(() => window.__availabilityStartedLive)).toBe(1);
 });

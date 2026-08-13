@@ -350,6 +350,7 @@ var allowedDataActionFunctions = new Set([
   'renamePerson',
   'reloadEvents',
   'returnToLive',
+  'retryCameraStatus',
   'retryStream',
   'runBackfill',
   'seekToLive',
@@ -392,6 +393,7 @@ var allowedDataActionFunctions = new Set([
   'saveCamSettings',
   'testRtspFromInput',
   'toggleBoxOverlay',
+  'toggleCamera',
   'toggleCam',
   'toggleRevealInput',
   'toggleShortcutModal',
@@ -915,6 +917,13 @@ function retryCameraStatus() {
   if (cameraAvailabilityTimer) {
     clearTimeout(cameraAvailabilityTimer);
     cameraAvailabilityTimer = null;
+  }
+  // A manual retry must never be swallowed by a background poll. Invalidate
+  // any in-flight response and start a fresh request with the user's current
+  // intent; the stale request will be ignored by the sequence guard below.
+  if (cameraAvailabilityInFlight) {
+    cameraAvailabilitySeq++;
+    cameraAvailabilityInFlight = false;
   }
   return checkCameraAvailability(true);
 }
@@ -4449,48 +4458,38 @@ document.addEventListener('htmx:afterRequest', function(e) {
 // ─── Health Check: detect degraded services ───
 var _lastHealthData = null;
 
-(function pollHealth() {
-  function check() {
-    fetch('/api/health')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        _lastHealthData = data;
-        if (data.status === 'degraded') {
-          var issues = [];
-          var checks = data.checks || {};
-          var storage = checks.storage || {};
-          if (checks.mqtt === 'disconnected') issues.push('MQTT disconnected');
-          if (storage.disk_low) issues.push('Disk space critically low');
-          if (storage.recording_paused) issues.push('Recording paused — disk full');
-          if (storage.projection) {
-            var proj = storage.projection;
-            if (proj.status === 'insufficient' || proj.status === 'critical') {
-              if (proj.headroom_bytes < 0) {
-                issues.push('Storage projection negative — recordings will be evicted soon');
-              } else {
-                issues.push('Storage projected to fill soon (' + proj.status + ')');
-              }
-            } else if (proj.status === 'warning') {
-              issues.push('Storage usage high (' + proj.status + ')');
-            }
-          }
-          if (checks.database === 'error') issues.push('Database error');
-          if (checks.detection && checks.detection.state === 'disabled') issues.push('Detection disabled: ' + (checks.detection.reason || 'codec unavailable'));
-          setConnStatus('degraded', issues.length === 1 ? issues[0] : 'Degraded (' + issues.length + ' issues)');
+function updateConnectionHealth(data) {
+  if (data.status === 'degraded') {
+    var issues = [];
+    var checks = data.checks || {};
+    var storage = checks.storage || {};
+    if (checks.mqtt === 'disconnected') issues.push('MQTT disconnected');
+    if (storage.disk_low) issues.push('Disk space critically low');
+    if (storage.recording_paused) issues.push('Recording paused — disk full');
+    if (storage.projection) {
+      var proj = storage.projection;
+      if (proj.status === 'insufficient' || proj.status === 'critical') {
+        if (proj.headroom_bytes < 0) {
+          issues.push('Storage projection negative — recordings will be evicted soon');
         } else {
-          // Only reset to ok if not already in error state from HTMX failures
-          // setConnStatus('ok') is handled by the htmx afterRequest handler
+          issues.push('Storage projected to fill soon (' + proj.status + ')');
         }
-      })
-      .catch(function() {});
+      } else if (proj.status === 'warning') {
+        issues.push('Storage usage high (' + proj.status + ')');
+      }
+    }
+    if (checks.database === 'error') issues.push('Database error');
+    if (checks.detection && checks.detection.state === 'disabled') issues.push('Detection disabled: ' + (checks.detection.reason || 'codec unavailable'));
+    setConnStatus('degraded', issues.length === 1 ? issues[0] : 'Degraded (' + issues.length + ' issues)');
   }
-  check();
-  setInterval(check, 60000);
-})();
+  // A healthy response does not overwrite a recent HTMX connection error;
+  // htmx:afterRequest owns that recovery transition.
+}
 
 // ─── Page visibility: pause updates when hidden ───
 document.addEventListener('visibilitychange', function() {
   if (document.hidden) {
+    stopHealthPolling();
     stopBirdseye();
     stopGridSnapshotRefresh();
     stopStatsRefresh();
@@ -4503,6 +4502,7 @@ document.addEventListener('visibilitychange', function() {
       zonePresenceTimer = null;
     }
   } else {
+    startHealthPolling();
     if (localStorage.getItem('vedetta-view') === 'birdseye') {
       var birdseyeGrid = el('birdseye-grid');
       if (birdseyeGrid && birdseyeGrid.style.display !== 'none') {
@@ -4703,15 +4703,30 @@ function refreshGridSnapshots() {
     .catch(function() {});
 }
 
-function toggleCamera(name, isStopped) {
+function toggleCamera(name, isStopped, button) {
   var action = isStopped ? 'start' : 'stop';
-  fetch('/api/cameras/' + encodeURIComponent(name) + '/' + action, { method: 'POST' })
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+  }
+  return fetch('/api/cameras/' + encodeURIComponent(name) + '/' + action, { method: 'POST' })
     .then(function(r) {
-      if (!r.ok) return r.json().then(function(e) { throw new Error(e.error || r.statusText); });
+      if (!r.ok) {
+        return r.json().catch(function() { return {}; }).then(function(e) {
+          throw new Error(e.error || r.statusText || 'Request failed');
+        });
+      }
       htmx.ajax('GET', '/partials/camera-grid', { target: '#camera-grid', swap: 'innerHTML' });
     })
     .catch(function(err) {
       console.error('Failed to ' + action + ' camera:', err);
+      toast('Could not ' + action + ' ' + humanizeName(name) + ': ' + err.message, 'error');
+    })
+    .finally(function() {
+      if (button && button.isConnected) {
+        button.disabled = false;
+        button.setAttribute('aria-busy', 'false');
+      }
     });
 }
 
@@ -5938,11 +5953,18 @@ function webrtcAutoReconnect() {
 
 // ─── Health Monitor ───
 var healthWarningVisible = false;
+var healthPollTimer = null;
 
 function pollHealth() {
-  fetch('/api/health')
-    .then(function(resp) { return resp.json(); })
+  if (document.hidden) return Promise.resolve();
+  return fetch('/api/health')
+    .then(function(resp) {
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.json();
+    })
     .then(function(data) {
+      _lastHealthData = data;
+      updateConnectionHealth(data);
       var storage = data.checks && data.checks.storage;
       if (!storage) return;
 
@@ -5953,6 +5975,18 @@ function pollHealth() {
       }
     })
     .catch(function() {});
+}
+
+function startHealthPolling() {
+  if (healthPollTimer || document.hidden) return;
+  pollHealth();
+  healthPollTimer = setInterval(pollHealth, 30000);
+}
+
+function stopHealthPolling() {
+  if (!healthPollTimer) return;
+  clearInterval(healthPollTimer);
+  healthPollTimer = null;
 }
 
 function showDiskWarning(storage) {
@@ -6628,9 +6662,8 @@ function addObjectReference(objectId, objectName, eventId) {
   connectSSE();
 })();
 
-// Poll health every 30 seconds
-pollHealth();
-setInterval(pollHealth, 30000);
+// One visibility-aware poll updates both connection and storage health.
+startHealthPolling();
 
 // ─── Event Detail: Play Clip on Demand ───
 function attachPlaybackSpeed(video, media) {

@@ -122,8 +122,8 @@ func isPublicPath(r *http.Request) bool {
 	// PWA assets that browsers must be able to fetch without a prior session:
 	//   - manifest.webmanifest: read by Safari during Add to Home Screen before any login.
 	//   - sw.js: navigator.serviceWorker.register rejects the SW on any redirect.
-	//   - icon-*.png / badge-72.png: referenced from the manifest and from <head>
-	//     apple-touch-icon; iOS fetches them without cookies in some paths.
+	//   - icon-*.png / badge-72.png / install screenshots: referenced from the
+	//     manifest and from <head>; browsers may fetch them without cookies.
 	// None of these contain secrets; serving them anonymously is safe.
 	case r.Method == http.MethodGet && r.URL.Path == "/manifest.webmanifest":
 		return true
@@ -134,7 +134,7 @@ func isPublicPath(r *http.Request) bool {
 	// on must also load without a session.
 	case r.Method == http.MethodGet && r.URL.Path == "/safehref.js":
 		return true
-	case r.Method == http.MethodGet && isPWAIconPath(r.URL.Path):
+	case r.Method == http.MethodGet && isPWAImagePath(r.URL.Path):
 		return true
 	// Signed push-notification snapshot URLs. iOS fetches these without
 	// session cookies when rendering notification thumbnails; the handler
@@ -146,13 +146,12 @@ func isPublicPath(r *http.Request) bool {
 	}
 }
 
-// isPWAIconPath reports whether the path is one of the PWA icon assets that
-// must be fetchable without authentication. Keep this list in sync with
-// internal/api/static/manifest.webmanifest and the apple-touch-icon link tags
-// in the HTML pages.
-func isPWAIconPath(path string) bool {
+// isPWAImagePath reports whether the path is one of the PWA image assets that
+// must be fetchable without authentication. Keep this list in sync with the
+// manifest and the apple-touch-icon link tags in the HTML pages.
+func isPWAImagePath(path string) bool {
 	switch path {
-	case "/icon-180.png", "/icon-192.png", "/icon-512.png", "/icon-512-maskable.png", "/badge-72.png":
+	case "/icon-180.png", "/icon-192.png", "/icon-512.png", "/icon-512-maskable.png", "/badge-72.png", "/screenshots/dashboard-mobile.png":
 		return true
 	}
 	return false

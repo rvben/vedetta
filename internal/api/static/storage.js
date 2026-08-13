@@ -51,19 +51,36 @@ function renderLoadingSkeleton() {
 }
 
 async function loadSummary() {
-  var firstLoad = !$("#camera-table-body").dataset.loaded;
+  var body = $("#camera-table-body");
+  var firstLoad = !body.dataset.loaded;
   if (firstLoad) renderLoadingSkeleton();
 
-  const r = await fetch("/api/storage");
-  if (!r.ok) return;
-  const data = await r.json();
+  let data;
+  try {
+    const r = await fetch("/api/storage");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    data = await r.json();
+  } catch {
+    // Keep previously rendered data during a transient refresh failure. On
+    // the first load, replace the permanent skeleton with a recoverable state.
+    if (firstLoad) {
+      body.innerHTML = `<tr><td colspan="6"><div class="empty-state"><p>Storage data is temporarily unavailable.</p></div></td></tr>`;
+      renderInlineError("summary", {
+        title: "Could not load storage",
+        message: "The storage summary could not be retrieved. Other system pages remain available.",
+        retry: loadSummary,
+      });
+    }
+    return false;
+  }
 
-  $("#camera-table-body").dataset.loaded = "1";
+  body.dataset.loaded = "1";
   $("#recording-paused-banner").hidden = !data.recording_paused;
 
   renderSummaryCards(data);
   renderCameraTable(data.cameras || []);
   renderRecompression(data.recompression);
+  return true;
 }
 
 function renderRecompression(rc) {
@@ -371,13 +388,33 @@ $("#free-space-btn")?.addEventListener("click", () => {
 });
 
 async function loadAudit() {
-  const r = await fetch("/api/storage/audit?limit=20");
-  if (!r.ok) return;
-  const rows = await r.json();
   const list = $("#audit-list");
+  let rows;
+  try {
+    const r = await fetch("/api/storage/audit?limit=20");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    rows = await r.json();
+  } catch {
+    const item = document.createElement("li");
+    item.className = "storage-audit-empty";
+    item.setAttribute("role", "alert");
+    item.appendChild(document.createTextNode("Could not load recent activity. "));
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "btn btn-small btn-ghost";
+    retry.textContent = "Try again";
+    retry.addEventListener("click", () => {
+      retry.disabled = true;
+      retry.textContent = "Loading…";
+      loadAudit();
+    });
+    item.appendChild(retry);
+    list.replaceChildren(item);
+    return false;
+  }
   if (!rows.length) {
     list.innerHTML = `<li class="storage-audit-empty">No storage activity recorded yet.</li>`;
-    return;
+    return true;
   }
   list.innerHTML = rows.map((row) => {
     const ts = String(row.ts).replace("T", " ").slice(0, 19);
@@ -388,8 +425,30 @@ async function loadAudit() {
       <code class="storage-audit-scope">${esc(JSON.stringify(row.scope))}</code>
     </li>`;
   }).join("");
+  return true;
 }
 
 loadSummary();
 loadAudit();
-setInterval(loadSummary, 30_000);
+let storageSummaryTimer = null;
+
+function startStorageSummaryPolling() {
+  if (storageSummaryTimer || document.hidden) return;
+  storageSummaryTimer = setInterval(loadSummary, 30_000);
+}
+
+function stopStorageSummaryPolling() {
+  if (!storageSummaryTimer) return;
+  clearInterval(storageSummaryTimer);
+  storageSummaryTimer = null;
+}
+
+startStorageSummaryPolling();
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopStorageSummaryPolling();
+  } else {
+    loadSummary();
+    startStorageSummaryPolling();
+  }
+});

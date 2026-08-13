@@ -466,9 +466,50 @@
     e.returnValue = '';
   });
 
+  function fetchJSON(url, options) {
+    return fetch(url, options).then(function(response) {
+      return response.json().catch(function() { return {}; }).then(function(body) {
+        if (!response.ok) {
+          throw new Error(body.error || 'Request failed (' + response.status + ')');
+        }
+        return body;
+      });
+    });
+  }
+
+  function loadSettingsSection(loadFn, statusId, label) {
+    var status = $(statusId);
+    return loadFn().then(function() {
+      if (!status) return;
+      status.setAttribute('role', 'status');
+      delete status.dataset.loadError;
+      if (status.dataset.loadingSection === '1' && status.textContent === 'Loading…') {
+        status.textContent = '';
+      }
+      delete status.dataset.loadingSection;
+    }).catch(function() {
+      if (!status) return;
+      status.dataset.loadError = '1';
+      delete status.dataset.loadingSection;
+      status.setAttribute('role', 'alert');
+      status.replaceChildren(document.createTextNode('Could not load ' + label + '. '));
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'btn btn-small btn-ghost';
+      retry.textContent = 'Try again';
+      retry.addEventListener('click', function() {
+        status.dataset.loadingSection = '1';
+        status.setAttribute('role', 'status');
+        status.textContent = 'Loading…';
+        loadSettingsSection(loadFn, statusId, label);
+      });
+      status.appendChild(retry);
+    });
+  }
+
   // --- MQTT ---
   function loadMQTT() {
-    return fetch('/api/settings/mqtt').then(function(r){return r.json()}).then(function(data) {
+    return fetchJSON('/api/settings/mqtt').then(function(data) {
       $('mqtt-enabled').checked = data.enabled;
       $('mqtt-host').value = data.host || '';
       $('mqtt-port').value = data.port || '';
@@ -594,7 +635,7 @@
 
   // --- Updates ---
   function loadUpdates() {
-    return fetch('/api/updates/status').then(function(r){return r.json()}).then(renderUpdates);
+    return fetchJSON('/api/updates/status').then(renderUpdates);
   }
 
   function renderUpdates(data) {
@@ -653,7 +694,7 @@
   }
 
   function loadRecording() {
-    return fetch('/api/settings/recording').then(function(r){return r.json()}).then(function(data) {
+    return fetchJSON('/api/settings/recording').then(function(data) {
       $('rec-continuous').checked = data.continuous;
       $('rec-retain').value = data.retain_days || '';
       $('rec-event-retain').value = data.event_retain_days || '';
@@ -694,7 +735,7 @@
   var defaultLabels = ['person','car','truck','bus','motorcycle','bicycle','dog','cat','bird'];
 
   function loadDetect() {
-    return fetch('/api/settings/detect').then(function(r){return r.json()}).then(function(data) {
+    return fetchJSON('/api/settings/detect').then(function(data) {
       $('detect-threshold').value = data.score_threshold;
       var threshVal = Number(data.score_threshold).toFixed(2);
       $('detect-threshold-val').textContent = threshVal;
@@ -744,7 +785,7 @@
 
   // --- Password ---
   function loadAuthInfo() {
-    return fetch('/api/auth/info').then(function(r){return r.json()}).then(function(data) {
+    return fetchJSON('/api/auth/info').then(function(data) {
       if (data.auth_method === 'proxy') {
         $('password-proxy-msg').hidden = false;
         $('password-form').style.display = 'none';
@@ -754,7 +795,7 @@
         form.style.display = '';
         $('pw-current').parentElement.style.display = 'none';
       }
-    }).catch(function() {});
+    });
   }
 
   $('password-form').addEventListener('submit', function(e) {
@@ -781,9 +822,13 @@
     });
   });
 
-  // Fire all independent data fetches concurrently rather than waiting
-  // for each to complete before starting the next.
-  Promise.all([loadMQTT(), loadUpdates(), loadRecording(), loadDetect(), loadAuthInfo()]);
+  // Keep every settings section independent: one failed endpoint must not
+  // strand the other panels, and every failure gets an in-place recovery.
+  loadSettingsSection(loadMQTT, 'mqtt-status', 'MQTT settings');
+  loadSettingsSection(loadUpdates, 'update-status', 'update status');
+  loadSettingsSection(loadRecording, 'rec-status', 'recording settings');
+  loadSettingsSection(loadDetect, 'detect-status', 'detection settings');
+  loadSettingsSection(loadAuthInfo, 'pw-status', 'account settings');
 })();
   </script>
 

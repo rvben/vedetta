@@ -150,6 +150,7 @@ func TestAuthMiddleware_PWAAssetsArePublic(t *testing.T) {
 		"/icon-512.png",
 		"/icon-512-maskable.png",
 		"/badge-72.png",
+		"/screenshots/dashboard-mobile.png",
 		// Signed push-notification snapshot URLs. iOS's notification
 		// image fetcher runs without session cookies; the path must
 		// bypass auth so the handler's HMAC check can validate it.

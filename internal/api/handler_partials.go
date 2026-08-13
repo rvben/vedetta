@@ -69,7 +69,7 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
     <div class="cam-live-badge">
       {{if .Stopped}}<span class="cam-live-dot stopped"></span>STOPPED{{else if .Online}}<span class="cam-live-dot"></span>LIVE{{else if .Sleeping}}<span class="cam-live-dot sleeping"></span>SLEEPING{{else}}<span class="cam-live-dot offline"></span>OFFLINE{{end}}
     </div>
-    <button class="cam-toggle-btn" data-action-click="event.stopPropagation(); toggleCamera('{{.Name}}', {{.Stopped}})" title="{{if .Stopped}}Start camera{{else}}Stop camera{{end}}" aria-label="{{if .Stopped}}Start{{else}}Stop{{end}} {{.DisplayName}}">
+    <button class="cam-toggle-btn" data-action-click="event.stopPropagation(); toggleCamera('{{.Name}}', {{.Stopped}}, this)" title="{{if .Stopped}}Start camera{{else}}Stop camera{{end}}" aria-label="{{if .Stopped}}Start{{else}}Stop{{end}} {{.DisplayName}}">
       {{if .Stopped}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><polygon points="5 3 19 12 5 21 5 3"/></svg>{{else}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>{{end}}
     </button>
   </div>
@@ -280,7 +280,8 @@ func (s *Server) handleEventDetailPartial(w http.ResponseWriter, r *http.Request
 		Sightings    []storage.ObjectSighting
 		KnownObjects []storage.KnownObject
 		NamedPeople  []namedPerson
-		QuerySuffix  string
+		PrevURL      string
+		NextURL      string
 	}
 
 	recURL := fmt.Sprintf("/camera.html?name=%s&t=%s",
@@ -307,8 +308,18 @@ func (s *Server) handleEventDetailPartial(w http.ResponseWriter, r *http.Request
 		KnownObjects: knownObjects,
 		NamedPeople:  namedPeople,
 	}
-	if query := eventReviewQuery(r.URL.Query()); query != "" {
-		data.QuerySuffix = "&" + query
+	reviewQuery := eventReviewQuery(r.URL.Query())
+	if prevID != "" {
+		data.PrevURL = "/event.html?id=" + url.QueryEscape(prevID)
+		if reviewQuery != "" {
+			data.PrevURL += "&" + reviewQuery
+		}
+	}
+	if nextID != "" {
+		data.NextURL = "/event.html?id=" + url.QueryEscape(nextID)
+		if reviewQuery != "" {
+			data.NextURL += "&" + reviewQuery
+		}
 	}
 
 	tmpl := template.Must(template.New("detail").Funcs(s.funcMap).Parse(
@@ -341,8 +352,8 @@ func (s *Server) handleEventDetailPartial(w http.ResponseWriter, r *http.Request
 			`</div>` +
 			`<div class="event-sidebar">` +
 			`<div class="event-nav">` +
-			`{{if .PrevID}}<a href="/event.html?id={{.PrevID}}{{.QuerySuffix}}" class="btn" data-prev-id="{{.PrevID}}">&#8592; Previous</a>{{else}}<button class="btn" disabled>&#8592; Previous</button>{{end}}` +
-			`{{if .NextID}}<a href="/event.html?id={{.NextID}}{{.QuerySuffix}}" class="btn" data-next-id="{{.NextID}}">Next &#8594;</a>{{else}}<button class="btn" disabled>Next &#8594;</button>{{end}}` +
+			`{{if .PrevID}}<a href="{{.PrevURL}}" class="btn" data-prev-id="{{.PrevID}}">&#8592; Previous</a>{{else}}<button class="btn" disabled>&#8592; Previous</button>{{end}}` +
+			`{{if .NextID}}<a href="{{.NextURL}}" class="btn" data-next-id="{{.NextID}}">Next &#8594;</a>{{else}}<button class="btn" disabled>Next &#8594;</button>{{end}}` +
 			`</div>` +
 			`<div class="meta-card">` +
 			`<div class="meta-card-header">Details</div>` +

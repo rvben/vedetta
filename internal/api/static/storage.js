@@ -240,20 +240,23 @@ document.addEventListener("click", (e) => {
   } else if (action === "range") {
     showInputModal(
       `Delete a date range: ${camera}`,
-      "Start date (YYYY-MM-DD, UTC):",
+      "Choose the first day to delete (UTC).",
       "",
       (from) => {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) { toast("Use the YYYY-MM-DD format.", "error"); return; }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) { toast("Choose a valid start date.", "error"); return; }
         showInputModal(
           `Delete a date range: ${camera}`,
-          `From ${from} up to (YYYY-MM-DD, UTC):`,
+          `Choose the last day to delete, starting from ${from} (UTC).`,
           "",
           (to) => {
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) { toast("Use the YYYY-MM-DD format.", "error"); return; }
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) { toast("Choose a valid end date.", "error"); return; }
+            if (to < from) { toast("The end date must be on or after the start date.", "error"); return; }
             confirmAndDelete({ target: "segments", camera, from, to });
           },
+          { inputType: "date", inputLabel: "End date" },
         );
       },
+      { inputType: "date", inputLabel: "Start date" },
     );
   } else if (action === "clips") {
     confirmAndDelete({ target: "clips", camera });

@@ -15,25 +15,31 @@
     .face-thumb-wrap-link { cursor:pointer; position:relative; }
     .face-thumb-wrap-link:hover::after {
       content:'View'; position:absolute; bottom:2px; right:2px;
-      font-size:10px; background:rgba(0,0,0,0.7); color:#fff;
+      font-size:var(--text-xs); background:rgba(0,0,0,0.7); color:#fff;
       padding:1px 4px; border-radius:3px; pointer-events:none;
     }
-    .unid-card { cursor:pointer; border:2px solid var(--border); border-radius:var(--radius-sm); transition:border-color 0.15s; position:relative; overflow:visible; }
+    .unid-card { border:2px solid var(--border); border-radius:var(--radius-sm); transition:border-color 0.15s; position:relative; overflow:hidden; }
     .unid-card:hover { border-color:var(--accent); }
     .unid-card.selected { border-color:var(--accent); }
+    .unid-main { display:block; width:100%; height:100%; padding:0; border:0; border-radius:inherit; background:transparent; color:inherit; cursor:pointer; overflow:hidden; }
+    .unid-main .face-thumb-tile { display:block; }
     .unid-picker { position:absolute; top:100%; left:0; z-index:50; min-width:180px; padding:0.35rem; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow:0 8px 24px rgba(0,0,0,0.4); }
     .unid-results { max-height:200px; overflow-y:auto; }
-    .unid-dismiss { position:absolute; top:-6px; right:-6px; width:18px; height:18px; border-radius:50%; background:var(--surface-2); border:1px solid var(--border); color:var(--text-tertiary); font-size:12px; line-height:16px; text-align:center; cursor:pointer; display:none; z-index:5; }
-    .unid-card:hover .unid-dismiss { display:block; }
+    .unid-dismiss { position:absolute; top:4px; right:4px; width:28px; height:28px; border-radius:50%; background:var(--surface-2); border:1px solid var(--border); color:var(--text-tertiary); font-size:16px; line-height:26px; text-align:center; cursor:pointer; display:none; z-index:5; }
+    .unid-card:hover .unid-dismiss,
+    .unid-card:focus-within .unid-dismiss { display:block; }
     .unid-dismiss:hover { background:var(--danger); color:#fff; border-color:var(--danger); }
     .id-modal { position:fixed; inset:0; z-index:960; background:var(--panel); overflow-y:auto; padding:1.5rem; }
     .id-modal-layout { display:flex; gap:1.5rem; max-width:1000px; margin:0 auto; align-items:flex-start; }
     .id-modal-visual { flex:1; text-align:center; }
     .id-modal-sidebar { width:280px; flex-shrink:0; }
-    @media (max-width:700px) { .id-modal-layout { flex-direction:column; } .id-modal-sidebar { width:100%; } }
+    @media (hover:none) { .unid-dismiss { display:block; } }
+    @media (pointer:coarse) { .unid-dismiss { width:44px; height:44px; line-height:42px; } }
+    @media (max-width:700px) { .id-modal { padding:1rem; } .id-modal-layout { flex-direction:column; } .id-modal-sidebar { width:100%; } }
   </style>
 </head>
 <body data-shortcuts="nav,general">
+  <a href="#main" class="skip-link">Skip to content</a>
 
   <nav class="topnav" role="navigation" aria-label="Main">
     <a href="/" class="topnav-brand" aria-label="Vedetta home">
@@ -43,12 +49,9 @@
     <div class="topnav-links">
       <a href="/" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Cameras</a>
       <a href="/events.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>Events</a>
-      <a href="/doorbell.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>Doorbell</a>
       <a href="/recordings.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>Recordings</a>
-      <a href="/people.html" class="topnav-link active" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>People</a>
-      <a href="/objects.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>Objects</a>
-      <a href="/storage.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>Storage</a>
-      <a href="/settings.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>Settings</a>
+      <a href="/people.html" class="topnav-link active" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Recognition</a>
+      <a href="/settings.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>System</a>
     </div>
     <button class="btn btn-icon btn-ghost" data-action-click="toggleTheme()" aria-label="Toggle theme" title="Toggle dark/light theme" id="theme-toggle">
       <svg id="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -58,7 +61,7 @@
     <a href="/settings.html" class="conn-status" title="System health"><span class="conn-dot ok" id="conn-dot"></span><span id="conn-label">Connected</span></a>
   </nav>
 
-  <main class="page">
+  <main class="page" id="main" tabindex="-1">
     <div class="page-header">
       <div>
         <h1>People</h1>
@@ -77,10 +80,21 @@
       </div>
     </div>
 
+    <nav class="section-nav" aria-label="Recognition views">
+      <a class="section-nav-link" href="/people.html" aria-current="page">People</a>
+      <a class="section-nav-link" href="/objects.html">Tracked objects</a>
+    </nav>
+
+    <div class="trust-note" role="note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+      <span>Face matching runs on this Vedetta server. Face crops, visual fingerprints, and names are not sent to a cloud recognition service.</span>
+    </div>
+
     <div class="people-help" id="people-help" hidden>
       <p><strong>People</strong> are identities Vedetta has learned. Each card groups face crops that look like the same person — rename a card to lock in their identity.</p>
       <p><strong>Unmatched faces</strong> are face crops Vedetta found but couldn't link to a known person. Click one to assign or create a new identity.</p>
       <p><strong>Unidentified appearances</strong> are person events with no face match — usually because the face wasn't visible. Identify them to start tracking new people.</p>
+      <p><strong>Exclude</strong> stops an identity or appearance from being considered for recognition. <strong>Skip for now</strong> leaves it in the review queue.</p>
     </div>
 
     <div class="people-toolbar">
@@ -123,12 +137,12 @@
   </main>
 
   <!-- Identification Modal -->
-  <div id="id-modal-backdrop" class="shortcut-backdrop"></div>
-  <div id="id-modal" class="id-modal" role="dialog" aria-modal="true" aria-label="Identify person" style="display:none">
+  <div id="id-modal-backdrop" class="shortcut-backdrop" hidden></div>
+  <div id="id-modal" class="id-modal" role="dialog" aria-modal="true" aria-label="Identify person" aria-hidden="true" inert hidden>
     <div class="id-modal-layout">
       <div class="id-modal-visual">
-        <img id="id-modal-snapshot" src="" alt="snapshot" style="max-width:100%;max-height:55vh;border-radius:var(--radius);display:block">
-        <img id="id-modal-crop" src="" alt="detection crop" style="max-height:180px;border-radius:var(--radius-sm);border:2px solid var(--accent);margin-top:0.5rem">
+        <img id="id-modal-snapshot" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Camera snapshot for identification" style="max-width:100%;max-height:55vh;border-radius:var(--radius);display:block">
+        <img id="id-modal-crop" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Detected face crop for identification" style="max-height:180px;border-radius:var(--radius-sm);border:2px solid var(--accent);margin-top:0.5rem">
       </div>
       <div class="id-modal-sidebar">
         <div style="font-size:var(--text-sm);color:var(--text-tertiary)" id="id-modal-meta"></div>
@@ -139,8 +153,8 @@
           data-action-input="idModalFilter(this.value)">
         <div id="id-modal-results" style="max-height:250px;overflow-y:auto"></div>
         <div style="display:flex;gap:0.5rem;margin-top:0.75rem">
-          <button class="btn btn-sm btn-ghost" data-action-click="idModalSkip()" style="flex:1">Skip</button>
-          <button class="btn btn-sm btn-ghost" style="flex:1;color:var(--danger)" data-action-click="idModalIgnore()">Ignore</button>
+          <button class="btn btn-sm btn-ghost" data-action-click="idModalSkip()" style="flex:1">Skip for now</button>
+          <button class="btn btn-sm btn-ghost" style="flex:1;color:var(--danger)" data-action-click="idModalIgnore()">Exclude appearance</button>
         </div>
         <div style="display:flex;justify-content:space-between;margin-top:0.75rem">
           <button class="btn btn-sm" data-action-click="idModalPrev()">← Previous</button>
@@ -159,26 +173,23 @@
     <div class="bottom-tabs-inner">
       <a href="/" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Cameras</a>
       <a href="/events.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>Events</a>
-      <a href="/doorbell.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>Doorbell</a>
       <a href="/recordings.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>Recordings</a>
-      <a href="/people.html" class="bottom-tab active" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>People</a>
-      <a href="/objects.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>Objects</a>
-      <a href="/storage.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>Storage</a>
-      <a href="/settings.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>Settings</a>
+      <a href="/people.html" class="bottom-tab active" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Recognition</a>
+      <a href="/settings.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>System</a>
     </div>
   </nav>
 
   <!-- Snapshot Viewer Modal -->
-  <div id="snapshot-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:950;cursor:pointer"></div>
-  <div id="snapshot-modal" role="dialog" aria-modal="true" aria-label="Face snapshot" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:960;max-width:90vw;max-height:90vh;text-align:center">
-    <button data-action-click="closeSnapshotModal()" aria-label="Close" style="position:absolute;top:-2rem;right:0;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer">&times;</button>
-    <img id="snapshot-img" src="" alt="Full snapshot" style="max-width:90vw;max-height:85vh;border-radius:0.5rem;display:block">
+  <div id="snapshot-backdrop" hidden style="position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:950;cursor:pointer"></div>
+  <div id="snapshot-modal" role="dialog" aria-modal="true" aria-label="Face snapshot" aria-hidden="true" inert hidden style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:960;max-width:90vw;max-height:90vh;text-align:center">
+    <button class="btn btn-icon" data-action-click="closeSnapshotModal()" aria-label="Close" style="position:absolute;top:-3rem;right:0;background:rgba(0,0,0,0.65);border:none;color:#fff;font-size:1.5rem;cursor:pointer">&times;</button>
+    <img id="snapshot-img" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Camera snapshot containing the detected face" style="max-width:90vw;max-height:85vh;border-radius:0.5rem;display:block">
     <div id="snapshot-meta" style="margin-top:0.5rem;font-size:var(--text-sm);color:var(--text-tertiary)"></div>
   </div>
 
   <!-- Merge Confirm Modal -->
-  <div class="shortcut-backdrop" id="merge-backdrop"></div>
-  <div class="shortcut-modal" id="merge-modal" role="dialog" aria-modal="true" aria-labelledby="merge-title">
+  <div class="shortcut-backdrop" id="merge-backdrop" hidden></div>
+  <div class="shortcut-modal" id="merge-modal" role="dialog" aria-modal="true" aria-labelledby="merge-title" aria-hidden="true" inert hidden>
     <div class="shortcut-modal-header">
       <h2 id="merge-title">Merge People</h2>
       <button class="btn btn-icon btn-ghost" data-action-click="closeMergeModal()" aria-label="Close">
@@ -195,8 +206,8 @@
   </div>
 
   <!-- Assign Modal -->
-  <div class="shortcut-backdrop" id="assign-backdrop"></div>
-  <div class="shortcut-modal" id="assign-modal" role="dialog" aria-modal="true" aria-label="Assign face to person">
+  <div class="shortcut-backdrop" id="assign-backdrop" hidden></div>
+  <div class="shortcut-modal" id="assign-modal" role="dialog" aria-modal="true" aria-label="Assign face to person" aria-hidden="true" inert hidden>
     <div class="shortcut-modal-header">
       <h2>Assign to Person</h2>
       <button class="btn btn-icon btn-ghost" data-action-click="closeAssignModal()" aria-label="Close">
@@ -263,7 +274,11 @@
         peopleData = people;
         renderPeople(people);
       }).catch(function() {
-        document.getElementById('people-grid').innerHTML = '<div class="loading-state">Failed to load people.</div>';
+        renderInlineError('people-grid', {
+          title: 'Could not load people',
+          message: 'The recognition library is temporarily unavailable.',
+          retry: loadPeople
+        });
       });
     }
 
@@ -309,8 +324,8 @@
           + (p.appearance_count > 0 ? '<span class="badge badge-sm">' + p.appearance_count + ' appearance' + (p.appearance_count !== 1 ? 's' : '') + '</span>' : '')
           + (!p.face_count && !p.appearance_count ? '<span class="badge-empty">No sightings yet</span>' : '')
           + (isDupe ? '<span class="badge badge-sm badge-warning" title="Another person with this name exists. Rename one or use Merge to combine them.">duplicate name</span>' : '')
-          + '<button class="btn btn-xs ' + (p.ignore ? 'btn-primary' : 'btn-ghost') + '" data-action-click="toggleIgnore(' + p.id + ', ' + !p.ignore + ')">'
-          + (p.ignore ? 'Ignored' : 'Ignore') + '</button>'
+          + '<button class="btn btn-xs ' + (p.ignore ? 'btn-primary' : 'btn-ghost') + '" data-action-click="toggleIgnore(' + p.id + ', ' + !p.ignore + ')" title="' + (p.ignore ? 'Include this person in recognition again' : 'Exclude this person from recognition') + '">'
+          + (p.ignore ? 'Excluded' : 'Exclude') + '</button>'
           + '<button class="btn btn-xs btn-ghost btn-danger" data-action-click="deletePerson(' + p.id + ', ' + jsStringArg(p.name) + ')">Delete</button>'
           + '</div>'
           + '</div>'
@@ -348,7 +363,7 @@
       }
       el.classList.remove('hidden');
       if (trigger) trigger.setAttribute('aria-expanded', 'true');
-      el.innerHTML = '<div class="loading-state" style="padding:0.5rem">Loading...</div>';
+      el.innerHTML = '<div class="loading-state" style="padding:0.5rem">Loading…</div>';
 
       Promise.all([
         fetch('/api/people/' + personId + '/faces?limit=50').then(function(r) { return r.json(); }).then(function(d) { return d.items || d || []; }),
@@ -413,7 +428,7 @@
     function showMergeConfirm(target, sourceId) {
       document.getElementById('merge-title').textContent = 'Merge People';
       var msg = document.getElementById('merge-message');
-      msg.textContent = '"' + target.name + '" already exists with ' + target.face_count + ' face' + (target.face_count !== 1 ? 's' : '') + '. Merge into them?';
+      msg.textContent = 'Move every face from this identity into "' + target.name + '" and remove the duplicate identity? This cannot be undone.';
       var btn = document.getElementById('merge-confirm-btn');
       btn.textContent = 'Merge';
       btn.className = 'btn btn-sm btn-primary';
@@ -432,13 +447,11 @@
           if (typeof toast === 'function') toast('Merge failed');
         });
       };
-      document.getElementById('merge-backdrop').classList.add('open');
-      document.getElementById('merge-modal').classList.add('open');
+      openManagedDialog('merge-modal', 'merge-backdrop', btn);
     }
 
     function closeMergeModal() {
-      document.getElementById('merge-backdrop').classList.remove('open');
-      document.getElementById('merge-modal').classList.remove('open');
+      closeManagedDialog('merge-modal', 'merge-backdrop');
     }
 
     function doRename(id, name) {
@@ -474,7 +487,7 @@
     function deletePerson(id, name) {
       document.getElementById('merge-title').textContent = 'Delete Person';
       var msg = document.getElementById('merge-message');
-      msg.textContent = 'Delete "' + (name || 'Unnamed') + '"? Their faces will become unmatched.';
+      msg.textContent = 'Delete "' + (name || 'Unnamed') + '"? Their face crops will return to Unmatched faces; original events and recordings remain. This cannot be undone.';
       var btn = document.getElementById('merge-confirm-btn');
       btn.textContent = 'Delete';
       btn.className = 'btn btn-sm btn-danger';
@@ -482,8 +495,7 @@
         closeMergeModal();
         doDeletePerson(id, name);
       };
-      document.getElementById('merge-backdrop').classList.add('open');
-      document.getElementById('merge-modal').classList.add('open');
+      openManagedDialog('merge-modal', 'merge-backdrop', btn);
     }
 
     function doDeletePerson(id, name) {
@@ -526,10 +538,12 @@
         lazyLoadBg(grid);
       }).catch(function() {
         var empty = document.getElementById('unmatched-empty');
-        if (empty) {
-          empty.textContent = 'Failed to load unmatched faces.';
-          empty.removeAttribute('hidden');
-        }
+        if (empty) empty.setAttribute('hidden', '');
+        renderInlineError('unmatched-grid', {
+          title: 'Could not load unmatched faces',
+          message: 'Faces awaiting identification could not be retrieved.',
+          retry: loadUnmatched
+        });
       });
     }
 
@@ -571,19 +585,23 @@
         var html = '';
         unidentified.forEach(function(ev) {
           var time = new Date(ev.timestamp).toLocaleString();
-          html += '<div class="unid-card" role="button" tabindex="0" data-event-id="' + escapeAttr(ev.id) + '" data-action-click="selectUnidentified(this, ' + jsStringArg(ev.id) + ')" aria-label="Identify person from ' + escapeAttr(ev.camera) + ', ' + escapeAttr(time) + '" title="' + escapeAttr(ev.camera) + ' - ' + escapeAttr(time) + '">'
-            + '<div class="face-thumb-tile" data-bg="/api/events/' + encodeURIComponent(ev.id) + '/detection-crop"></div>'
-            + '<button class="unid-dismiss" data-action-click="event.stopPropagation();dismissAppearance(' + jsStringArg(ev.id) + ',this.parentElement)" aria-label="Ignore this appearance" title="Ignore">&times;</button>'
+          html += '<div class="unid-card" data-event-id="' + escapeAttr(ev.id) + '" title="' + escapeAttr(ev.camera) + ' - ' + escapeAttr(time) + '">'
+            + '<button type="button" class="unid-main" data-action-click="selectUnidentified(this, ' + jsStringArg(ev.id) + ')" aria-label="Identify person from ' + escapeAttr(ev.camera) + ', ' + escapeAttr(time) + '">'
+            + '<span class="face-thumb-tile" data-bg="/api/events/' + encodeURIComponent(ev.id) + '/detection-crop"></span>'
+            + '</button>'
+            + '<button class="unid-dismiss" data-action-click="event.stopPropagation();dismissAppearance(' + jsStringArg(ev.id) + ',this.parentElement)" aria-label="Exclude this appearance from identification" title="Exclude appearance">&times;</button>'
             + '</div>';
         });
         grid.innerHTML = html;
         lazyLoadBg(grid);
       }).catch(function() {
         var empty = document.getElementById('unidentified-empty');
-        if (empty) {
-          empty.textContent = 'Failed to load unidentified appearances.';
-          empty.removeAttribute('hidden');
-        }
+        if (empty) empty.setAttribute('hidden', '');
+        renderInlineError('unidentified-grid', {
+          title: 'Could not load unidentified appearances',
+          message: 'The review queue could not be retrieved.',
+          retry: loadUnidentified
+        });
       });
 
       // Cache people for inline picker
@@ -611,8 +629,7 @@
       var eventId = _idModalEvents[_idModalIndex];
       var modal = document.getElementById('id-modal');
       var backdrop = document.getElementById('id-modal-backdrop');
-      modal.style.display = '';
-      backdrop.classList.add('open');
+      openManagedDialog(modal, backdrop, document.getElementById('id-modal-search'));
 
 	      document.getElementById('id-modal-snapshot').src = '/api/events/' + encodeURIComponent(eventId) + '/snapshot';
 	      document.getElementById('id-modal-crop').src = '/api/events/' + encodeURIComponent(eventId) + '/detection-crop';
@@ -622,18 +639,18 @@
 	      fetch('/api/events/' + encodeURIComponent(eventId)).then(function(r) { return r.json(); }).then(function(ev) {
         var time = new Date(ev.timestamp).toLocaleString();
         document.getElementById('id-modal-meta').textContent = ev.camera.replace(/_/g, ' ') + ' — ' + time + ' — ' + Math.round(ev.score * 100) + '%';
+        document.getElementById('id-modal-snapshot').alt = 'Camera snapshot from ' + ev.camera.replace(/_/g, ' ') + ' at ' + time;
+        document.getElementById('id-modal-crop').alt = 'Detected face crop from ' + ev.camera.replace(/_/g, ' ') + ' at ' + time;
       });
 
       // Reset search
       var search = document.getElementById('id-modal-search');
       search.value = '';
       idModalFilter('');
-      setTimeout(function() { search.focus(); }, 100);
     }
 
     function closeIdModal() {
-      document.getElementById('id-modal').style.display = 'none';
-      document.getElementById('id-modal-backdrop').classList.remove('open');
+      closeManagedDialog('id-modal', 'id-modal-backdrop');
     }
 
     function idModalFilter(query) {
@@ -793,18 +810,17 @@
         html = '<div style="color:var(--text-tertiary);font-size:var(--text-sm);padding:0.25rem 0">No existing people. Create a new one above.</div>';
       }
       list.innerHTML = html;
-      document.getElementById('assign-backdrop').classList.add('open');
-      document.getElementById('assign-modal').classList.add('open');
+      openManagedDialog('assign-modal', 'assign-backdrop');
     }
 
     function closeAssignModal() {
       assigningFaceId = null;
-      document.getElementById('assign-backdrop').classList.remove('open');
-      document.getElementById('assign-modal').classList.remove('open');
+      closeManagedDialog('assign-modal', 'assign-backdrop');
     }
 
     function assignToNewPerson() {
       var faceId = assigningFaceId;
+      closeAssignModal();
       showInputModal('Assign face', 'Name for the new person:', '', function(name) {
         if (!name) return;
         fetch('/api/faces/' + faceId + '/assign', {
@@ -881,14 +897,13 @@
 
       meta.textContent = (camera || 'Unknown') + ' — ' + eventId;
 	      img.src = '/api/events/' + encodeURIComponent(eventId) + '/snapshot';
-      modal.style.display = 'block';
-      backdrop.style.display = 'block';
+      img.alt = 'Camera snapshot from ' + (camera || 'unknown camera');
+      openManagedDialog(modal, backdrop);
     }
 
     function closeSnapshotModal() {
-      document.getElementById('snapshot-modal').style.display = 'none';
-      document.getElementById('snapshot-backdrop').style.display = 'none';
-      document.getElementById('snapshot-img').src = '';
+      closeManagedDialog('snapshot-modal', 'snapshot-backdrop');
+      document.getElementById('snapshot-img').removeAttribute('src');
     }
 
     function runBackfill() {

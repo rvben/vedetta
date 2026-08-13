@@ -94,12 +94,170 @@ function toast(message, type) {
   const container = el('toasts');
   if (!container) return;
   const div = document.createElement('div');
-  div.className = 'toast';
-  if (type === 'error') div.style.borderColor = 'var(--red)';
-  div.textContent = message;
+  div.className = 'toast' + (type === 'error' ? ' toast-error' : '');
+  div.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  div.setAttribute('aria-atomic', 'true');
+  const text = document.createElement('span');
+  text.textContent = message;
+  div.appendChild(text);
+  if (type === 'error') {
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', 'Dismiss notification');
+    close.textContent = '\u00d7';
+    close.addEventListener('click', function() { div.remove(); });
+    div.appendChild(close);
+  }
   container.appendChild(div);
-  setTimeout(() => div.remove(), 4000);
+  setTimeout(() => div.remove(), type === 'error' ? 8000 : 4000);
 }
+
+// A consistent, actionable replacement for dead-end "Failed to load" text.
+function renderInlineError(targetValue, options) {
+  var target = resolveUIElement(targetValue);
+  if (!target) return;
+  options = options || {};
+
+  var panel = document.createElement('div');
+  panel.className = 'inline-error';
+  panel.setAttribute('role', 'alert');
+
+  var title = document.createElement('h3');
+  title.textContent = options.title || 'Could not load this content';
+  panel.appendChild(title);
+
+  var message = document.createElement('p');
+  message.textContent = options.message || 'Check the connection and try again.';
+  panel.appendChild(message);
+
+  if (typeof options.retry === 'function') {
+    var retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn btn-sm btn-ghost';
+    retry.textContent = options.retryLabel || 'Try again';
+    retry.addEventListener('click', function() {
+      retry.disabled = true;
+      retry.textContent = 'Trying…';
+      options.retry();
+    });
+    panel.appendChild(retry);
+  }
+
+  target.replaceChildren(panel);
+}
+
+// ─── Accessible Dialog Management ───
+// Every page uses the same focus, dismissal, and hidden-state contract even
+// though the dialog content is defined close to the feature that owns it.
+var managedDialogOpeners = new WeakMap();
+
+function resolveUIElement(value) {
+  if (!value) return null;
+  return typeof value === 'string' ? document.getElementById(value) : value;
+}
+
+function initializeManagedDialogs(root) {
+  (root || document).querySelectorAll('[role="dialog"]').forEach(function(dialog) {
+    if (dialog.classList.contains('open')) return;
+    dialog.hidden = true;
+    dialog.setAttribute('aria-hidden', 'true');
+    dialog.setAttribute('inert', '');
+  });
+}
+
+function openManagedDialog(dialogValue, backdropValue, initialFocusValue) {
+  var dialog = resolveUIElement(dialogValue);
+  var backdrop = resolveUIElement(backdropValue);
+  if (!dialog) return;
+
+  managedDialogOpeners.set(dialog, document.activeElement);
+  dialog.hidden = false;
+  dialog.removeAttribute('aria-hidden');
+  dialog.removeAttribute('inert');
+  dialog.style.removeProperty('display');
+  dialog.classList.add('open');
+  if (backdrop) {
+    backdrop.hidden = false;
+    backdrop.style.removeProperty('display');
+    backdrop.classList.add('open');
+  }
+  document.body.classList.add('dialog-open');
+
+  requestAnimationFrame(function() {
+    var initialFocus = resolveUIElement(initialFocusValue);
+    if (!initialFocus || !dialog.contains(initialFocus)) {
+      initialFocus = dialog.querySelector('[autofocus], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), a[href]');
+    }
+    if (initialFocus) initialFocus.focus();
+  });
+}
+
+function closeManagedDialog(dialogValue, backdropValue) {
+  var dialog = resolveUIElement(dialogValue);
+  var backdrop = resolveUIElement(backdropValue);
+  if (!dialog) return;
+
+  dialog.classList.remove('open');
+  dialog.hidden = true;
+  dialog.setAttribute('aria-hidden', 'true');
+  dialog.setAttribute('inert', '');
+  if (backdrop) {
+    backdrop.classList.remove('open');
+    backdrop.hidden = true;
+  }
+  if (!document.querySelector('[role="dialog"].open')) {
+    document.body.classList.remove('dialog-open');
+  }
+
+  var opener = managedDialogOpeners.get(dialog);
+  managedDialogOpeners.delete(dialog);
+  if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+}
+
+function activeManagedDialog() {
+  var dialogs = Array.prototype.filter.call(document.querySelectorAll('[role="dialog"].open'), function(dialog) {
+    return !dialog.hidden;
+  });
+  return dialogs.length ? dialogs[dialogs.length - 1] : null;
+}
+
+document.addEventListener('keydown', function(event) {
+  var dialog = activeManagedDialog();
+  if (!dialog) return;
+
+  if (event.key === 'Escape') {
+    var closeButton = dialog.querySelector('[data-dialog-close], [aria-label="Close"]');
+    if (closeButton) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeButton.click();
+    }
+    return;
+  }
+
+  if (event.key !== 'Tab') return;
+  var focusable = Array.prototype.filter.call(dialog.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'), function(node) {
+    return !node.hidden && node.getAttribute('aria-hidden') !== 'true' && node.getClientRects().length > 0;
+  });
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.setAttribute('tabindex', '-1');
+    dialog.focus();
+    return;
+  }
+  var first = focusable[0];
+  var last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}, true);
+
+initializeManagedDialogs();
 
 function readCookie(name) {
   var prefix = name + '=';
@@ -236,6 +394,7 @@ var allowedDataActionFunctions = new Set([
   'toggleBoxOverlay',
   'toggleCam',
   'toggleRevealInput',
+  'toggleShortcutModal',
   'zoneCancelDraw',
   'zoneDelete',
   'zoneFormCancel',
@@ -1511,7 +1670,7 @@ async function startWebRTC() {
   }
 }
 
-// iPhone Safari does not continuously refresh an <img> from a
+// iPhone Safari does not continuously refresh an image element from a
 // multipart/x-mixed-replace stream: it renders only the first frame, so the
 // true MJPEG transport looks like a frozen snapshot there. Use a JS
 // snapshot-refresh loop on iPhone (works on every browser, low latency) and
@@ -1711,7 +1870,7 @@ function startMjpegMultipart() {
   hide('live-snapshot');
   hide('live-video');
 
-  // Reliable, browser-independent cutover: an <img> reports a non-zero
+  // Reliable, browser-independent cutover: an image element reports a non-zero
   // naturalWidth as soon as the first multipart frame is decoded, even when
   // no `load` event fires. If no frame decodes within the timeout, surface
   // the offline state instead of a perpetual connecting spinner over a
@@ -2336,6 +2495,7 @@ function initTimeline() {
   preview.style.display = 'none';
   var previewImg = document.createElement('img');
   previewImg.className = 'timeline-preview-img';
+  previewImg.alt = '';
   preview.appendChild(previewImg);
   var timelineContainer = track.parentElement;
   timelineContainer.style.position = 'relative';
@@ -3544,7 +3704,14 @@ function renderCalendar() {
         renderEmptyRecordings('No recordings in ' + monthName + '.');
       }
     })
-    .catch(function(err) { console.error('Failed to load calendar data:', err); });
+    .catch(function(err) {
+      console.error('Failed to load calendar data:', err);
+      renderInlineError('camera-cards', {
+        title: 'Could not load the recording calendar',
+        message: 'The existing calendar selection is unchanged. Check the connection and try again.',
+        retry: renderCalendar
+      });
+    });
 }
 
 function formatBytesJS(bytes) {
@@ -3573,7 +3740,7 @@ function loadRecordingsSummary(date) {
   var summary = el('day-summary');
   var cards = el('camera-cards');
   if (summary) summary.innerHTML = '';
-  if (cards) cards.innerHTML = '<div class="loading-state">Loading...</div>';
+  if (cards) cards.innerHTML = '<div class="loading-state">Loading…</div>';
 
   fetch('/api/recordings/summary?date=' + dateStr + tzQuerySuffix())
     .then(function(resp) { return resp.json(); })
@@ -3582,7 +3749,11 @@ function loadRecordingsSummary(date) {
     })
     .catch(function(err) {
       console.error('Failed to load recordings summary:', err);
-      if (cards) cards.innerHTML = '<div class="empty-state"><p>Failed to load recordings.</p></div>';
+      renderInlineError(cards, {
+        title: 'Could not load recordings',
+        message: 'Recordings for this day could not be retrieved.',
+        retry: function() { loadRecordingsSummary(date); }
+      });
     });
 }
 
@@ -3924,13 +4095,9 @@ function openInlinePlayer(cameraName, startIso, displayLabel) {
 
   var backdrop = document.getElementById('inline-player-backdrop');
   var modal = document.getElementById('inline-player-modal');
-  backdrop.classList.add('open');
-  modal.classList.add('open');
-
-  // Focus the close button so keyboard users can immediately dismiss or tab into controls
   _inlinePlayerTrigger = document.activeElement;
   var closeBtn = document.getElementById('inline-player-close');
-  if (closeBtn) closeBtn.focus();
+  openManagedDialog(modal, backdrop, closeBtn);
 }
 
 function closeInlinePlayer() {
@@ -3940,14 +4107,8 @@ function closeInlinePlayer() {
 
   _cleanupInlinePlayerHls();
 
-  backdrop.classList.remove('open');
-  modal.classList.remove('open');
-
-  // Return focus to the trigger that opened the player
-  if (_inlinePlayerTrigger && typeof _inlinePlayerTrigger.focus === 'function') {
-    _inlinePlayerTrigger.focus();
-    _inlinePlayerTrigger = null;
-  }
+  closeManagedDialog(modal, backdrop);
+  _inlinePlayerTrigger = null;
 }
 
 // ─── Keyboard Shortcuts ───
@@ -4043,13 +4204,10 @@ document.addEventListener('keydown', function(e) {
       if (e.ctrlKey || e.metaKey) { e.preventDefault(); location.href = '/recordings.html'; }
       break;
     case '4':
-      if (e.ctrlKey || e.metaKey) { e.preventDefault(); location.href = '/settings.html'; }
-      break;
-    case '5':
       if (e.ctrlKey || e.metaKey) { e.preventDefault(); location.href = '/people.html'; }
       break;
-    case '6':
-      if (e.ctrlKey || e.metaKey) { e.preventDefault(); location.href = '/objects.html'; }
+    case '5':
+      if (e.ctrlKey || e.metaKey) { e.preventDefault(); location.href = '/settings.html'; }
       break;
     case 'b':
     case 'B':
@@ -4090,10 +4248,16 @@ function updateThemeUI() {
   var iconDark = document.getElementById('theme-icon-dark');
   var iconLight = document.getElementById('theme-icon-light');
   var meta = document.querySelector('meta[name="theme-color"]');
+  var toggle = document.getElementById('theme-toggle');
 
   if (iconDark) iconDark.style.display = isLight ? 'none' : '';
   if (iconLight) iconLight.style.display = isLight ? '' : 'none';
   if (meta) meta.setAttribute('content', isLight ? '#ffffff' : '#0a0e14');
+  if (toggle) {
+    var label = isLight ? 'Switch to dark theme' : 'Switch to light theme';
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('title', label);
+  }
 }
 
 initTheme();
@@ -4240,7 +4404,14 @@ function showHtmxFallback(target) {
   // or is empty — don't wipe real content on a periodic poll failure.
   var hasLoader = target.querySelector && target.querySelector('.loading-state, .skeleton');
   if (!hasLoader && target.children && target.children.length > 0) return;
-  target.innerHTML = '<div class="empty-state"><p>Failed to load. <button type="button" class="btn btn-sm" data-htmx-retry>Retry</button></p></div>';
+  renderInlineError(target, {
+    title: 'Could not load this content',
+    message: 'The server did not return this section. Other content remains available.',
+    retry: function() {
+      target.innerHTML = '<div class="loading-state">Loading…</div>';
+      if (window.htmx) htmx.trigger(target, 'load');
+    }
+  });
 }
 
 document.addEventListener('htmx:sendError', function(e) {
@@ -4261,7 +4432,7 @@ document.addEventListener('click', function(e) {
   if (!btn) return;
   var holder = btn.closest('[hx-get]');
   if (holder && window.htmx) {
-    holder.innerHTML = '<div class="loading-state">Loading...</div>';
+    holder.innerHTML = '<div class="loading-state">Loading…</div>';
     htmx.trigger(holder, 'load');
   }
 });
@@ -4365,7 +4536,7 @@ document.addEventListener('visibilitychange', function() {
 // fast for cameras that report has_motion; idle cameras refresh at the
 // slow GRID_IDLE_MS cadence. This keeps bandwidth proportional to where
 // something is actually happening rather than linear in camera count.
-// Only <img> src attributes change (cache-busted) so the grid DOM is
+// Only image source attributes change (cache-busted) so the grid DOM is
 // never replaced (no flash); the live stream still starts on hover.
 const GRID_TICK_MS = 4000;   // driver tick = motion-camera snapshot cadence
 const GRID_IDLE_MS = 30000;  // idle-camera snapshot cadence
@@ -4580,7 +4751,9 @@ function setDashboardDensity(density) {
     }
   }
 
-  // Sync active state on buttons.
+  // Keep either the current select control or legacy buttons in sync.
+  var select = document.getElementById('dashboard-density-select');
+  if (select) select.value = density;
   var btns = document.querySelectorAll('.density-btn');
   btns.forEach(function(btn) {
     btn.classList.toggle('active', btn.dataset.density === density);
@@ -4750,9 +4923,8 @@ var SHORTCUT_SECTIONS = {
       ['Cameras', ['Ctrl', '1']],
       ['Events', ['Ctrl', '2']],
       ['Recordings', ['Ctrl', '3']],
-      ['Settings', ['Ctrl', '4']],
-      ['People', ['Ctrl', '5']],
-      ['Objects', ['Ctrl', '6']],
+      ['Recognition', ['Ctrl', '4']],
+      ['System', ['Ctrl', '5']],
     ],
   },
   camera: {
@@ -4834,9 +5006,27 @@ function mountShortcutModal() {
   var wrapper = document.createElement('div');
   wrapper.innerHTML = html;
   while (wrapper.firstChild) document.body.appendChild(wrapper.firstChild);
+  initializeManagedDialogs(document);
 }
 
 mountShortcutModal();
+
+function mountShortcutTrigger() {
+  if (!document.body.dataset.shortcuts || document.getElementById('shortcut-trigger')) return;
+  var themeToggle = document.getElementById('theme-toggle');
+  if (!themeToggle || !themeToggle.parentNode) return;
+  var button = document.createElement('button');
+  button.type = 'button';
+  button.id = 'shortcut-trigger';
+  button.className = 'btn btn-icon btn-ghost shortcut-trigger';
+  button.setAttribute('data-action-click', 'toggleShortcutModal()');
+  button.setAttribute('aria-label', 'Keyboard shortcuts');
+  button.setAttribute('title', 'Keyboard shortcuts (?)');
+  button.innerHTML = '<span aria-hidden="true">?</span>';
+  themeToggle.insertAdjacentElement('afterend', button);
+}
+
+mountShortcutTrigger();
 
 function toggleShortcutModal() {
   var backdrop = el('shortcut-backdrop');
@@ -4856,10 +5046,7 @@ function openShortcutModal() {
   var modal = el('shortcut-modal');
   if (!backdrop || !modal) return;
 
-  backdrop.classList.add('open');
-  modal.classList.add('open');
-  // Trap focus
-  modal.querySelector('button')?.focus();
+  openManagedDialog(modal, backdrop, modal.querySelector('button'));
 }
 
 function closeShortcutModal() {
@@ -4867,8 +5054,7 @@ function closeShortcutModal() {
   var modal = el('shortcut-modal');
   if (!backdrop || !modal) return;
 
-  backdrop.classList.remove('open');
-  modal.classList.remove('open');
+  closeManagedDialog(modal, backdrop);
 }
 
 // Close modal on Escape (handled in keydown handler via existing Escape case)
@@ -4924,9 +5110,7 @@ function openAccountModal() {
   var status = el('cp-status');
   if (status) { status.textContent = ''; status.style.color = ''; }
 
-  backdrop.classList.add('open');
-  modal.classList.add('open');
-  modal.querySelector('button')?.focus();
+  openManagedDialog(modal, backdrop, modal.querySelector('button'));
 }
 
 function closeAccountModal() {
@@ -4934,8 +5118,7 @@ function closeAccountModal() {
   var modal = el('account-modal');
   if (!backdrop || !modal) return;
 
-  backdrop.classList.remove('open');
-  modal.classList.remove('open');
+  closeManagedDialog(modal, backdrop);
 }
 
 // ─── RTSP Test Connection ───
@@ -6093,7 +6276,8 @@ function reloadEventDetail(eventId) {
 }
 
 // Generic input modal (replaces prompt())
-function showInputModal(title, message, defaultValue, onConfirm) {
+function showInputModal(title, message, defaultValue, onConfirm, options) {
+  options = options || {};
   var modal = document.getElementById('input-modal');
   if (!modal) {
     var html = '<div class="shortcut-backdrop" id="input-backdrop"></div>'
@@ -6115,6 +6299,9 @@ function showInputModal(title, message, defaultValue, onConfirm) {
   document.getElementById('input-title').textContent = title;
   document.getElementById('input-message').textContent = message;
   var field = document.getElementById('input-field');
+  field.type = options.inputType || 'text';
+  field.setAttribute('aria-label', options.inputLabel || title);
+  field.setAttribute('aria-describedby', 'input-message');
   field.value = defaultValue || '';
   document.getElementById('input-confirm-btn').onclick = function() {
     var val = field.value.trim();
@@ -6125,16 +6312,14 @@ function showInputModal(title, message, defaultValue, onConfirm) {
   field.onkeydown = function(e) {
     if (e.key === 'Enter') document.getElementById('input-confirm-btn').click();
   };
-  document.getElementById('input-backdrop').classList.add('open');
-  modal.classList.add('open');
-  setTimeout(function() { field.focus(); field.select(); }, 100);
+  openManagedDialog(modal, 'input-backdrop', field);
+  setTimeout(function() { field.select(); }, 100);
 }
 
 function closeInputModal() {
   var modal = document.getElementById('input-modal');
   var backdrop = document.getElementById('input-backdrop');
-  if (modal) modal.classList.remove('open');
-  if (backdrop) backdrop.classList.remove('open');
+  closeManagedDialog(modal, backdrop);
 }
 
 // Generic confirm modal (replaces confirm())
@@ -6168,16 +6353,13 @@ function showConfirmModal(title, message, onConfirm, opts) {
     closeConfirmModal();
     onConfirm();
   };
-  document.getElementById('confirm-backdrop').classList.add('open');
-  modal.classList.add('open');
-  setTimeout(function() { okBtn.focus(); }, 100);
+  openManagedDialog(modal, 'confirm-backdrop', okBtn);
 }
 
 function closeConfirmModal() {
   var modal = document.getElementById('confirm-modal');
   var backdrop = document.getElementById('confirm-backdrop');
-  if (modal) modal.classList.remove('open');
-  if (backdrop) backdrop.classList.remove('open');
+  closeManagedDialog(modal, backdrop);
 }
 
 function addObjectReference(objectId, objectName, eventId) {
@@ -6611,6 +6793,11 @@ function loadZones() {
     })
     .catch(function(err) {
       console.error('Failed to load zones:', err);
+      renderInlineError('zone-list', {
+        title: 'Could not load zones',
+        message: 'Saved detection zones could not be retrieved.',
+        retry: loadZones
+      });
     });
 }
 
@@ -6984,24 +7171,30 @@ function zoneDelete() {
   var name = getCameraName();
   if (!name) return;
 
-  if (!confirm('Delete zone "' + zoneEditing + '"?')) return;
-
-  fetch('/api/cameras/' + encodeURIComponent(name) + '/zones/' + encodeURIComponent(zoneEditing), {
-    method: 'DELETE'
-  })
-    .then(function(r) {
-      if (!r.ok) return r.json().then(function(err) { throw new Error(err.error || 'Delete failed'); });
-      return r.json();
-    })
-    .then(function() {
-      toast('Zone deleted');
-      zoneEditing = null;
-      hideZoneForm();
-      loadZones();
-    })
-    .catch(function(err) {
-      toast(err.message, 'error');
-    });
+  var zoneName = zoneEditing;
+  showConfirmModal(
+    'Delete zone',
+    'Delete "' + zoneName + '"? Detection events and recordings already created in this zone will remain. This cannot be undone.',
+    function() {
+      fetch('/api/cameras/' + encodeURIComponent(name) + '/zones/' + encodeURIComponent(zoneName), {
+        method: 'DELETE'
+      })
+        .then(function(r) {
+          if (!r.ok) return r.json().then(function(err) { throw new Error(err.error || 'Delete failed'); });
+          return r.json();
+        })
+        .then(function() {
+          toast('Zone deleted');
+          zoneEditing = null;
+          hideZoneForm();
+          loadZones();
+        })
+        .catch(function(err) {
+          toast(err.message, 'error');
+        });
+    },
+    { confirmLabel: 'Delete zone', destructive: true }
+  );
 }
 
 // Presence polling
@@ -7184,7 +7377,7 @@ function bindPTZControls(cameraName) {
         'display:flex;align-items:center;gap:12px;box-shadow:0 4px 12px rgba(0,0,0,0.4);';
       banner.innerHTML =
         '<div style="flex:1">Add Vedetta to your home screen for notifications. Tap Share \u2192 Add to Home Screen.</div>' +
-        '<button type="button" aria-label="Dismiss" style="background:none;border:0;color:#888;font-size:20px;cursor:pointer;padding:4px 8px">\u00d7</button>';
+        '<button type="button" aria-label="Dismiss" style="width:44px;height:44px;flex:0 0 44px;background:none;border:0;color:#a7afbd;font-size:20px;cursor:pointer;padding:0">\u00d7</button>';
       banner.querySelector('button').addEventListener('click', function () {
         try {
           localStorage.setItem('vedetta-install-hint-dismissed', '1');
@@ -7243,16 +7436,13 @@ function _acStep(name) {
 
 function openAddCameraModal() {
   _ac = { discovered: [], selected: null, manual: false, verified: null, lastFocus: document.activeElement };
-  el('add-camera-backdrop').classList.add('open');
-  el('add-camera-modal').classList.add('open');
+  openManagedDialog('add-camera-modal', 'add-camera-backdrop');
   _acStep('scan');
   acRescan();
 }
 
 function closeAddCameraModal() {
-  el('add-camera-backdrop').classList.remove('open');
-  el('add-camera-modal').classList.remove('open');
-  if (_ac.lastFocus && _ac.lastFocus.focus) _ac.lastFocus.focus();
+  closeManagedDialog('add-camera-modal', 'add-camera-backdrop');
 }
 
 function acRescan() {
@@ -7311,7 +7501,7 @@ function _acWireThumb(img) {
           retry(node, attempts - 1);
         }, 1500);
       } else {
-        // Drop the src: an <img> with no src renders nothing (no broken-image
+        // Drop the source: an image element with no source renders nothing (no broken-image
         // glyph) while the element keeps its fixed size and surface background
         // from .addcam-card-thumb, i.e. a clean placeholder box.
         node.removeAttribute('src');

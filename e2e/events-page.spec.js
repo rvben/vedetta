@@ -66,11 +66,11 @@ test('event review starts compact and groups activity by day', async ({ page }) 
 
 test('filters persist in the URL and event-detail links', async ({ page }) => {
   await page.goto('/events.html');
+  await page.getByRole('button', { name: /^Filters/ }).click();
+  await expect(page.locator('#events-filter-panel')).toBeVisible();
   await page.getByRole('button', { name: 'Person' }).click();
   await expect(page).toHaveURL(/label=person/);
 
-  await page.getByRole('button', { name: /^Filters/ }).click();
-  await expect(page.locator('#events-filter-panel')).toBeVisible();
   await page.getByRole('button', { name: 'Front Door' }).click();
   await expect(page).toHaveURL(/camera=front_door/);
   await expect(page.locator('#events-filter-count')).toHaveText('1');

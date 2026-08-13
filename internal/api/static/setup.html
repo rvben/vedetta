@@ -2,17 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Vedetta Setup</title>
+  <meta name="theme-color" content="#0a0e14">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/style.css">
   <style>
     :root {
       color-scheme: dark;
-      --panel: rgba(8, 20, 32, 0.94);
-      --panel-edge: rgba(93, 215, 255, 0.12);
-      --surface: rgba(4, 12, 18, 0.6);
-      --accent-strong: #1baee6;
+      --panel: var(--surface-1);
+      --panel-edge: var(--border-default);
+      --surface: var(--surface-2);
       --warning: #ffcf70;
       --radius-sm: 8px;
     }
@@ -24,36 +24,27 @@
       font-family: var(--font-ui);
       background: var(--bg);
       color: var(--text);
-      padding: 1.5rem;
-    }
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background:
-        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(93, 215, 255, 0.10), transparent),
-        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(27, 174, 230, 0.06), transparent);
-      pointer-events: none;
+      padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
     }
 
     /* Panels */
     .shell {
       position: relative;
-      width: min(440px, calc(100vw - 3rem));
+      width: min(440px, calc(100vw - 2rem));
       padding: 2.25rem;
       border: 1px solid var(--panel-edge);
-      border-radius: 20px;
+      border-radius: var(--radius-lg);
       background: var(--panel);
-      box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 32px 80px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.24);
     }
     .shell-wide {
       position: relative;
-      width: min(680px, calc(100vw - 3rem));
+      width: min(680px, calc(100vw - 2rem));
       padding: 2.25rem;
       border: 1px solid var(--panel-edge);
-      border-radius: 20px;
+      border-radius: var(--radius-lg);
       background: var(--panel);
-      box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 32px 80px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.24);
     }
 
     /* Step indicator */
@@ -81,6 +72,7 @@
     }
     .brand svg { color: var(--accent); opacity: 0.7; }
     .brand-text {
+      font-family: var(--font-mono);
       font-size: 0.92rem;
       font-weight: 600;
       letter-spacing: 0.06em;
@@ -110,7 +102,7 @@
     label {
       display: block;
       margin-bottom: 0.3rem;
-      font-size: 0.84rem;
+      font-size: 0.875rem;
       font-weight: 500;
       color: var(--muted);
       letter-spacing: 0.02em;
@@ -205,7 +197,7 @@
       font-weight: 600;
       font-family: inherit;
       cursor: pointer;
-      transition: all 0.15s;
+      transition: background-color var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
       letter-spacing: 0.01em;
     }
     .btn:hover { filter: brightness(1.1); }
@@ -224,7 +216,7 @@
     .btn-secondary:hover { background: rgba(93, 215, 255, 0.14); }
     .btn-small {
       padding: 0.5rem 0.75rem;
-      font-size: 0.84rem;
+      font-size: 0.875rem;
     }
     .btn-ghost {
       width: 100%;
@@ -237,7 +229,7 @@
       font-weight: 600;
       font-family: inherit;
       cursor: pointer;
-      transition: all 0.15s;
+      transition: color 0.15s, border-color 0.15s, background-color 0.15s;
     }
     .btn-ghost:hover { color: var(--text); border-color: rgba(93, 215, 255, 0.25); }
 
@@ -245,11 +237,19 @@
     .status {
       min-height: 1.2rem;
       margin-top: 0.75rem;
-      font-size: 0.84rem;
+      font-size: 0.875rem;
       color: var(--muted);
     }
     .status.error { color: var(--danger); }
     .status.success { color: var(--success); }
+
+    .privacy-note {
+      margin: 1.25rem 0 0;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-subtle);
+      color: var(--text-tertiary);
+      font-size: 0.875rem;
+    }
 
     .screen { display: none; }
     .screen.active { display: block; }
@@ -509,13 +509,26 @@
     }
 
     .hidden { display: none; }
+
+    @media (pointer: coarse) {
+      .btn, .btn-ghost, .pw-reveal, input[type="text"], input[type="password"] { min-height: 44px; }
+      .pw-reveal { width: 44px; height: 44px; right: 0.2rem; }
+    }
+
+    @media (max-width: 600px) {
+      .shell, .shell-wide { padding: 1.5rem; }
+      .connect-row { flex-wrap: wrap; }
+      .connect-row input { flex-basis: 100%; }
+      .connect-row .btn { width: 100%; }
+    }
   </style>
 </head>
 <body>
+  <main id="main">
 
   <!-- Screen 1: Create Admin Account -->
   <div id="screen-admin" class="screen active">
-    <main class="shell">
+    <section class="shell" aria-labelledby="setup-account-title">
       <div class="steps" id="steps-admin" role="progressbar" aria-valuemin="1" aria-valuemax="2" aria-valuenow="1" aria-label="Setup step 1 of 2">
         <div class="step-dot active"></div>
         <div class="step-dot"></div>
@@ -528,8 +541,8 @@
         </svg>
         <span class="brand-text">vedetta</span>
       </div>
-      <h2>Create your account</h2>
-      <p class="subtitle">Set up the admin credentials for your NVR.</p>
+      <h2 id="setup-account-title">Create your account</h2>
+      <p class="subtitle">Create the local administrator account for your private camera system.</p>
       <form id="admin-form">
         <label for="admin-username">Username</label>
         <input id="admin-username" type="text" autocomplete="username" autofocus required>
@@ -553,6 +566,8 @@
         <div class="status" id="admin-status" role="status" aria-live="polite" aria-atomic="true"></div>
       </form>
 
+      <p class="privacy-note">Video, credentials, and recognition data stay on this Vedetta server.</p>
+
       <!-- Config readonly fallback -->
       <div id="config-readonly" class="hidden">
         <div class="yaml-block">
@@ -562,12 +577,12 @@
         <p id="config-readonly-msg"></p>
         <button type="button" class="btn btn-primary" id="continue-to-cameras">Continue</button>
       </div>
-    </main>
+    </section>
   </div>
 
   <!-- Screen 2: Camera Discovery -->
   <div id="screen-cameras" class="screen">
-    <main class="shell-wide">
+    <section class="shell-wide" aria-labelledby="setup-cameras-title">
       <div class="steps" id="steps-cameras" role="progressbar" aria-valuemin="1" aria-valuemax="2" aria-valuenow="2" aria-label="Setup step 2 of 2">
         <div class="step-dot done"></div>
         <div class="step-dot active"></div>
@@ -580,7 +595,7 @@
         </svg>
         <span class="brand-text">vedetta</span>
       </div>
-      <h2>Add cameras</h2>
+      <h2 id="setup-cameras-title">Add cameras</h2>
       <p class="subtitle" id="discover-subtitle">Scanning your network for cameras…</p>
 
       <div class="codec-banner" id="codec-card">
@@ -650,8 +665,9 @@
           <button type="button" class="btn-ghost" id="back-to-admin">Back</button>
         </div>
       </div>
-    </main>
+    </section>
   </div>
+  </main>
 
   <script>
     (function() {

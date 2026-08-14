@@ -249,6 +249,7 @@
           + '<article class="object-card" id="object-' + obj.id + '" data-name="' + escapeAttr(obj.name) + '" data-label="' + escapeAttr(obj.label) + '">'
           +   '<header class="object-card-header">'
           +     '<div class="object-thumb" id="thumb-' + obj.id + '" style="background:' + initialsColor(obj.name) + '">'
+          +       '<span class="object-thumb-initials" aria-hidden="true">' + escapeHtml(initials(obj.name)) + '</span>'
           +       '<img alt="" loading="lazy" src="/api/objects/' + obj.id + '/crop" data-initials="' + escapeAttr(initials(obj.name)) + '">'
           +       '<button class="object-thumb-edit" data-action-click="openThumbnailPicker(' + obj.id + ', ' + jsStringArg(obj.name) + ')" '
           +         'aria-label="Change thumbnail" title="Change thumbnail">'
@@ -314,13 +315,12 @@
       });
       grid.innerHTML = html;
 
-      // Replace the thumbnail image with an initials avatar when the source 404s.
-      // CSP blocks inline onerror handlers, so wire it up here.
+      // Keep the initials avatar behind the image so a missing crop never
+      // removes the adjacent thumbnail-edit control. CSP blocks inline
+      // onerror handlers, so wire the fallback up here.
       grid.querySelectorAll('.object-thumb img').forEach(function(img) {
         img.addEventListener('error', function() {
-          var wrap = img.parentElement;
-          if (!wrap) return;
-          wrap.textContent = img.dataset.initials || '?';
+          img.remove();
         });
       });
 
@@ -420,13 +420,25 @@
           var time = new Date(s.timestamp).toLocaleString();
           var simPct = Math.round(s.similarity * 100);
           var simClass = s.similarity >= 0.8 ? 'high' : s.similarity >= 0.65 ? 'mid' : 'low';
-          html += '<a class="object-sighting" href="/event.html?id=' + encodeURIComponent(s.event_id) + '" '
-            + 'title="' + escapeAttr(s.camera + ' · ' + time + ' · ' + simPct + '% match') + '">'
-            + '<div class="object-sighting-thumb" data-bg="/api/events/' + encodeURIComponent(s.event_id) + '/snapshot"></div>'
-            + '<span class="object-sighting-sim ' + simClass + '">' + simPct + '%</span>'
-            + '<button class="object-sighting-dismiss" data-action-click="event.preventDefault();event.stopPropagation();dismissSighting(' + s.id + ',' + objectId + ')" '
-            + 'aria-label="Wrong match — dismiss" title="Wrong match — dismiss">×</button>'
-            + '</a>';
+          var details = s.camera + ' · ' + time + ' · ' + simPct + '% match';
+          var dismiss = '<button class="object-sighting-dismiss" data-action-click="event.preventDefault();event.stopPropagation();dismissSighting(' + s.id + ',' + objectId + ')" '
+            + 'aria-label="Wrong match — dismiss" title="Wrong match — dismiss">×</button>';
+          if (s.event_id) {
+            html += '<a class="object-sighting" href="/event.html?id=' + encodeURIComponent(s.event_id) + '" '
+              + 'title="' + escapeAttr(details) + '">'
+              + '<div class="object-sighting-thumb" data-bg="/api/events/' + encodeURIComponent(s.event_id) + '/snapshot"></div>'
+              + '<span class="object-sighting-sim ' + simClass + '">' + simPct + '%</span>'
+              + dismiss
+              + '</a>';
+          } else {
+            html += '<div class="object-sighting is-unavailable" role="group" '
+              + 'aria-label="' + escapeAttr('Source event unavailable · ' + details) + '" '
+              + 'title="' + escapeAttr('Source event unavailable · ' + details) + '">'
+              + '<div class="object-sighting-placeholder" aria-hidden="true">Source<br>unavailable</div>'
+              + '<span class="object-sighting-sim ' + simClass + '">' + simPct + '%</span>'
+              + dismiss
+              + '</div>';
+          }
         });
         el.innerHTML = html;
         lazyLoadBg(el);
@@ -451,6 +463,7 @@
       ]).then(function(results) {
         var refs = (results[0] && results[0].items) || [];
         var sightings = (results[1] && results[1].items) || [];
+        var linkedSightings = sightings.filter(function(s) { return !!s.event_id; });
         var html = '';
         if (refs.length) {
           html += '<h3 class="thumb-picker-section">References</h3>'
@@ -465,10 +478,10 @@
           });
           html += '</div>';
         }
-        if (sightings.length) {
+        if (linkedSightings.length) {
           html += '<h3 class="thumb-picker-section">Recent sightings</h3>'
             + '<div class="thumb-picker-grid">';
-          sightings.forEach(function(s) {
+          linkedSightings.forEach(function(s) {
             var simPct = Math.round(s.similarity * 100);
             html += '<button class="thumb-picker-item" '
               + 'data-action-click="setThumbnail(' + objectId + ', ' + jsStringArg(s.event_id) + ', null)" '
@@ -479,8 +492,8 @@
           });
           html += '</div>';
         }
-        if (!refs.length && !sightings.length) {
-          html = '<p class="thumb-picker-empty">No images available for ' + escapeHtml(objectName) + ' yet. Track this object on a new event to add a thumbnail.</p>';
+        if (!refs.length && !linkedSightings.length) {
+          html = '<p class="thumb-picker-empty">No source images are available for ' + escapeHtml(objectName) + '. Older events may have expired under retention; a new sighting will provide another thumbnail choice.</p>';
         }
         body.innerHTML = html;
       }).catch(function() {
@@ -519,18 +532,25 @@
     function refreshObjectThumbnail(objectId) {
       var thumb = document.getElementById('thumb-' + objectId);
       if (!thumb) return;
-      // Bust cache by appending a timestamp; also restore the image if it
-      // was previously replaced with initials.
-      var initialsText = '';
+      // Bust cache by appending a timestamp while preserving the initials
+      // fallback and edit control if the refreshed crop is unavailable.
+      var initialsText = initials(getObjectName(objectId));
+      var existingFallback = thumb.querySelector('.object-thumb-initials');
       var existing = thumb.querySelector('img');
-      if (existing) initialsText = existing.dataset.initials || '';
+      if (existingFallback) initialsText = existingFallback.textContent || initialsText;
+      else if (existing) initialsText = existing.dataset.initials || initialsText;
       thumb.innerHTML = '';
+      var fallback = document.createElement('span');
+      fallback.className = 'object-thumb-initials';
+      fallback.setAttribute('aria-hidden', 'true');
+      fallback.textContent = initialsText;
+      thumb.appendChild(fallback);
       var img = document.createElement('img');
       img.alt = '';
       img.dataset.initials = initialsText;
       img.src = '/api/objects/' + objectId + '/crop?t=' + Date.now();
       img.addEventListener('error', function() {
-        thumb.textContent = img.dataset.initials || '?';
+        img.remove();
       });
       thumb.appendChild(img);
       var btn = document.createElement('button');

@@ -191,6 +191,38 @@ test('tracked object sections distinguish a failed load from no data', async ({ 
   await expect(error).toHaveCount(0);
 });
 
+test('tracked objects never link to a missing source event', async ({ page }) => {
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/objects') {
+      return json(route, { items: [{ id: 7, name: 'Family bike', label: 'bicycle', match_threshold: 0.65, created_at: '2026-08-14T10:00:00Z' }] });
+    }
+    if (path === '/api/objects/7/references') return json(route, { items: [] });
+    if (path === '/api/objects/7/sightings') {
+      return json(route, { items: [
+        { id: 1, event_id: 'event-1', camera: 'Garage', similarity: 0.82, timestamp: '2026-08-14T11:00:00Z' },
+        { id: 2, event_id: '', camera: 'Garage', similarity: 0.71, timestamp: '2026-07-01T11:00:00Z' },
+      ] });
+    }
+    if (path === '/api/health') return json(route, { status: 'ok', checks: {} });
+    return json(route, {});
+  });
+
+  await page.goto('/objects.html');
+
+  await expect(page.locator('a[href="/event.html?id=event-1"]')).toBeVisible();
+  await expect(page.locator('a[href="/event.html?id="]')).toHaveCount(0);
+  const unavailable = page.getByRole('group', { name: /Source event unavailable.*Garage.*71% match/ });
+  await expect(unavailable).toBeVisible();
+  await expect(unavailable).toContainText(/Source\s*unavailable/);
+  await expect(unavailable.getByRole('button', { name: 'Wrong match — dismiss' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Change thumbnail' }).click();
+  const picker = page.getByRole('dialog', { name: 'Choose thumbnail' });
+  await expect(picker.locator('.thumb-picker-item')).toHaveCount(1);
+  await expect(picker.locator('img[src="/api/events//snapshot"]')).toHaveCount(0);
+});
+
 test('recordings calendar and day summary recover independently', async ({ page }) => {
   let calendarFail = true;
   let summaryFail = true;

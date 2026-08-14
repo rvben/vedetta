@@ -4246,6 +4246,15 @@ kbd {
     width: 2.75rem;
     height: 2.75rem;
   }
+
+  .object-sightings-grid {
+    grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+    gap: 0.5rem;
+  }
+
+  .object-sighting .object-sighting-dismiss {
+    display: block;
+  }
 }
 
 /* ─── Landscape camera viewport on narrow touch devices ─── */
@@ -4853,14 +4862,25 @@ kbd {
   text-transform: uppercase;
 }
 .object-thumb img {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
 
+.object-thumb-initials {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .object-thumb-edit {
   position: absolute;
+  z-index: 2;
   right: 2px;
   bottom: 2px;
   width: 22px;
@@ -5084,10 +5104,31 @@ kbd {
   transition: transform var(--dur-fast), border-color var(--dur-fast);
 }
 .object-sighting:hover { transform: scale(1.04); border-color: var(--cyan); }
+.object-sighting.is-unavailable {
+  cursor: default;
+  background: var(--surface-2);
+}
+.object-sighting.is-unavailable:hover {
+  transform: none;
+  border-color: var(--border-subtle);
+}
 .object-sighting-thumb {
   position: absolute;
   inset: 0;
   background: center / cover no-repeat;
+}
+.object-sighting-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.35rem 1rem;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1.15;
+  text-align: center;
 }
 .object-sighting-sim {
   position: absolute;

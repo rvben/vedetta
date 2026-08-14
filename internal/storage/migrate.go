@@ -11,7 +11,7 @@ import (
 // currentSchemaVersion is the schema version this build expects. It is stored
 // in SQLite's PRAGMA user_version. A database reporting a lower version is
 // upgraded by migrate; databases created before versioning report 0.
-const currentSchemaVersion = 5
+const currentSchemaVersion = 6
 
 // baselineSchema creates every table and index for a fresh database. It is
 // idempotent (CREATE ... IF NOT EXISTS) and a cheap no-op for existing DBs.
@@ -327,6 +327,42 @@ func migrate(db *sql.DB) error {
 		}
 		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind)`); err != nil {
 			return fmt.Errorf("create idx_events_kind: %w", err)
+		}
+	}
+
+	// Version 6: early object-recognition builds could persist a sighting
+	// without its event ID. Restore the relationship only when one retained
+	// event is an exact, identity-confirmed match. Ambiguous rows and sightings
+	// whose source event expired under retention deliberately remain unlinked.
+	if version < 6 {
+		result, err := db.Exec(`
+			UPDATE object_sightings AS s
+			SET event_id = (
+				SELECT e.id
+				FROM events e
+				JOIN known_objects o ON o.id = s.object_id
+				WHERE e.camera = s.camera
+					AND e.timestamp = s.timestamp
+					AND e.label = o.label
+					AND (e.object_name = o.name OR e.sub_label = o.name)
+				LIMIT 1
+			)
+			WHERE (s.event_id IS NULL OR TRIM(s.event_id) = '')
+				AND 1 = (
+					SELECT COUNT(*)
+					FROM events e
+					JOIN known_objects o ON o.id = s.object_id
+					WHERE e.camera = s.camera
+						AND e.timestamp = s.timestamp
+						AND e.label = o.label
+						AND (e.object_name = o.name OR e.sub_label = o.name)
+				)
+		`)
+		if err != nil {
+			return fmt.Errorf("restore object sighting event links: %w", err)
+		}
+		if restored, rowsErr := result.RowsAffected(); rowsErr == nil && restored > 0 {
+			slog.Info("restored historical object sighting event links", "count", restored)
 		}
 	}
 

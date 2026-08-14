@@ -305,6 +305,82 @@ func TestMigrate_V2CanonicalizesLegacyRFC3339(t *testing.T) {
 	}
 }
 
+func TestMigrate_V6RestoresOnlyUnambiguousObjectSightingLinks(t *testing.T) {
+	db, _ := openRaw(t)
+	if err := migrate(db); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+	if err := setUserVersion(db, 5); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := utc(time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC))
+	for _, row := range []struct {
+		id    int
+		name  string
+		label string
+	}{
+		{1, "Family bike", "bicycle"},
+		{2, "Expired car", "car"},
+		{3, "Ambiguous person", "person"},
+	} {
+		if _, err := db.Exec(`INSERT INTO known_objects (id, name, label) VALUES (?, ?, ?)`, row.id, row.name, row.label); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, row := range []struct {
+		id, camera, label, name string
+	}{
+		{"bike-event", "garage", "bicycle", "Family bike"},
+		{"person-event-a", "front", "person", "Ambiguous person"},
+		{"person-event-b", "front", "person", "Ambiguous person"},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO events (id, camera, label, score, timestamp, object_name)
+			VALUES (?, ?, ?, 0.9, ?, ?)`, row.id, row.camera, row.label, ts, row.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, row := range []struct {
+		id, objectID int
+		camera       string
+	}{
+		{1, 1, "garage"},
+		{2, 2, "driveway"},
+		{3, 3, "front"},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO object_sightings (id, event_id, camera, object_id, similarity, timestamp)
+			VALUES (?, NULL, ?, ?, 0.8, ?)`, row.id, row.camera, row.objectID, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("v6 migrate: %v", err)
+	}
+
+	wants := map[int]sql.NullString{
+		1: {String: "bike-event", Valid: true},
+		2: {}, // source event expired or was never retained
+		3: {}, // two exact candidates: never guess
+	}
+	for id, want := range wants {
+		var got sql.NullString
+		if err := db.QueryRow(`SELECT event_id FROM object_sightings WHERE id = ?`, id).Scan(&got); err != nil {
+			t.Fatalf("sighting %d: %v", id, err)
+		}
+		if got != want {
+			t.Errorf("sighting %d event_id = %+v, want %+v", id, got, want)
+		}
+	}
+	if got := mustUserVersion(t, db); got != currentSchemaVersion {
+		t.Errorf("user_version = %d, want %d", got, currentSchemaVersion)
+	}
+}
+
 // TestColumnExists verifies detection of present and absent columns.
 func TestColumnExists(t *testing.T) {
 	db, _ := openRaw(t)

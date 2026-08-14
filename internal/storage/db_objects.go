@@ -2,6 +2,8 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
@@ -167,13 +169,23 @@ func (d *DB) DeleteKnownObject(id int64) error {
 }
 
 func (d *DB) SaveObjectSighting(s ObjectSighting) (int64, error) {
+	s.EventID = strings.TrimSpace(s.EventID)
+	if s.EventID == "" {
+		return 0, errors.New("object sighting event_id is required")
+	}
 	result, err := d.db.Exec(`
 		INSERT INTO object_sightings (event_id, camera, object_id, similarity, timestamp)
-		VALUES (?, ?, ?, ?, ?)`,
-		s.EventID, s.Camera, s.ObjectID, s.Similarity, utc(s.Timestamp),
+		SELECT ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM events WHERE id = ?)`,
+		s.EventID, s.Camera, s.ObjectID, s.Similarity, utc(s.Timestamp), s.EventID,
 	)
 	if err != nil {
 		return 0, err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return 0, err
+	} else if affected != 1 {
+		return 0, errors.New("object sighting source event not found")
 	}
 	return result.LastInsertId()
 }
@@ -183,11 +195,28 @@ func (d *DB) SaveObjectSighting(s ObjectSighting) (int64, error) {
 // issuing independent writes that can leave the sighting and event labels out
 // of sync after a partial failure.
 func (d *DB) SaveObjectRecognition(s ObjectSighting) (int64, error) {
+	s.EventID = strings.TrimSpace(s.EventID)
+	if s.EventID == "" {
+		return 0, errors.New("object recognition event_id is required")
+	}
 	tx, err := d.db.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	updated, err := tx.Exec(
+		"UPDATE events SET object_name = ?, sub_label = ? WHERE id = ?",
+		s.ObjectName, s.ObjectName, s.EventID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if affected, err := updated.RowsAffected(); err != nil {
+		return 0, err
+	} else if affected != 1 {
+		return 0, errors.New("object recognition source event not found")
+	}
 
 	result, err := tx.Exec(`
 		INSERT INTO object_sightings (event_id, camera, object_id, similarity, timestamp)
@@ -199,12 +228,6 @@ func (d *DB) SaveObjectRecognition(s ObjectSighting) (int64, error) {
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(
-		"UPDATE events SET object_name = ?, sub_label = ? WHERE id = ?",
-		s.ObjectName, s.ObjectName, s.EventID,
-	); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {

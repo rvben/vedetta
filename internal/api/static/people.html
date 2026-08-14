@@ -87,7 +87,7 @@
 
     <div class="trust-note" role="note">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-      <span>Face matching runs on this Vedetta server. Face crops, visual fingerprints, and names are not sent to a cloud recognition service.</span>
+      <span>Face matching runs on this Vedetta server. Face crops, visual fingerprints, and names are not sent to a cloud recognition service. Deleting an identity removes its recognition profile; original events and recordings remain until their retention period ends.</span>
     </div>
 
     <div class="people-help" id="people-help" hidden>
@@ -152,6 +152,7 @@
           style="width:100%;padding:0.5rem 0.7rem;font-size:1rem;margin-bottom:0.5rem"
           data-action-input="idModalFilter(this.value)">
         <div id="id-modal-results" style="max-height:250px;overflow-y:auto"></div>
+        <p style="margin:0.75rem 0 0;font-size:var(--text-sm);color:var(--text-tertiary)">Excluding removes this appearance from recognition review. The original event and recording remain.</p>
         <div style="display:flex;gap:0.5rem;margin-top:0.75rem">
           <button class="btn btn-sm btn-ghost" data-action-click="idModalSkip()" style="flex:1">Skip for now</button>
           <button class="btn btn-sm btn-ghost" style="flex:1;color:var(--danger)" data-action-click="idModalIgnore()">Exclude appearance</button>
@@ -269,7 +270,7 @@
     }
 
     function loadPeople() {
-      fetch('/api/people').then(function(r) { return r.json(); }).then(function(data) {
+      fetch('/api/people').then(readJSONResponse).then(function(data) {
         var people = data.items || data || [];
         peopleData = people;
         renderPeople(people);
@@ -363,11 +364,15 @@
       }
       el.classList.remove('hidden');
       if (trigger) trigger.setAttribute('aria-expanded', 'true');
+      loadPersonDetails(personId, el);
+    }
+
+    function loadPersonDetails(personId, el) {
       el.innerHTML = '<div class="loading-state" style="padding:0.5rem">Loading…</div>';
 
       Promise.all([
-        fetch('/api/people/' + personId + '/faces?limit=50').then(function(r) { return r.json(); }).then(function(d) { return d.items || d || []; }),
-        fetch('/api/people/' + personId + '/events').then(function(r) { return r.json(); }).then(function(d) { return d.items || d || []; })
+        fetch('/api/people/' + personId + '/faces?limit=50').then(readJSONResponse).then(function(d) { return d.items || d || []; }),
+        fetch('/api/people/' + personId + '/events').then(readJSONResponse).then(function(d) { return d.items || d || []; })
       ]).then(function(results) {
         var faces = results[0] || [];
         var events = results[1] || [];
@@ -406,6 +411,12 @@
 
         el.innerHTML = html;
         lazyLoadBg(el);
+      }).catch(function() {
+        renderInlineError(el, {
+          title: 'Could not load appearances',
+          message: 'Faces and event history for this person could not be retrieved.',
+          retry: function() { loadPersonDetails(personId, el); }
+        });
       });
     }
 
@@ -512,7 +523,7 @@
     var _unmatchedFaces = [];
 
     function loadUnmatched() {
-      fetch('/api/faces/unmatched?limit=50').then(function(r) { return r.json(); }).then(function(data) {
+      fetch('/api/faces/unmatched?limit=50').then(readJSONResponse).then(function(data) {
         var faces = data.items || data || [];
         _unmatchedFaces = faces;
         var grid = document.getElementById('unmatched-grid');
@@ -562,7 +573,7 @@
     var _unidentifiedPeople = []; // cached for search
 
     function loadUnidentified() {
-      fetch('/api/events?label=person&limit=30').then(function(r) { return r.json(); }).then(function(data) {
+      fetch('/api/events?label=person&limit=30').then(readJSONResponse).then(function(data) {
         var events = data.items || data.events || data || [];
         var grid = document.getElementById('unidentified-grid');
         var empty = document.getElementById('unidentified-empty');
@@ -636,11 +647,13 @@
       document.getElementById('id-modal-counter').textContent = (_idModalIndex + 1) + ' / ' + _idModalEvents.length;
 
       // Load event meta
-	      fetch('/api/events/' + encodeURIComponent(eventId)).then(function(r) { return r.json(); }).then(function(ev) {
+	      fetch('/api/events/' + encodeURIComponent(eventId)).then(readJSONResponse).then(function(ev) {
         var time = new Date(ev.timestamp).toLocaleString();
         document.getElementById('id-modal-meta').textContent = ev.camera.replace(/_/g, ' ') + ' — ' + time + ' — ' + Math.round(ev.score * 100) + '%';
         document.getElementById('id-modal-snapshot').alt = 'Camera snapshot from ' + ev.camera.replace(/_/g, ' ') + ' at ' + time;
         document.getElementById('id-modal-crop').alt = 'Detected face crop from ' + ev.camera.replace(/_/g, ' ') + ' at ' + time;
+      }).catch(function() {
+        document.getElementById('id-modal-meta').textContent = 'Event details are temporarily unavailable.';
       });
 
       // Reset search
@@ -728,7 +741,7 @@
         if (!r.ok) throw new Error('Failed');
         if (typeof toast === 'function') toast('"' + name + '" created');
         // Refresh people data for future chips
-        fetch('/api/people').then(function(r) { return r.json(); }).then(function(data) {
+        fetch('/api/people').then(readJSONResponse).then(function(data) {
           _unidentifiedPeople = (data.items || data || []).filter(function(p) { return p.name && !p.ignore; });
         });
         _idModalEvents.splice(_idModalIndex, 1);

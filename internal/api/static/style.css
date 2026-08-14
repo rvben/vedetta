@@ -84,6 +84,7 @@
   --accent-dim: var(--cyan-ghost);
   --success: var(--green);
   --danger: var(--red);
+  --warning: var(--amber);
   --bg: var(--base);
   --border: var(--border-default);
   --surface: var(--surface-1);
@@ -2618,6 +2619,14 @@ kbd {
   margin: 0.35rem 0 0.75rem;
   color: var(--text-secondary);
   font-size: var(--text-sm);
+}
+
+.calendar-error {
+  margin-top: 0.75rem;
+}
+
+.calendar-error .inline-error {
+  padding: 0.75rem;
 }
 
 .trust-note {

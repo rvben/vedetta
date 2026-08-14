@@ -54,7 +54,7 @@
 
     <div class="trust-note" role="note">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-      <span>Object matching runs on this Vedetta server. Reference crops and visual fingerprints are not sent to a cloud recognition service.</span>
+      <span>Object matching runs on this Vedetta server. Reference crops and visual fingerprints are not sent to a cloud recognition service. Deleting a tracked object removes its recognition profile; original events and recordings remain until their retention period ends.</span>
     </div>
 
     <div class="objects-help" id="objects-help" hidden>
@@ -124,7 +124,7 @@
     var activeLabel = '';
 
     function loadObjects() {
-      fetch('/api/objects').then(function(r) { return r.json(); }).then(function(data) {
+      fetch('/api/objects').then(readJSONResponse).then(function(data) {
         objectsData = (data && data.items) || data || [];
         renderLabelChips();
         renderObjects();
@@ -355,7 +355,7 @@
     }
 
     function loadReferences(objectId) {
-      fetch('/api/objects/' + objectId + '/references').then(function(r) { return r.json(); }).then(function(data) {
+      fetch('/api/objects/' + objectId + '/references').then(readJSONResponse).then(function(data) {
         var refs = (data && data.items) || data || [];
         var container = document.getElementById('refs-' + objectId);
         if (!container) return;
@@ -388,11 +388,18 @@
         });
         container.innerHTML = html;
         lazyLoadBg(container);
+      }).catch(function() {
+        var container = document.getElementById('refs-' + objectId);
+        renderInlineError(container, {
+          title: 'Could not load references',
+          message: 'Reference images for this object could not be retrieved.',
+          retry: function() { loadReferences(objectId); }
+        });
       });
     }
 
     function loadSightings(objectId) {
-      fetch('/api/objects/' + objectId + '/sightings?limit=12').then(function(r) { return r.json(); }).then(function(data) {
+      fetch('/api/objects/' + objectId + '/sightings?limit=12').then(readJSONResponse).then(function(data) {
         var sightings = (data && data.items) || data || [];
         var el = document.getElementById('sightings-' + objectId);
         if (!el) return;
@@ -423,6 +430,13 @@
         });
         el.innerHTML = html;
         lazyLoadBg(el);
+      }).catch(function() {
+        var el = document.getElementById('sightings-' + objectId);
+        renderInlineError(el, {
+          title: 'Could not load sightings',
+          message: 'Recent matches for this object could not be retrieved.',
+          retry: function() { loadSightings(objectId); }
+        });
       });
     }
 
@@ -432,8 +446,8 @@
       openManagedDialog('thumb-picker-modal', 'thumb-picker-backdrop');
 
       Promise.all([
-        fetch('/api/objects/' + objectId + '/references').then(function(r) { return r.json(); }),
-        fetch('/api/objects/' + objectId + '/sightings?limit=24').then(function(r) { return r.json(); })
+        fetch('/api/objects/' + objectId + '/references').then(readJSONResponse),
+        fetch('/api/objects/' + objectId + '/sightings?limit=24').then(readJSONResponse)
       ]).then(function(results) {
         var refs = (results[0] && results[0].items) || [];
         var sightings = (results[1] && results[1].items) || [];
@@ -534,21 +548,35 @@
     }
 
     function deleteObject(id, name) {
-      document.getElementById('confirm-title').textContent = 'Delete Object';
-      document.getElementById('confirm-message').textContent = 'Delete "' + name + '"? Its visual fingerprint and all recognition links will be removed; original events and recordings remain. This cannot be undone.';
+      confirmObjectAction(
+        'Delete tracked object',
+        'Delete "' + name + '"? Its visual fingerprint and all recognition links will be removed; original events and recordings remain. This cannot be undone.',
+        'Delete object',
+        function() { doDeleteObject(id, name); }
+      );
+    }
+
+    function confirmObjectAction(title, message, label, onConfirm) {
+      document.getElementById('confirm-title').textContent = title;
+      document.getElementById('confirm-message').textContent = message;
       var btn = document.getElementById('confirm-btn');
-      btn.textContent = 'Delete';
+      btn.textContent = label;
       btn.style.background = 'var(--danger)';
       btn.onclick = function() {
         closeConfirmModal();
-        fetch('/api/objects/' + id, { method: 'DELETE' }).then(function(r) {
-          if (!r.ok) throw new Error('Failed');
-          loadObjects();
-        }).catch(function() {
-          if (typeof toast === 'function') toast('Could not delete tracked object. Try again.', 'error');
-        });
+        onConfirm();
       };
       openManagedDialog('confirm-modal', 'confirm-backdrop', btn);
+    }
+
+    function doDeleteObject(id, name) {
+      fetch('/api/objects/' + id, { method: 'DELETE' }).then(function(r) {
+        if (!r.ok) throw new Error('Failed');
+        loadObjects();
+        if (typeof toast === 'function') toast('Deleted ' + name);
+      }).catch(function() {
+        if (typeof toast === 'function') toast('Could not delete tracked object. Try again.', 'error');
+      });
     }
 
     function closeConfirmModal() {
@@ -591,17 +619,40 @@
     }
 
     function dismissSighting(sightingId, objectId) {
+      confirmObjectAction(
+        'Dismiss sighting',
+        'Remove this match from the tracked object? The original event and recording remain. This cannot be undone.',
+        'Dismiss sighting',
+        function() { doDismissSighting(sightingId, objectId); }
+      );
+    }
+
+    function doDismissSighting(sightingId, objectId) {
       fetch('/api/objects/sightings/' + sightingId, { method: 'DELETE' }).then(function(r) {
         if (!r.ok) throw new Error('Failed');
         loadSightings(objectId);
         if (typeof toast === 'function') toast('Sighting dismissed');
+      }).catch(function() {
+        if (typeof toast === 'function') toast('Could not dismiss sighting. Try again.', 'error');
       });
     }
 
     function deleteReference(refId, objectId) {
+      confirmObjectAction(
+        'Remove reference image',
+        'Remove this image from the object\'s visual fingerprint? Future matches may change; the source event remains. This cannot be undone.',
+        'Remove reference',
+        function() { doDeleteReference(refId, objectId); }
+      );
+    }
+
+    function doDeleteReference(refId, objectId) {
       fetch('/api/objects/references/' + refId, { method: 'DELETE' }).then(function(r) {
         if (!r.ok) throw new Error('Failed');
         loadReferences(objectId);
+        if (typeof toast === 'function') toast('Reference removed');
+      }).catch(function() {
+        if (typeof toast === 'function') toast('Could not remove reference. Try again.', 'error');
       });
     }
 

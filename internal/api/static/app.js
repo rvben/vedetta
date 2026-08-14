@@ -147,6 +147,14 @@ function renderInlineError(targetValue, options) {
   target.replaceChildren(panel);
 }
 
+// Fetch resolves for HTTP failures, so every JSON load that drives UI state
+// must explicitly reject them. This prevents a 500 response body from being
+// mistaken for an empty, successful collection.
+function readJSONResponse(response) {
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  return response.json();
+}
+
 // ─── Accessible Dialog Management ───
 // Every page uses the same focus, dismissal, and hidden-state contract even
 // though the dialog content is defined close to the feature that owns it.
@@ -3634,6 +3642,12 @@ function renderCalendar() {
   var monthLabel = el('calendar-month');
   if (!grid || !monthLabel) return;
 
+  var calendarError = el('calendar-error');
+  if (calendarError) {
+    calendarError.hidden = true;
+    calendarError.replaceChildren();
+  }
+
   var year = calendarDate.getFullYear();
   var month = calendarDate.getMonth();
 
@@ -3688,7 +3702,7 @@ function renderCalendar() {
   var url = '/api/recordings/calendar?month=' + monthStr + tzQuerySuffix();
 
   fetch(url)
-    .then(function(resp) { return resp.json(); })
+    .then(readJSONResponse)
     .then(function(data) {
       var daysWithData = new Set(data.days || []);
       grid.querySelectorAll('.calendar-day[data-day]').forEach(function(cell) {
@@ -3715,9 +3729,10 @@ function renderCalendar() {
     })
     .catch(function(err) {
       console.error('Failed to load calendar data:', err);
-      renderInlineError('camera-cards', {
+      if (calendarError) calendarError.hidden = false;
+      renderInlineError(calendarError, {
         title: 'Could not load the recording calendar',
-        message: 'The existing calendar selection is unchanged. Check the connection and try again.',
+        message: 'Recording dates could not be checked. Any selected recording remains available.',
         retry: renderCalendar
       });
     });
@@ -3752,7 +3767,7 @@ function loadRecordingsSummary(date) {
   if (cards) cards.innerHTML = '<div class="loading-state">Loading…</div>';
 
   fetch('/api/recordings/summary?date=' + dateStr + tzQuerySuffix())
-    .then(function(resp) { return resp.json(); })
+    .then(readJSONResponse)
     .then(function(data) {
       renderRecordingsSummary(data, date);
     })
@@ -4414,8 +4429,8 @@ function showHtmxFallback(target) {
   var hasLoader = target.querySelector && target.querySelector('.loading-state, .skeleton');
   if (!hasLoader && target.children && target.children.length > 0) return;
   renderInlineError(target, {
-    title: 'Could not load this content',
-    message: 'The server did not return this section. Other content remains available.',
+    title: target.dataset.errorTitle || 'Could not load this content',
+    message: target.dataset.errorMessage || 'The server did not return this section. Other content remains available.',
     retry: function() {
       target.innerHTML = '<div class="loading-state">Loading…</div>';
       if (window.htmx) htmx.trigger(target, 'load');
@@ -6180,8 +6195,10 @@ function loadIdentifyGrid() {
   if (!grid) return;
   var label = grid.dataset.label;
 
+  grid.innerHTML = '<div class="loading-state">Loading choices…</div>';
+
   if (label === 'person') {
-    fetch('/api/people').then(function(r) { return r.json(); }).then(function(data) {
+    fetch('/api/people').then(readJSONResponse).then(function(data) {
       _identifyData = ((data.items || data.people || data) || []).filter(function(p) { return p.name && !p.ignore; });
       // Deduplicate by name (keep first)
       var seen = {};
@@ -6194,7 +6211,7 @@ function loadIdentifyGrid() {
       // Load thumbnails
       _identifyData.forEach(function(p) {
         if (p.face_count > 0) {
-          fetch('/api/people/' + p.id + '/faces?limit=1').then(function(r) { return r.json(); }).then(function(data) {
+          fetch('/api/people/' + p.id + '/faces?limit=1').then(readJSONResponse).then(function(data) {
             var faces = data.items || data || [];
             if (faces.length > 0) {
               var el = document.getElementById('id-thumb-' + p.id);
@@ -6206,13 +6223,25 @@ function loadIdentifyGrid() {
 	          if (el) el.style.backgroundImage = 'url(/api/events/' + pathSegment(p.source_event_id) + '/detection-crop)';
 	        }
       });
+    }).catch(function() {
+      renderInlineError(grid, {
+        title: 'Could not load people',
+        message: 'Identification choices are temporarily unavailable. The event itself is unchanged.',
+        retry: loadIdentifyGrid
+      });
     });
   } else {
-    fetch('/api/objects').then(function(r) { return r.json(); }).then(function(data) {
+    fetch('/api/objects').then(readJSONResponse).then(function(data) {
       var objects = data.items || data || [];
       _identifyData = objects.filter(function(o) { return o.label === label; });
       _identifyData.forEach(function(o) { o._isObject = true; });
       renderIdentifyResults('');
+    }).catch(function() {
+      renderInlineError(grid, {
+        title: 'Could not load tracked objects',
+        message: 'Identification choices are temporarily unavailable. The event itself is unchanged.',
+        retry: loadIdentifyGrid
+      });
     });
   }
 }

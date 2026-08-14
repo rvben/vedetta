@@ -3,9 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Vedetta Setup</title>
+  <title>Set up Vedetta</title>
   <meta name="theme-color" content="#0a0e14">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-title" content="Vedetta">
+  <script>
+    try {
+      if (localStorage.getItem('vedetta-theme') === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+        document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff');
+      }
+    } catch (_) {}
+  </script>
   <link rel="stylesheet" href="/style.css">
   <style>
     :root {
@@ -13,9 +24,8 @@
       --panel: var(--surface-1);
       --panel-edge: var(--border-default);
       --surface: var(--surface-2);
-      --warning: #ffcf70;
-      --radius-sm: 8px;
     }
+    [data-theme="light"] { color-scheme: light; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       min-height: 100vh;
@@ -35,7 +45,6 @@
       border: 1px solid var(--panel-edge);
       border-radius: var(--radius-lg);
       background: var(--panel);
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.24);
     }
     .shell-wide {
       position: relative;
@@ -44,7 +53,6 @@
       border: 1px solid var(--panel-edge);
       border-radius: var(--radius-lg);
       background: var(--panel);
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.24);
     }
 
     /* Step indicator */
@@ -54,14 +62,19 @@
       margin-bottom: 1.75rem;
     }
     .step-dot {
-      width: 32px;
+      flex: 1;
       height: 3px;
       border-radius: 2px;
-      background: rgba(93, 215, 255, 0.15);
-      transition: background 0.3s;
+      background: var(--border-default);
+      transition: background var(--dur-normal) var(--ease-out);
     }
     .step-dot.done { background: var(--accent); }
     .step-dot.active { background: var(--accent); }
+    .step-label {
+      margin: -1.15rem 0 1.25rem;
+      color: var(--text-tertiary);
+      font-size: var(--text-sm);
+    }
 
     /* Branding */
     .brand {
@@ -70,20 +83,18 @@
       gap: 0.55rem;
       margin-bottom: 0.25rem;
     }
-    .brand svg { color: var(--accent); opacity: 0.7; }
+    .brand svg { color: var(--accent); }
     .brand-text {
-      font-family: var(--font-mono);
       font-size: 0.92rem;
       font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
+      letter-spacing: 0.02em;
       color: var(--muted);
     }
 
     /* Typography */
     h2 {
       font-size: 1.5rem;
-      font-weight: 700;
+      font-weight: 600;
       letter-spacing: -0.01em;
       margin: 0.15rem 0 0.35rem;
     }
@@ -105,14 +116,13 @@
       font-size: 0.875rem;
       font-weight: 500;
       color: var(--muted);
-      letter-spacing: 0.02em;
     }
     input[type="text"],
     input[type="password"] {
       width: 100%;
       margin-bottom: 0.85rem;
       padding: 0.75rem 0.85rem;
-      border: 1px solid rgba(93, 215, 255, 0.1);
+      border: 1px solid var(--border-default);
       border-radius: var(--radius-sm);
       background: var(--surface);
       color: var(--text);
@@ -122,7 +132,7 @@
     }
     input:focus {
       outline: none;
-      border-color: rgba(93, 215, 255, 0.4);
+      border-color: var(--cyan);
     }
     input:focus-visible {
       outline: 2px solid var(--accent);
@@ -192,6 +202,7 @@
       justify-content: center;
       padding: 0.75rem 1.15rem;
       border: 0;
+      min-height: 40px;
       border-radius: var(--radius-sm);
       font-size: 0.92rem;
       font-weight: 600;
@@ -205,15 +216,15 @@
     .btn-primary {
       width: 100%;
       background: var(--accent);
-      color: #03111b;
+      color: var(--text-inverse);
       font-weight: 700;
     }
     .btn-secondary {
-      background: rgba(93, 215, 255, 0.08);
+      background: var(--surface);
       color: var(--accent);
-      border: 1px solid rgba(93, 215, 255, 0.15);
+      border: 1px solid var(--border-default);
     }
-    .btn-secondary:hover { background: rgba(93, 215, 255, 0.14); }
+    .btn-secondary:hover { background: var(--surface-3); border-color: var(--border-accent); }
     .btn-small {
       padding: 0.5rem 0.75rem;
       font-size: 0.875rem;
@@ -223,7 +234,7 @@
       padding: 0.75rem 1.15rem;
       background: transparent;
       color: var(--muted);
-      border: 1px solid rgba(93, 215, 255, 0.1);
+      border: 1px solid var(--border-default);
       border-radius: var(--radius-sm);
       font-size: 0.92rem;
       font-weight: 600;
@@ -231,7 +242,7 @@
       cursor: pointer;
       transition: color 0.15s, border-color 0.15s, background-color 0.15s;
     }
-    .btn-ghost:hover { color: var(--text); border-color: rgba(93, 215, 255, 0.25); }
+    .btn-ghost:hover { color: var(--text); border-color: var(--border-strong); background: var(--surface); }
 
     /* Status */
     .status {
@@ -242,6 +253,16 @@
     }
     .status.error { color: var(--danger); }
     .status.success { color: var(--success); }
+
+    .setup-error {
+      margin: 0 0 1rem;
+      padding: 0.85rem;
+      border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border-default));
+      border-radius: var(--radius-md);
+      background: var(--surface);
+    }
+    .setup-error h3 { margin: 0 0 0.3rem; font-size: var(--text-base); }
+    .setup-error p { margin: 0 0 0.75rem; font-size: var(--text-sm); }
 
     .privacy-note {
       margin: 1.25rem 0 0;
@@ -281,39 +302,25 @@
     /* ── Scan animation ── */
     .scan-status {
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
+      justify-content: center;
       align-items: center;
-      gap: 1.25rem;
-      padding: 2.5rem 0 1.5rem;
+      gap: 0.75rem;
+      padding: 1.5rem 0;
     }
     .radar {
       position: relative;
-      width: 64px;
-      height: 64px;
+      width: 18px;
+      height: 18px;
     }
-    .radar-ring {
-      position: absolute;
-      inset: 0;
-      border-radius: 50%;
-      border: 1.5px solid rgba(93, 215, 255, 0.15);
-    }
-    .radar-ring:nth-child(2) { inset: 8px; }
-    .radar-ring:nth-child(3) { inset: 16px; border-color: rgba(93, 215, 255, 0.25); }
+    .radar-ring, .radar-dot { display: none; }
     .radar-sweep {
       position: absolute;
       inset: 0;
       border-radius: 50%;
-      background: conic-gradient(from 0deg, transparent 0deg, rgba(93, 215, 255, 0.25) 40deg, transparent 80deg);
-      animation: sweep 2s linear infinite;
-    }
-    .radar-dot {
-      position: absolute;
-      top: 50%; left: 50%;
-      width: 6px; height: 6px;
-      margin: -3px 0 0 -3px;
-      border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 8px var(--accent);
+      border: 2px solid var(--border-default);
+      border-top-color: var(--accent);
+      animation: sweep 0.8s linear infinite;
     }
     @keyframes sweep { to { transform: rotate(360deg); } }
     .scan-label {
@@ -350,7 +357,7 @@
       vertical-align: 1px;
     }
     .codec-banner-badge.tone-muted { color: var(--muted); background: rgba(126, 151, 171, 0.15); }
-    .codec-banner-badge.tone-info { color: var(--accent); background: rgba(93, 215, 255, 0.12); }
+    .codec-banner-badge.tone-info { color: var(--accent); background: var(--cyan-ghost); }
     .codec-banner-badge.tone-success { color: var(--success); background: rgba(93, 255, 151, 0.12); }
     .codec-banner-badge.tone-warning { color: var(--warning); background: rgba(255, 207, 112, 0.12); }
     .codec-banner-badge.tone-error { color: var(--danger); background: rgba(255, 125, 125, 0.12); }
@@ -358,7 +365,7 @@
     .codec-diagnostics {
       margin-top: 0.5rem;
       padding: 0.55rem 0.7rem;
-      border: 1px solid rgba(93, 215, 255, 0.08);
+      border: 1px solid var(--border-subtle);
       border-radius: 6px;
       background: var(--surface);
     }
@@ -383,7 +390,7 @@
       align-items: center;
       justify-content: center;
       width: 56px; height: 56px;
-      border-radius: 16px;
+      border-radius: var(--radius-md);
       background: var(--accent-dim);
       border: 1px solid var(--panel-edge);
       margin-bottom: 1rem;
@@ -409,7 +416,7 @@
       margin-bottom: 1.25rem;
     }
     .camera-card {
-      border: 1px solid rgba(93, 215, 255, 0.08);
+      border: 1px solid var(--border-default);
       border-radius: var(--radius-sm);
       padding: 0.85rem;
       background: var(--surface);
@@ -433,7 +440,7 @@
       width: 100%;
       padding: 0.4rem 0.55rem;
       margin-bottom: 0.2rem;
-      border: 1px solid rgba(93, 215, 255, 0.1);
+      border: 1px solid var(--border-default);
       border-radius: 6px;
       background: transparent;
       color: var(--text);
@@ -441,7 +448,7 @@
       font-weight: 600;
       font-family: inherit;
     }
-    .camera-name-input:focus { outline: none; border-color: rgba(93, 215, 255, 0.35); background: var(--surface); }
+    .camera-name-input:focus { outline: none; border-color: var(--cyan); background: var(--surface); }
     .camera-meta { font-size: 0.8rem; color: var(--muted); margin-top: 0.1rem; font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
     .camera-probe-status { font-size: 0.84rem; font-weight: 600; flex-shrink: 0; }
     .camera-probe-status.ok { color: var(--success); }
@@ -449,7 +456,7 @@
     .camera-details {
       margin-top: 0.6rem;
       padding-top: 0.6rem;
-      border-top: 1px solid rgba(93, 215, 255, 0.06);
+      border-top: 1px solid var(--border-subtle);
       display: flex;
       gap: 0.65rem;
       align-items: flex-start;
@@ -459,20 +466,20 @@
       width: 144px; height: 81px;
       border-radius: 6px;
       overflow: hidden;
-      background: rgba(93, 215, 255, 0.04);
+      background: var(--cyan-ghost);
       position: relative;
     }
     .camera-thumbnail-wrap.loading::after {
       content: '';
       position: absolute; inset: 0;
-      background: linear-gradient(90deg, transparent, rgba(93, 215, 255, 0.06), transparent);
+      background: linear-gradient(90deg, transparent, var(--cyan-ghost), transparent);
       animation: shimmer 1.8s infinite;
     }
     @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
     .camera-thumbnail { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; display: block; }
     .camera-streams { font-size: 0.78rem; color: var(--muted); word-break: break-all; flex: 1; font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
     .camera-streams div { margin-bottom: 0.2rem; }
-    .camera-override { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px solid rgba(93, 215, 255, 0.06); }
+    .camera-override { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px solid var(--border-subtle); }
     .camera-override summary { font-size: 0.82rem; color: var(--muted); cursor: pointer; margin-bottom: 0.4rem; }
     .override-fields { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     .override-fields input { flex: 1; min-width: 110px; margin-bottom: 0.4rem; }
@@ -481,7 +488,7 @@
     .connect-prompt {
       margin-top: 1rem;
       padding-top: 1rem;
-      border-top: 1px solid rgba(93, 215, 255, 0.08);
+      border-top: 1px solid var(--border-subtle);
     }
     .connect-label {
       font-size: 0.86rem;
@@ -534,6 +541,7 @@
         <div class="step-dot"></div>
         <span class="sr-only">Step 1 of 2</span>
       </div>
+      <p class="step-label">Step 1 of 2 · Administrator account</p>
       <div class="brand">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/>
@@ -588,6 +596,7 @@
         <div class="step-dot active"></div>
         <span class="sr-only">Step 2 of 2</span>
       </div>
+      <p class="step-label">Step 2 of 2 · Camera discovery</p>
       <div class="brand">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/>
@@ -623,6 +632,11 @@
       </div>
 
       <div id="scan-results" class="hidden">
+        <div id="scan-error" class="setup-error hidden" role="alert">
+          <h3>Could not scan the network</h3>
+          <p id="scan-error-message">Camera discovery is temporarily unavailable.</p>
+          <button type="button" class="btn btn-secondary btn-small" id="retry-discovery">Try again</button>
+        </div>
         <div id="no-cameras" class="hidden">
           <div class="empty-state">
             <div class="empty-icon">
@@ -655,13 +669,14 @@
           </div>
 
           <div class="actions">
-            <button type="button" class="btn btn-primary" id="add-cameras" disabled>Add Selected Cameras</button>
+            <button type="button" class="btn btn-primary" id="add-cameras" disabled>Add selected cameras</button>
           </div>
           <div class="status" id="add-cameras-status" role="status" aria-live="polite" aria-atomic="true" style="margin-top:0.5rem"></div>
         </div>
 
         <div class="actions">
-          <button type="button" class="btn-ghost" id="skip-setup">Finish Setup</button>
+          <button type="button" class="btn-ghost" id="skip-setup">Finish setup</button>
+          <div class="status" id="finish-status" role="alert" aria-live="assertive" aria-atomic="true"></div>
           <button type="button" class="btn-ghost" id="back-to-admin">Back</button>
         </div>
       </div>
@@ -677,6 +692,17 @@
       function setStatus(el, message, type) {
         el.textContent = message || '';
         el.className = 'status' + (type ? ' ' + type : '');
+      }
+
+      function readJSON(resp, fallbackMessage) {
+        return resp.text().then(function(text) {
+          var body = {};
+          if (text) {
+            try { body = JSON.parse(text); } catch (_) {}
+          }
+          if (!resp.ok) throw new Error(body.error || fallbackMessage || ('Request failed (' + resp.status + ')'));
+          return body;
+        });
       }
 
       function showScreen(id) {
@@ -733,12 +759,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: username, password: password })
         })
-          .then(function(resp) {
-            return resp.json().then(function(body) {
-              if (!resp.ok) throw new Error(body.error || 'Setup failed');
-              return body;
-            });
-          })
+          .then(function(resp) { return readJSON(resp, 'Setup failed'); })
           .then(function(data) {
             if (data.status === 'config_readonly') {
               hide(adminForm);
@@ -841,7 +862,7 @@
         hide(installCodecButton);
 
         fetch('/api/setup/codecs/openh264')
-          .then(function(resp) { return resp.json(); })
+          .then(function(resp) { return readJSON(resp, 'Could not check codec status'); })
           .then(renderCodecStatus)
           .catch(function(err) {
             setCodecBadge('error', 'error');
@@ -858,7 +879,7 @@
         setStatus(codecStatus, 'Downloading and verifying…', '');
 
         fetch('/api/setup/codecs/openh264/install', { method: 'POST' })
-          .then(function(resp) { return resp.json(); })
+          .then(function(resp) { return readJSON(resp, 'Could not install OpenH264'); })
           .then(function(data) {
             renderCodecStatus(data);
             if (data.available) {
@@ -880,14 +901,16 @@
       function startDiscovery() {
         hide($('scan-results'));
         show($('scan-loading'));
+        hide($('scan-error'));
         $('discover-subtitle').textContent = 'Scanning your network for cameras…';
 
         fetch('/api/discover')
-          .then(function(resp) { return resp.json(); })
+          .then(function(resp) { return readJSON(resp, 'Camera discovery failed'); })
           .then(function(data) {
             discoveredCameras = data.cameras || [];
             hide($('scan-loading'));
             show($('scan-results'));
+            hide($('scan-error'));
 
             if (discoveredCameras.length === 0) {
               show($('no-cameras'));
@@ -903,11 +926,15 @@
           .catch(function(err) {
             hide($('scan-loading'));
             show($('scan-results'));
-            show($('no-cameras'));
+            show($('scan-error'));
+            $('scan-error-message').textContent = err.message + '. Check the connection and try again.';
+            hide($('no-cameras'));
             hide($('cameras-found'));
-            $('discover-subtitle').textContent = 'Scan failed: ' + err.message;
+            $('discover-subtitle').textContent = 'Camera discovery needs attention';
           });
       }
+
+      $('retry-discovery').addEventListener('click', startDiscovery);
 
       function renderCameras() {
         var list = $('camera-list');
@@ -1022,7 +1049,7 @@
         var checked = document.querySelectorAll('#camera-list input[type="checkbox"]:checked');
         var btn = $('add-cameras');
         btn.disabled = checked.length === 0;
-        btn.textContent = checked.length > 0 ? 'Add ' + checked.length + ' Camera' + (checked.length > 1 ? 's' : '') : 'Add Selected Cameras';
+        btn.textContent = checked.length > 0 ? 'Add ' + checked.length + ' camera' + (checked.length > 1 ? 's' : '') : 'Add selected cameras';
       }
 
       // Test credentials
@@ -1047,7 +1074,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ cameras: camerasToProbe, username: username, password: password })
         })
-          .then(function(resp) { return resp.json(); })
+          .then(function(resp) { return readJSON(resp, 'Credential test failed'); })
           .then(function(data) {
             var results = data.results || [];
             var okCount = 0;
@@ -1081,13 +1108,16 @@
             password: password
           })
         })
-          .then(function(resp) { return resp.json(); })
+          .then(function(resp) { return readJSON(resp, 'Camera connection failed'); })
           .then(function(data) {
             var results = data.results || [];
             if (results.length > 0) {
               probeResults[results[0].ip] = results[0];
               renderCameras();
             }
+          })
+          .catch(function(err) {
+            setStatus($('cred-status'), 'Retry failed: ' + err.message, 'error');
           });
       };
 
@@ -1124,7 +1154,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ cameras: selected })
         })
-          .then(function(resp) { return resp.json(); })
+          .then(function(resp) { return readJSON(resp, 'Could not add cameras'); })
           .then(function(data) {
             if (data.status === 'config_readonly' && data.yaml_snippets) {
               var statusEl = $('add-cameras-status');
@@ -1146,9 +1176,16 @@
       // Finish setup
       $('skip-setup').addEventListener('click', function(e) {
         e.preventDefault();
-	        fetch('/api/setup/complete', { method: 'POST' })
+        var btn = $('skip-setup');
+        btn.disabled = true;
+        setStatus($('finish-status'), 'Finishing setup…', '');
+	      fetch('/api/setup/complete', { method: 'POST' })
+          .then(function(resp) { return readJSON(resp, 'Could not finish setup'); })
           .then(function() { location.href = '/'; })
-          .catch(function() { location.href = '/'; });
+          .catch(function(err) {
+            setStatus($('finish-status'), err.message, 'error');
+            btn.disabled = false;
+          });
       });
 
       function escapeHtml(str) {
@@ -1163,13 +1200,15 @@
 
       // On load: check setup state. Redirect to app when already running;
       // skip to cameras when admin account was already created (page refresh).
-      fetch('/api/setup/status').then(function(r) { return r.json(); }).then(function(d) {
+      fetch('/api/setup/status').then(function(r) { return readJSON(r, 'Could not check setup status'); }).then(function(d) {
         if (d.status === 'running') {
           location.replace('/');
         } else if (d.admin_configured) {
           goToCameraScreen();
         }
-      }).catch(function() {});
+      }).catch(function(err) {
+        setStatus(adminStatus, err.message + '. You can still create the administrator account.', 'error');
+      });
     })();
   </script>
 </body>

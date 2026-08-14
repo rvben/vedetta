@@ -11,6 +11,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/ebitengine/purego"
 	openh264 "github.com/y9o/go-openh264"
 )
 
@@ -192,15 +193,63 @@ func (d *H264Decoder) Decode(nalData []byte) *image.YCbCr {
 		return nil
 	}
 
-	var dst [3][]byte
-	var bufInfo openh264.SBufferInfo
-
-	ret := d.decoder.DecodeFrameNoDelay(nalData, len(nalData), &dst, &bufInfo)
+	var output rawDecoderOutput
+	vtbl := *(**openh264.ISVCDecoderVtbl)(unsafe.Pointer(d.decoder))
+	ret, _, _ := purego.SyscallN(
+		uintptr(unsafe.Pointer(vtbl.DecodeFrameNoDelay)),
+		uintptr(unsafe.Pointer(d.decoder)),
+		uintptr(unsafe.Pointer(unsafe.SliceData(nalData))),
+		uintptr(len(nalData)),
+		uintptr(unsafe.Pointer(&output.planes[0])),
+		uintptr(unsafe.Pointer(&output.bufferInfo[0])),
+	)
+	runtime.KeepAlive(nalData)
+	runtime.KeepAlive(d.decoder)
 	if ret != 0 {
 		return nil
 	}
 
-	return frameFromDecoded(&dst, &bufInfo)
+	return frameFromRawDecoded(&output)
+}
+
+// rawDecoderOutput is deliberately pointer-free. OpenH264 writes three
+// library-owned plane addresses and an SBufferInfo containing three more
+// library-owned addresses during every decode call. The upstream purego
+// wrapper represents those values as Go pointers and slices on the Go stack;
+// a concurrent GC can then mistake a foreign address for a Go heap pointer
+// and terminate the process while scanning it. uintptr and byte arrays carry
+// no GC pointer metadata, so the addresses remain opaque until their bytes are
+// synchronously copied into Go-owned image buffers.
+type rawDecoderOutput struct {
+	planes     [3]uintptr
+	bufferInfo [unsafe.Sizeof(openh264.SBufferInfo{})]byte
+}
+
+func (o *rawDecoderOutput) info() *openh264.SBufferInfo {
+	return (*openh264.SBufferInfo)(unsafe.Pointer(&o.bufferInfo[0]))
+}
+
+func frameFromRawDecoded(output *rawDecoderOutput) *image.YCbCr {
+	if output == nil {
+		return nil
+	}
+	bufInfo := output.info()
+	if bufInfo.IBufferStatus != 1 {
+		return nil
+	}
+
+	sysBuf := bufInfo.UsrData_sSystemBuffer()
+	w := int(sysBuf.IWidth)
+	h := int(sysBuf.IHeight)
+	yStride := int(sysBuf.IStride[0])
+	cStride := int(sysBuf.IStride[1])
+	if !validDecodedGeometry(w, h, yStride, cStride) {
+		return nil
+	}
+
+	yLen := yStride * h
+	cLen := cStride * (h / 2)
+	return copyDecodedFrame(output.planes, [3]int{yLen, cLen, cLen}, w, h, yStride, cStride)
 }
 
 // frameFromDecoded copies OpenH264's decoded planes into Go-owned buffers,
@@ -250,9 +299,7 @@ func frameFromDecoded(dst *[3][]byte, bufInfo *openh264.SBufferInfo) *image.YCbC
 	yStride := int(sysBuf.IStride[0])
 	cStride := int(sysBuf.IStride[1])
 
-	// Geometry must be positive and self-consistent: a stride narrower than
-	// the frame, or a non-positive dimension, is garbage.
-	if w <= 0 || h <= 0 || yStride < w || cStride*2 < w {
+	if !validDecodedGeometry(w, h, yStride, cStride) {
 		return nil
 	}
 
@@ -261,6 +308,24 @@ func frameFromDecoded(dst *[3][]byte, bufInfo *openh264.SBufferInfo) *image.YCbC
 
 	// The reported planes must fit within the buffers OpenH264 returned.
 	if yLen <= 0 || cLen <= 0 ||
+		yLen > planeLen[0] || cLen > planeLen[1] || cLen > planeLen[2] {
+		return nil
+	}
+	return copyDecodedFrame(planePtr, planeLen, w, h, yStride, cStride)
+}
+
+func validDecodedGeometry(w, h, yStride, cStride int) bool {
+	const maxDecodedDimension = 16_384
+	return w > 0 && h > 0 && w <= maxDecodedDimension && h <= maxDecodedDimension &&
+		h%2 == 0 && yStride >= w && yStride <= maxDecodedDimension &&
+		cStride*2 >= w && cStride <= maxDecodedDimension
+}
+
+func copyDecodedFrame(planePtr [3]uintptr, planeLen [3]int, w, h, yStride, cStride int) *image.YCbCr {
+	yLen := yStride * h
+	cLen := cStride * (h / 2)
+	if planePtr[0] == 0 || planePtr[1] == 0 || planePtr[2] == 0 ||
+		yLen <= 0 || cLen <= 0 ||
 		yLen > planeLen[0] || cLen > planeLen[1] || cLen > planeLen[2] {
 		return nil
 	}
@@ -299,15 +364,20 @@ func (d *H264Decoder) Flush() *image.YCbCr {
 		return nil
 	}
 
-	var dst [3][]byte
-	var bufInfo openh264.SBufferInfo
-
-	ret := d.decoder.FlushFrame(&dst, &bufInfo)
+	var output rawDecoderOutput
+	vtbl := *(**openh264.ISVCDecoderVtbl)(unsafe.Pointer(d.decoder))
+	ret, _, _ := purego.SyscallN(
+		uintptr(unsafe.Pointer(vtbl.FlushFrame)),
+		uintptr(unsafe.Pointer(d.decoder)),
+		uintptr(unsafe.Pointer(&output.planes[0])),
+		uintptr(unsafe.Pointer(&output.bufferInfo[0])),
+	)
+	runtime.KeepAlive(d.decoder)
 	if ret != 0 {
 		return nil
 	}
 
-	return frameFromDecoded(&dst, &bufInfo)
+	return frameFromRawDecoded(&output)
 }
 
 // Close releases the decoder resources.

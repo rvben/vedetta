@@ -3,9 +3,25 @@ package media
 import (
 	"syscall"
 	"testing"
+	"unsafe"
 
 	openh264 "github.com/y9o/go-openh264"
 )
+
+func rawOutputWith(planes [3][]byte, status, w, h, yStride, cStride int32) rawDecoderOutput {
+	var output rawDecoderOutput
+	for i := range planes {
+		output.planes[i] = uintptr(unsafe.Pointer(unsafe.SliceData(planes[i])))
+	}
+	info := output.info()
+	info.IBufferStatus = status
+	sysBuf := info.UsrData_sSystemBuffer()
+	sysBuf.IWidth = w
+	sysBuf.IHeight = h
+	sysBuf.IStride[0] = yStride
+	sysBuf.IStride[1] = cStride
+	return output
+}
 
 // offHeapPlanes returns three slices carved out of a single anonymous mmap
 // region, mimicking the libopenh264-owned (off-heap, non-Go-managed) plane
@@ -71,6 +87,37 @@ func TestFrameFromDecodedCopiesValidFrame(t *testing.T) {
 	yBacking[0] = 0xFF
 	if img.Y[0] == 0xFF {
 		t.Fatal("Y plane aliases the decoder buffer; mutation leaked into the returned frame")
+	}
+}
+
+// The production decode path receives plane addresses through a pointer-free
+// rawDecoderOutput so a concurrent GC never scans OpenH264-owned addresses.
+// Verify that the raw representation still produces a detached Go image.
+func TestFrameFromRawDecodedCopiesValidFrame(t *testing.T) {
+	const w, h, yStride, cStride = 4, 4, 4, 2
+	planes := offHeapPlanes(t, yStride*h, cStride*(h/2))
+	for i := range planes[0] {
+		planes[0][i] = byte(i + 1)
+	}
+	output := rawOutputWith(planes, 1, w, h, yStride, cStride)
+
+	img := frameFromRawDecoded(&output)
+	if img == nil {
+		t.Fatal("frameFromRawDecoded returned nil for a valid frame")
+	}
+	if img.Rect.Dx() != w || img.Rect.Dy() != h || img.Y[0] != 1 {
+		t.Fatalf("unexpected decoded frame: rect=%v firstY=%d", img.Rect, img.Y[0])
+	}
+	planes[0][0] = 0xFF
+	if img.Y[0] == 0xFF {
+		t.Fatal("raw decoded frame aliases the OpenH264-owned plane")
+	}
+}
+
+func TestFrameFromRawDecodedRejectsMissingFrame(t *testing.T) {
+	output := rawOutputWith([3][]byte{}, 0, 4, 4, 4, 2)
+	if img := frameFromRawDecoded(&output); img != nil {
+		t.Fatalf("expected nil without a decoded frame, got %v", img.Rect)
 	}
 }
 

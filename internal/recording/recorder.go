@@ -39,6 +39,9 @@ type RecompressionStats struct {
 	SegmentsRecompressed int64     `json:"segments_recompressed"`
 	ClipsRecompressed    int64     `json:"clips_recompressed"`
 	BytesReclaimed       int64     `json:"bytes_reclaimed"`
+	TranscodeFailures    int64     `json:"transcode_failures"`
+	WorkerCrashes        int64     `json:"worker_crashes"`
+	WorkerTimeouts       int64     `json:"worker_timeouts"`
 }
 
 // StorageProjection projects future storage usage based on current ingest
@@ -414,6 +417,9 @@ func (r *Recorder) recompressionStats() RecompressionStats {
 		SegmentsRecompressed: rStats.SegmentsRecompressed,
 		ClipsRecompressed:    rStats.ClipsRecompressed,
 		BytesReclaimed:       rStats.BytesReclaimed,
+		TranscodeFailures:    rStats.TranscodeFailures,
+		WorkerCrashes:        rStats.WorkerCrashes,
+		WorkerTimeouts:       rStats.WorkerTimeouts,
 	}
 }
 

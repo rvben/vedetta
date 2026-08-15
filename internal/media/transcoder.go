@@ -176,7 +176,17 @@ const TranscodeResultMarker = "VEDETTA_TRANSCODE_RESULT:"
 // renames it over path. If the segment is already small enough (resolution check),
 // returns TranscodeResult{Skipped: true} without touching the file.
 func TranscodeSegment(path string, targetW, targetH int) (TranscodeResult, error) {
-	srcW, srcH, err := readSourceResolution(path)
+	return TranscodeSegmentTo(path, path, targetW, targetH)
+}
+
+// TranscodeSegmentTo re-encodes sourcePath into outputPath. When the paths
+// differ, sourcePath is not modified. The output is written to
+// outputPath+".tmp", verified, and then atomically renamed into place. Keeping
+// source and output separate lets a supervising process commit the result only
+// after the worker exits cleanly. If the source is already small enough, no
+// output file is created.
+func TranscodeSegmentTo(sourcePath, outputPath string, targetW, targetH int) (TranscodeResult, error) {
+	srcW, srcH, err := readSourceResolution(sourcePath)
 	if err != nil {
 		return TranscodeResult{}, fmt.Errorf("read source resolution: %w", err)
 	}
@@ -186,14 +196,14 @@ func TranscodeSegment(path string, targetW, targetH int) (TranscodeResult, error
 		return TranscodeResult{Skipped: true}, nil
 	}
 
-	origInfo, err := os.Stat(path)
+	origInfo, err := os.Stat(sourcePath)
 	if err != nil {
 		return TranscodeResult{}, fmt.Errorf("stat source: %w", err)
 	}
 	origSize := origInfo.Size()
 
-	tmpPath := path + ".tmp"
-	if err := transcodeFile(path, tmpPath, outW, outH); err != nil {
+	tmpPath := outputPath + ".tmp"
+	if err := transcodeFile(sourcePath, tmpPath, outW, outH); err != nil {
 		_ = os.Remove(tmpPath)
 		return TranscodeResult{}, fmt.Errorf("transcode: %w", err)
 	}
@@ -210,7 +220,7 @@ func TranscodeSegment(path string, targetW, targetH int) (TranscodeResult, error
 	}
 	newSize := newInfo.Size()
 
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := os.Rename(tmpPath, outputPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return TranscodeResult{}, fmt.Errorf("rename: %w", err)
 	}
@@ -232,6 +242,13 @@ func verifyFMP4(path string) error {
 		return fmt.Errorf("output has no fragments")
 	}
 	return nil
+}
+
+// ValidateFMP4 verifies that path is a readable fragmented MP4 containing at
+// least one media fragment. Supervising processes use it to independently
+// validate worker output before replacing a recording.
+func ValidateFMP4(path string) error {
+	return verifyFMP4(path)
 }
 
 // moofBlock is a deduplicated moof+mdat block location. indexFile emits one

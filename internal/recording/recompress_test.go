@@ -535,6 +535,30 @@ func TestRecompressor_ClipTranscodeFailureIncrementsClipFailures(t *testing.T) {
 	}
 }
 
+func TestRecompressor_RecordsWorkerTimeout(t *testing.T) {
+	r, db := newTestRecompressor(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "segment.mp4")
+	if err := os.WriteFile(path, []byte("recording"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saveSegmentForTest(t, db, path)
+	r.transcodeFn = func(string, int, int) (media.TranscodeResult, error) {
+		return media.TranscodeResult{}, &transcodeWorkerError{
+			kind: transcodeFailureTimeout,
+			err:  errors.New("worker exceeded deadline"),
+		}
+	}
+
+	if !r.processOne() {
+		t.Fatal("processOne returned false, want a handled failure")
+	}
+	stats := r.Stats()
+	if stats.TranscodeFailures != 1 || stats.WorkerTimeouts != 1 || stats.WorkerCrashes != 0 {
+		t.Fatalf("failure stats = %+v, want one timeout and no crash", stats)
+	}
+}
+
 func TestRecompressor_RevalidateSkipsMissingClipFile(t *testing.T) {
 	_, db := newTestRecompressor(t)
 	dir := t.TempDir()

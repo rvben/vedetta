@@ -1,15 +1,135 @@
 package media
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"image"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
 )
+
+var (
+	mediaTestBinaryOnce sync.Once
+	mediaTestBinaryDir  string
+	mediaTestBinaryPath string
+	mediaTestBinaryErr  error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if mediaTestBinaryDir != "" {
+		_ = os.RemoveAll(mediaTestBinaryDir)
+	}
+	os.Exit(code)
+}
+
+func isolatedMediaTestBinary() (string, error) {
+	mediaTestBinaryOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "vedetta-media-test-bin")
+		if err != nil {
+			mediaTestBinaryErr = err
+			return
+		}
+		mediaTestBinaryDir = dir
+		mediaTestBinaryPath = filepath.Join(dir, "vedetta")
+		if output, err := exec.Command("go", "build", "-o", mediaTestBinaryPath, "github.com/rvben/vedetta/cmd/vedetta").CombinedOutput(); err != nil {
+			mediaTestBinaryErr = fmt.Errorf("build isolated transcode worker: %w (%s)", err, output)
+		}
+	})
+	return mediaTestBinaryPath, mediaTestBinaryErr
+}
+
+// isolatedTranscodeSegment exercises the production worker command in a normal
+// (non-race-instrumented) binary. OpenH264 can corrupt memory in ways that
+// surface after the call returns; the disposable process and deadline mirror
+// production while the race-instrumented parent retains control of the suite.
+func isolatedTranscodeSegment(t *testing.T, source string, width, height int) (TranscodeResult, error) {
+	t.Helper()
+	binary, err := isolatedMediaTestBinary()
+	if err != nil {
+		return TranscodeResult{}, err
+	}
+	dir := t.TempDir()
+	stagePath := filepath.Join(dir, "stage.mp4")
+	logPath := filepath.Join(dir, "worker.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return TranscodeResult{}, fmt.Errorf("create transcode test log: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "transcode",
+		"-w", strconv.Itoa(width), "-h", strconv.Itoa(height),
+		"-output", stagePath, source)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	runErr := cmd.Run()
+	closeErr := logFile.Close()
+	if ctx.Err() == context.DeadlineExceeded {
+		return TranscodeResult{}, fmt.Errorf("isolated transcode worker timed out after 5m")
+	}
+	if runErr != nil {
+		return TranscodeResult{}, fmt.Errorf("isolated transcode worker failed: %w (output: %s)", runErr, readTestLogTail(logPath, 8192))
+	}
+	if closeErr != nil {
+		return TranscodeResult{}, fmt.Errorf("close transcode test log: %w", closeErr)
+	}
+	var result TranscodeResult
+	found := false
+	for _, line := range strings.Split(readTestLogTail(logPath, 64<<10), "\n") {
+		payload, ok := strings.CutPrefix(line, TranscodeResultMarker)
+		if !ok {
+			continue
+		}
+		if err := json.Unmarshal([]byte(payload), &result); err != nil {
+			return TranscodeResult{}, fmt.Errorf("decode isolated transcode result: %w", err)
+		}
+		found = true
+		break
+	}
+	if !found {
+		return TranscodeResult{}, fmt.Errorf("isolated transcode worker produced no result marker")
+	}
+	if !result.Skipped {
+		if err := os.Rename(stagePath, source); err != nil {
+			return TranscodeResult{}, fmt.Errorf("commit isolated transcode test output: %w", err)
+		}
+	}
+	return result, nil
+}
+
+func readTestLogTail(path string, limit int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return err.Error()
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err.Error()
+	}
+	if info.Size() > limit {
+		if _, err := f.Seek(info.Size()-limit, io.SeekStart); err != nil {
+			return err.Error()
+		}
+	}
+	payload, err := io.ReadAll(f)
+	if err != nil {
+		return err.Error()
+	}
+	return string(payload)
+}
 
 func TestScaleYCbCr_PreservesAspectRatio(t *testing.T) {
 	// 1920x800 source, target 1280x720 → should output 1280x532
@@ -316,7 +436,7 @@ func TestTranscodeSegment_ReducesResolution(t *testing.T) {
 		t.Fatalf("stat src: %v", err)
 	}
 
-	result, err := TranscodeSegment(src, targetW, targetH)
+	result, err := isolatedTranscodeSegment(t, src, targetW, targetH)
 	if err != nil {
 		t.Fatalf("TranscodeSegment: %v", err)
 	}
@@ -364,7 +484,7 @@ func TestTranscodeSegment_OutputParseable(t *testing.T) {
 
 	src := copyClipToTemp(t, clipPath)
 
-	result, err := TranscodeSegment(src, targetW, targetH)
+	result, err := isolatedTranscodeSegment(t, src, targetW, targetH)
 	if err != nil {
 		t.Fatalf("TranscodeSegment: %v", err)
 	}
@@ -430,7 +550,7 @@ func TestTranscodeSegment_AudioTrackPreserved(t *testing.T) {
 
 	src := copyClipToTemp(t, clipPath)
 
-	result, err := TranscodeSegment(src, targetW, targetH)
+	result, err := isolatedTranscodeSegment(t, src, targetW, targetH)
 	if err != nil {
 		t.Fatalf("TranscodeSegment: %v", err)
 	}

@@ -3084,7 +3084,7 @@ components:
 
     RecompressionStats:
       type: object
-      required: [enabled, is_running, segments_recompressed, clips_recompressed, bytes_reclaimed]
+      required: [enabled, is_running, segments_recompressed, clips_recompressed, bytes_reclaimed, transcode_failures, worker_crashes, worker_timeouts]
       properties:
         enabled:
           type: boolean
@@ -3099,6 +3099,18 @@ components:
         bytes_reclaimed:
           type: integer
           format: int64
+        transcode_failures:
+          type: integer
+          format: int64
+          description: Total recompression attempts that failed in this process lifetime.
+        worker_crashes:
+          type: integer
+          format: int64
+          description: Transcode workers that terminated due to a native crash signal.
+        worker_timeouts:
+          type: integer
+          format: int64
+          description: Transcode workers killed after exceeding the bounded runtime.
         last_run:
           type: string
           format: date-time

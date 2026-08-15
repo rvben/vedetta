@@ -52,6 +52,9 @@ type Recompressor struct {
 	segmentsRecompressed int64
 	clipsRecompressed    int64
 	bytesReclaimed       int64
+	transcodeFailures    int64
+	workerCrashes        int64
+	workerTimeouts       int64
 }
 
 // NewRecompressor creates a Recompressor with the given config and camera list.
@@ -66,6 +69,9 @@ type RecompressorStats struct {
 	SegmentsRecompressed int64
 	ClipsRecompressed    int64
 	BytesReclaimed       int64
+	TranscodeFailures    int64
+	WorkerCrashes        int64
+	WorkerTimeouts       int64
 	IsRunning            bool
 }
 
@@ -78,6 +84,9 @@ func (r *Recompressor) Stats() RecompressorStats {
 		SegmentsRecompressed: r.segmentsRecompressed,
 		ClipsRecompressed:    r.clipsRecompressed,
 		BytesReclaimed:       r.bytesReclaimed,
+		TranscodeFailures:    r.transcodeFailures,
+		WorkerCrashes:        r.workerCrashes,
+		WorkerTimeouts:       r.workerTimeouts,
 		IsRunning:            r.isRunning.Load(),
 	}
 }
@@ -177,10 +186,9 @@ func (r *Recompressor) RunNow(ctx context.Context) {
 	slog.Info("recompression: manual pass completed", "processed", processed)
 }
 
-// safeTranscode calls media.TranscodeSegment with panic recovery.
-// The OpenH264 purego bindings can panic on certain corrupt segments;
-// catching the panic here prevents a single bad segment from crashing
-// the entire process.
+// safeTranscode invokes the configured transcoder with panic recovery. The
+// production transcoder is process-isolated; recovery still protects tests and
+// alternative implementations supplied through transcodeFn.
 func (r *Recompressor) safeTranscode(path string) (result media.TranscodeResult, err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -359,9 +367,15 @@ func (r *Recompressor) processOne() bool {
 	start := time.Now()
 	result, err := r.safeTranscode(best.path)
 	if err != nil {
+		failureType := "transcode_error"
+		var workerErr *transcodeWorkerError
+		if errors.As(err, &workerErr) {
+			failureType = string(workerErr.kind)
+		}
+		r.recordTranscodeFailure(err)
 		slog.Warn("recompression: failed",
 			"kind", best.kind, "camera", best.camera, "path", best.path,
-			"error", err, "retry", best.failures+1)
+			"error", err, "failure_type", failureType, "retry", best.failures+1)
 		r.incrementFailure(best)
 		return true
 	}
@@ -403,6 +417,22 @@ func (r *Recompressor) processOne() bool {
 		"saved_mb", saved/(1024*1024),
 		"duration", time.Since(start).Round(time.Second))
 	return true
+}
+
+func (r *Recompressor) recordTranscodeFailure(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.transcodeFailures++
+	var workerErr *transcodeWorkerError
+	if !errors.As(err, &workerErr) {
+		return
+	}
+	switch workerErr.kind {
+	case transcodeFailureCrash:
+		r.workerCrashes++
+	case transcodeFailureTimeout:
+		r.workerTimeouts++
+	}
 }
 
 // revalidate re-reads the target's row under the lock and returns true only if

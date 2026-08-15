@@ -64,7 +64,7 @@ func TestTranscodeSegment_Fixture(t *testing.T) {
 	}
 	tmp.Close()
 
-	result, err := TranscodeSegment(tmp.Name(), 1280, 720)
+	result, err := isolatedTranscodeSegment(t, tmp.Name(), 1280, 720)
 	if err != nil {
 		t.Fatalf("transcode failed: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestTranscodeRealSegment(t *testing.T) {
 	}
 	tmp.Close()
 
-	result, err := TranscodeSegment(tmp.Name(), 1280, 720)
+	result, err := isolatedTranscodeSegment(t, tmp.Name(), 1280, 720)
 	if err != nil {
 		t.Fatalf("transcode failed: %v", err)
 	}

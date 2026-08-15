@@ -10,7 +10,7 @@ import (
 	"github.com/rvben/vedetta/internal/camera"
 )
 
-func TestGetHealth_RecompressionClipsRecompressed(t *testing.T) {
+func TestGetHealth_RecompressionStats(t *testing.T) {
 	srv, _ := newTestServer(t)
 
 	req := httptest.NewRequest("GET", "/api/health", nil)
@@ -34,16 +34,22 @@ func TestGetHealth_RecompressionClipsRecompressed(t *testing.T) {
 	if !ok {
 		t.Fatalf("health storage missing recompression map")
 	}
-	v, ok := recompression["clips_recompressed"]
-	if !ok {
-		t.Fatal("health storage.recompression missing clips_recompressed")
-	}
-	n, ok := v.(float64)
-	if !ok {
-		t.Fatalf("clips_recompressed not a JSON number: %T", v)
-	}
-	if n != 0 {
-		t.Errorf("clips_recompressed = %v, want 0 for unseeded recorder", n)
+	for _, key := range []string{
+		"clips_recompressed", "transcode_failures", "worker_crashes", "worker_timeouts",
+	} {
+		v, ok := recompression[key]
+		if !ok {
+			t.Errorf("health storage.recompression missing %s", key)
+			continue
+		}
+		n, ok := v.(float64)
+		if !ok {
+			t.Errorf("%s not a JSON number: %T", key, v)
+			continue
+		}
+		if n != 0 {
+			t.Errorf("%s = %v, want 0 for unseeded recorder", key, n)
+		}
 	}
 }
 

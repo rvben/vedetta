@@ -57,7 +57,8 @@ func TestGetStorage_IncludesRecompression(t *testing.T) {
 	}
 	for _, key := range []string{
 		"enabled", "is_running", "segments_recompressed",
-		"clips_recompressed", "bytes_reclaimed",
+		"clips_recompressed", "bytes_reclaimed", "transcode_failures",
+		"worker_crashes", "worker_timeouts",
 	} {
 		if _, present := rc[key]; !present {
 			t.Errorf("recompression missing key %q", key)

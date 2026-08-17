@@ -105,6 +105,7 @@ func TestDiscoveryBinarySensorPayload(t *testing.T) {
 		DeviceClass:       "connectivity",
 		PayloadOn:         "ON",
 		PayloadOff:        "OFF",
+		ValueTemplate:     "{{ 'OFF' if value == 'OFF' else 'ON' }}",
 		Device:            device,
 	}
 
@@ -132,6 +133,9 @@ func TestDiscoveryBinarySensorPayload(t *testing.T) {
 	}
 	if decoded["payload_on"] != "ON" {
 		t.Errorf("payload_on = %v, want %q", decoded["payload_on"], "ON")
+	}
+	if decoded["value_template"] != "{{ 'OFF' if value == 'OFF' else 'ON' }}" {
+		t.Errorf("value_template = %v", decoded["value_template"])
 	}
 
 	deviceMap, ok := decoded["device"].(map[string]any)

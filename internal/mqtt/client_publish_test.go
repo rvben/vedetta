@@ -226,6 +226,27 @@ func TestClientPublishCameraStatus_States(t *testing.T) {
 	}
 }
 
+func TestClientPublishDiscovery_NormalizesNonFaultCameraStates(t *testing.T) {
+	c, f := newTestClient()
+	c.PublishDiscovery([]string{"driveway"})
+
+	calls := f.calls()
+	if len(calls) < 1 {
+		t.Fatal("camera discovery did not publish a binary sensor config")
+	}
+	got := calls[0]
+	if got.topic != "homeassistant/binary_sensor/vedetta_driveway/config" {
+		t.Fatalf("first discovery topic = %q", got.topic)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(got.payload, &decoded); err != nil {
+		t.Fatalf("decode discovery payload: %v", err)
+	}
+	if decoded["value_template"] != "{{ 'OFF' if value == 'OFF' else 'ON' }}" {
+		t.Errorf("value_template = %v", decoded["value_template"])
+	}
+}
+
 func TestClientPublishPresence_EnterLeaveAndObject(t *testing.T) {
 	c, f := newTestClient()
 	c.PublishPresence(camera.PresenceEvent{Type: "zone_enter", ZoneName: "Front Yard", Label: "person"}, "alice")

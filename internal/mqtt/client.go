@@ -247,12 +247,9 @@ func (c *Client) PublishObjectSighting(objectName string, event camera.Event) {
 	}
 }
 
-// PublishCameraStatus publishes the connectivity binary sensor's state. A
-// sleeping on-demand camera reports "sleeping" rather than "OFF": the sensor is
-// a connectivity class, so OFF reads in Home Assistant as "Disconnected" and
-// turns a battery camera's normal resting state into a fault. Like the existing
-// "stopped" payload this maps to neither payload_on nor payload_off, which
-// leaves the entity unknown instead of asserting something untrue.
+// PublishCameraStatus publishes the camera's raw state. Home Assistant's
+// discovery value template maps the non-fault sleeping and stopped states to a
+// connected binary sensor while preserving the richer state for MQTT clients.
 func (c *Client) PublishCameraStatus(cameraName string, online, stopped, sleeping bool) {
 	status := "OFF"
 	switch {
@@ -397,7 +394,13 @@ func (c *Client) publishCameraDiscovery(cameraName string) {
 		DeviceClass:       "connectivity",
 		PayloadOn:         "ON",
 		PayloadOff:        "OFF",
-		Device:            device,
+		// A sleeping battery camera and a camera deliberately stopped by its
+		// operator are not connectivity failures. Without this normalization,
+		// Home Assistant leaves the entity unknown because neither raw value
+		// matches payload_on/payload_off, which is surfaced as unavailable and
+		// can trigger an outage alert.
+		ValueTemplate: "{{ 'OFF' if value == 'OFF' else 'ON' }}",
+		Device:        device,
 	}
 
 	sensorPayload, err := json.Marshal(sensorConfig)
@@ -611,6 +614,7 @@ type haBinarySensorConfig struct {
 	DeviceClass       string   `json:"device_class"`
 	PayloadOn         string   `json:"payload_on"`
 	PayloadOff        string   `json:"payload_off"`
+	ValueTemplate     string   `json:"value_template,omitempty"`
 	Device            haDevice `json:"device"`
 }
 

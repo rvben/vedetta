@@ -1,128 +1,127 @@
-# Vedetta Roadmap
+# Product roadmap
 
-## Phase 1: Core Excellence (MVP that's actually usable)
+Vedetta's goal is not to reproduce every Frigate feature. It is to become the
+best appliance-class, local-first NVR: easy to install, trustworthy at
+recording, fast to review, and extensible when specialized AI hardware is worth
+the complexity.
 
-### 1.1 Object Tracker
-- [ ] IoU-based frame-to-frame object tracking
-- [ ] Single event per tracked object (not per detection)
-- [ ] Track lifecycle: entered → active → stationary → left
-- [ ] Configurable tracking parameters (max_disappeared, min_hits)
+This is an outcome roadmap, not a release promise. Ordering can change when
+field data shows a different bottleneck.
 
-### 1.2 Smart Motion Detection
-- [ ] Contour-based motion (not just pixel diff average)
-- [ ] Minimum contour area threshold (ignore small changes)
-- [ ] Motion masks (configurable regions to ignore)
-- [ ] Motion region extraction (only detect in the moving area)
+## North-star outcomes
 
-### 1.3 Hardware-Accelerated Decoding
-- [ ] macOS: `-hwaccel videotoolbox`
-- [ ] Linux NVIDIA: `-hwaccel cuda`
-- [ ] Linux Intel: `-hwaccel vaapi`
-- [ ] Auto-detection of available hardware
-- [ ] Graceful fallback to CPU
+- A new operator reaches the first useful alert in under 10 minutes from a
+  supported camera URL.
+- An operator can find and export a known incident in under 30 seconds.
+- Recording gaps are never silent: they are prevented, recovered, or clearly
+  reported with camera and time range.
+- The default installation remains useful on CPU-only hardware and does not
+  require a cloud account.
+- Every accelerated path has a visible fallback/degraded state and a repeatable
+  benchmark against the CPU baseline.
 
-### 1.4 Event System
-- [ ] Per-object cooldown timers (don't spam for parked cars)
-- [ ] Zone-aware events (only trigger for configured zones)
-- [ ] Event consolidation (merge close events for same object)
-- [ ] Snapshot with bounding box overlay saved per event
-- [ ] Event lifecycle: started → updated → ended
+## Foundation — now
 
-### 1.5 Segment Persistence
-- [ ] Store segment index in SQLite (survive restarts)
-- [ ] Scan existing segments on startup
-- [ ] Atomic segment completion tracking
+Make the existing product understandable and safe to adopt.
 
-### 1.6 Snapshot System
-- [ ] Save JPEG snapshot per event with bounding boxes drawn
-- [ ] Configurable quality and resolution
-- [ ] Latest snapshot per camera always available
-- [ ] Clean snapshot API endpoint
+- Publish the Apache-2.0 license, contribution/security policies, support
+  boundaries, and structured issue forms.
+- Keep README, architecture, API, configuration, and compatibility claims tied
+  to implemented behavior.
+- Build a community camera matrix from reproducible, privacy-safe reports.
+- Establish benchmark workloads for ingest, decode, detection, recording, live
+  viewers, and failure recovery.
+- Define architecture decisions for Activity, configuration, and optional
+  inference workers before growing new subsystems.
 
-## Phase 2: User Experience
+**Exit signal:** a new contributor can reproduce the supported setup and report
+a compatibility or performance result without private maintainer context.
 
-### 2.1 Web UI
-- [ ] Dashboard with camera grid (live snapshots)
-- [ ] Event browser with thumbnail timeline
-- [ ] Event detail view (snapshot + clip playback)
-- [ ] Camera configuration editor
-- [ ] System health/stats dashboard
-- [ ] Mobile-responsive design
+## Stage 1 — make daily use exceptional
 
-### 2.2 Live Streaming
-- [ ] WebRTC for low-latency live view
-- [ ] HLS/LLHLS fallback for broader compatibility
-- [ ] MSE (Media Source Extensions) for in-browser playback
-- [ ] Multi-camera composite view (birdseye)
+Focus on the two jobs users repeat: deciding what matters and finding it later.
 
-### 2.3 Camera Auto-Discovery
-- [ ] ONVIF WS-Discovery probe
-- [ ] Get stream URLs from ONVIF profiles
-- [ ] Suggest camera config from discovered devices
-- [ ] `vedetta discover` CLI command
-- [ ] Support Tapo, Reolink, Hikvision, Dahua ONVIF
+- Extend the first **Activity** review slice—which durably groups nearby
+  camera-local events, doorbell presses, identities, zones, and artifacts—into
+  an explainable lifecycle with operator corrections and automation consumers.
+- Add rule composition for labels, zones, time windows, dwell/loitering, known
+  identities, and notification severity.
+- Add motion masks and tuneable object inertia without exposing raw detector
+  complexity as the primary UX.
+- Turn configuration into a versioned control plane with dry-run validation,
+  atomic apply, diff, rollback, and per-camera status.
+- Add safe UI-assisted camera/profile changes while retaining editable YAML.
+- Add camera-scoped roles and audit trails for shared households or small sites.
+- Support H.265/HEVC ingest where licensing and browser compatibility allow a
+  reliable remux/transcode strategy.
 
-### 2.4 Configuration
-- [ ] YAML validation with helpful error messages
-- [ ] Hot-reload on config file change (fsnotify)
-- [ ] `vedetta validate` CLI command
-- [ ] `vedetta init` interactive setup wizard
+**Exit signal:** incident review is measurably faster, rule behavior is
+explainable, and a failed configuration change cannot take every camera down.
 
-## Phase 3: Integration & Polish
+## Stage 2 — scale across real hardware
 
-### 3.1 Home Assistant
-- [ ] MQTT auto-discovery for HA
-- [ ] HA-compatible event topics
-- [ ] Camera entity via MQTT
-- [ ] Sensor entities (person count, last motion, etc.)
+Make acceleration modular without turning Vedetta into a distributed system by
+default.
 
-### 3.2 Notifications
-- [ ] Webhook support (generic HTTP POST)
-- [ ] Pushover integration
-- [ ] Telegram bot integration
-- [ ] Snapshot attachment in notifications
+- Define a detector-provider contract with capabilities, health, scheduling,
+  backpressure, deadlines, and normalized results.
+- Add optional same-host workers over a versioned local transport, with the CPU
+  provider remaining in-process and always supported.
+- Prioritize providers from measured demand: Core ML, OpenVINO, CUDA/TensorRT,
+  then remote accelerators where maintainers can test them.
+- Add per-camera model/provider selection and resource budgets.
+- Expose benchmark and diagnostics commands that compare end-to-end latency,
+  throughput, memory, power where available, and dropped work.
+- Harden Home Assistant entities/actions around Activity and system health.
 
-### 3.3 Monitoring
-- [ ] Prometheus metrics endpoint `/metrics`
-- [ ] Per-camera stats (FPS, CPU, detection rate)
-- [ ] System resource usage tracking
-- [ ] Health check endpoint with detailed status
+**Exit signal:** a worker can crash or disappear without interrupting recording,
+and users can prove that an accelerator improves their workload before adopting
+it.
 
-### 3.4 Distribution
-- [ ] Homebrew formula (`brew install vedetta`)
-- [ ] APT/RPM packages
-- [ ] Docker image (optional, for those who want it)
-- [ ] GitHub Releases with cross-compiled binaries
-- [ ] systemd service file
-- [ ] launchd plist for macOS
+## Stage 3 — searchable local intelligence
 
-## Phase 4: Advanced Features
+Build higher-level features on durable Activity data instead of isolated model
+outputs.
 
-### 4.1 Multi-Model Support
-- [ ] Custom ONNX model loading
-- [ ] Per-camera model assignment
-- [ ] Model benchmarking command
-- [ ] Pre-trained model downloader
+- Search motion, labels, zones, time, people, known objects, and similarity from
+  one review surface.
+- Add cross-camera journeys with explicit confidence and correction tools.
+- Add license-plate recognition and audio-event detection as optional providers.
+- Add saved searches and automation triggers that use the same rule language as
+  notifications.
+- Make retention policy-aware: preserve incident summaries and chosen evidence
+  without retaining all raw media forever.
 
-### 4.2 Audio Detection
-- [ ] Audio stream capture from RTSP
-- [ ] Audio event detection (glass break, dog bark, etc.)
-- [ ] Audio events linked to camera events
+**Exit signal:** advanced search remains useful offline, corrections improve
+future results, and optional models do not contaminate the core event schema.
 
-### 4.3 Advanced Recording
-- [ ] Timeline scrubbing with thumbnails
-- [ ] Export clips with date range
-- [ ] Timelapse generation from segments
-- [ ] Cloud backup (S3-compatible)
+## Later, after evidence
 
-### 4.4 Face/License Plate Recognition
-- [ ] Sub-labels for face recognition
-- [ ] License plate detection + OCR
-- [ ] Known faces/plates database
-- [ ] Alert on unknown faces
+- PTZ autotracking with safety limits and camera-specific verification.
+- A composited birdseye output when the use cases justify its decode/encode
+  cost.
+- Package formats beyond release binaries and containers.
+- Opt-in local or remote generative descriptions after privacy, latency, cost,
+  and hallucination behavior are measurable.
+- Remote inference workers only when same-host isolation is insufficient.
 
-## Non-Goals (Conscious Design Decisions)
-- No re-encoding in the recording pipeline (always re-mux)
-- No built-in PTZ control (use camera's native app)
-- No cloud dependency (runs fully offline)
-- No custom ML training UI (bring your own ONNX model)
+## Explicit non-goals
+
+- Mandatory cloud services, subscriptions, or telemetry.
+- Feature-count parity with Frigate as a strategy.
+- A fleet of required sidecars for a normal single-host installation.
+- Vendor SDKs or hardware conditionals spread through the recording core.
+- A wholesale UI-framework rewrite without a user outcome it unlocks.
+- Generative AI before recording, review, rules, configuration, and acceleration
+  boundaries are trustworthy.
+
+## Definition of done for roadmap work
+
+A capability is shipped only when it includes:
+
+1. an operator-visible success, degraded, and failure state;
+2. migration and rollback behavior for durable changes;
+3. privacy and threat-model review appropriate to camera data;
+4. automated tests at the narrow boundary and an end-to-end path;
+5. metrics or a reproducible measurement for the promised outcome; and
+6. updated README, compatibility, configuration, API, and support documentation.

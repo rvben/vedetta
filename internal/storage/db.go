@@ -91,7 +91,13 @@ func (d *DB) SaveEvent(event camera.Event) error {
 		t := utc(event.AnsweredAt)
 		answeredAt = &t
 	}
-	_, err := d.db.Exec(`
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.Exec(`
 		INSERT INTO events (id, camera, label, score, box_x1, box_y1, box_x2, box_y2, timestamp, end_time, snapshot_path, snapshot_available, clip_path, clip_available, zone_name, object_name, sub_label, category, kind, answered_at, answered_by)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.ID, event.CameraName, event.Label, event.Score,
@@ -99,12 +105,35 @@ func (d *DB) SaveEvent(event camera.Event) error {
 		utc(event.Timestamp), endTime, event.SnapshotPath, event.SnapshotAvailable, event.ClipPath, event.ClipAvailable, zoneName, nullString(event.ObjectName), nullString(event.SubLabel), category,
 		kind, answeredAt, nullString(event.AnsweredBy),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := assignEventToActivityTx(tx, event); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DB) UpdateEventEndTime(eventID string, endTime time.Time) error {
-	_, err := d.db.Exec("UPDATE events SET end_time = ? WHERE id = ?", utc(endTime), eventID)
-	return err
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("UPDATE events SET end_time = ? WHERE id = ?", utc(endTime), eventID); err != nil {
+		return err
+	}
+	var activityID string
+	err = tx.QueryRow(`SELECT activity_id FROM activity_events WHERE event_id = ?`, eventID).Scan(&activityID)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if activityID != "" {
+		if _, err := reconcileActivityTx(tx, activityID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // UpdateEventAnswered records that a doorbell ring was acknowledged. It only sets
@@ -1144,6 +1173,7 @@ func scanEvents(rows *sql.Rows) ([]camera.Event, error) {
 	var events []camera.Event
 	for rows.Next() {
 		var e camera.Event
+		var box [4]sql.NullInt64
 		var endTime sql.NullTime
 		var snapshot, clip, zoneName, objectName, subLabel sql.NullString
 		var category string
@@ -1152,12 +1182,17 @@ func scanEvents(rows *sql.Rows) ([]camera.Event, error) {
 		var answeredAt sql.NullTime
 		var answeredBy sql.NullString
 		err := rows.Scan(&e.ID, &e.CameraName, &e.Label, &e.Score,
-			&e.Box[0], &e.Box[1], &e.Box[2], &e.Box[3],
+			&box[0], &box[1], &box[2], &box[3],
 			&e.Timestamp, &endTime, &snapshot, &snapshotAvailable, &clip, &clipAvailable, &zoneName, &objectName, &subLabel, &category,
 			&kind, &answeredAt, &answeredBy,
 		)
 		if err != nil {
 			return nil, err
+		}
+		for i := range box {
+			if box[i].Valid {
+				e.Box[i] = int(box[i].Int64)
+			}
 		}
 		if endTime.Valid {
 			e.EndTime = endTime.Time
@@ -1182,8 +1217,25 @@ func scanEvents(rows *sql.Rows) ([]camera.Event, error) {
 
 // DeleteEvent removes an event by ID.
 func (d *DB) DeleteEvent(id string) error {
-	_, err := d.db.Exec("DELETE FROM events WHERE id = ?", id)
-	return err
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var activityID string
+	err = tx.QueryRow(`SELECT activity_id FROM activity_events WHERE event_id = ?`, id).Scan(&activityID)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM events WHERE id = ?", id); err != nil {
+		return err
+	}
+	if activityID != "" {
+		if _, err := reconcileActivityTx(tx, activityID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // EventMediaRef is the minimal projection of an event needed to reconcile its
@@ -1228,8 +1280,40 @@ func (d *DB) EventMediaRefs() ([]EventMediaRef, error) {
 }
 
 func (d *DB) DeleteEventsOlderThan(cutoff time.Time) error {
-	_, err := d.db.Exec("DELETE FROM events WHERE timestamp < ?", utc(cutoff))
-	return err
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.Query(`
+		SELECT DISTINCT ae.activity_id
+		FROM activity_events ae
+		JOIN events e ON e.id = ae.event_id
+		WHERE e.timestamp < ?`, utc(cutoff))
+	if err != nil {
+		return err
+	}
+	var activityIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		activityIDs = append(activityIDs, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM events WHERE timestamp < ?", utc(cutoff)); err != nil {
+		return err
+	}
+	for _, activityID := range activityIDs {
+		if _, err := reconcileActivityTx(tx, activityID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (d *DB) DeleteFacesOlderThan(cutoff time.Time) error {

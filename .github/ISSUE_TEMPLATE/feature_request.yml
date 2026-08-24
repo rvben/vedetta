@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose an operator-visible improvement to Vedetta
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Operator problem
+      description: Describe the problem or workflow, not only the desired implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: What should an operator be able to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, integrations, or smaller solutions.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Compatibility and resource impact
+      description: Note config, API, storage, privacy, security, CPU, memory, bandwidth, or hardware implications.
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Project fit
+      options:
+        - label: The feature can operate locally without a mandatory cloud account.
+          required: true
+        - label: I searched for an existing issue or roadmap item.
+          required: true

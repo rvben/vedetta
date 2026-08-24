@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
@@ -126,6 +127,7 @@ func eventFiltersFromRequest(r *http.Request) storage.EventFilters {
 	filters := storage.EventFilters{
 		Camera:   query.Get("camera"),
 		Label:    query.Get("label"),
+		Zone:     query.Get("zone"),
 		Object:   query.Get("object"),
 		Category: query.Get("category"),
 		Kind:     query.Get("kind"),
@@ -152,8 +154,188 @@ func eventFiltersFromRequest(r *http.Request) storage.EventFilters {
 	return filters
 }
 
+func activityFiltersFromRequest(r *http.Request) storage.ActivityFilters {
+	query := r.URL.Query()
+	filters := storage.ActivityFilters{
+		Camera:   query.Get("camera"),
+		Label:    query.Get("label"),
+		Zone:     query.Get("zone"),
+		Object:   query.Get("object"),
+		Category: query.Get("category"),
+		Kind:     query.Get("kind"),
+		Search:   query.Get("q"),
+	}
+	if after, err := time.Parse(time.RFC3339, query.Get("after")); err == nil {
+		filters.After = after
+	} else {
+		now := time.Now()
+		switch query.Get("range") {
+		case "today":
+			filters.After = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		case "24h":
+			filters.After = now.Add(-24 * time.Hour)
+		case "7d":
+			filters.After = now.AddDate(0, 0, -7)
+		}
+	}
+	if before, err := time.Parse(time.RFC3339, query.Get("before")); err == nil {
+		filters.Before = before
+	}
+	return filters
+}
+
+func activityTitle(activity storage.Activity) string {
+	if len(activity.RecognizedNames) > 0 {
+		return strings.Join(activity.RecognizedNames, " and ")
+	}
+	if len(activity.Labels) == 0 {
+		return "Camera activity"
+	}
+	labels := make([]string, len(activity.Labels))
+	for i, label := range activity.Labels {
+		labels[i] = displayName(label)
+	}
+	return strings.Join(labels, " and ")
+}
+
+func activityDuration(activity storage.Activity) string {
+	seconds := activity.DurationSeconds
+	if seconds < 1 {
+		return "Momentary"
+	}
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	seconds %= 60
+	if seconds == 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%dm %ds", minutes, seconds)
+}
+
+func activityFacets(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	display := make([]string, len(values))
+	for i, value := range values {
+		display[i] = displayName(value)
+	}
+	return strings.Join(display, ", ")
+}
+
+func (s *Server) handleActivitiesGalleryPartial(w http.ResponseWriter, r *http.Request) {
+	filters := activityFiltersFromRequest(r)
+	limit := 50
+	if value, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && value > 0 {
+		limit = min(value, maxActivityPageSize)
+	}
+	offset := 0
+	if value, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && value >= 0 {
+		offset = value
+	}
+
+	activities, err := s.db.QueryActivitiesFiltered(filters, limit, offset)
+	if err != nil {
+		s.serverErrorText(w, r, err)
+		return
+	}
+	total, err := s.db.CountActivitiesFiltered(filters)
+	if err != nil {
+		s.serverErrorText(w, r, err)
+		return
+	}
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
+	w.Header().Set("Content-Type", "text/html")
+
+	if offset == 0 && len(activities) == 0 {
+		_, _ = fmt.Fprint(w, `<div class="empty-state activity-empty"><h2>No activity in this view</h2><p>Try a wider time range or clear a filter.</p></div>`)
+		return
+	}
+
+	funcs := template.FuncMap{
+		"activityTitle":    activityTitle,
+		"activityDuration": activityDuration,
+		"activityFacets":   activityFacets,
+	}
+	tmpl := template.Must(template.New("activities").Funcs(s.funcMap).Funcs(funcs).Parse(
+		`{{range .}}` +
+			`<a class="event-card activity-card" href="/activity.html?id={{.ID}}" data-event-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}" data-activity-category="{{.Category}}">` +
+			`<div class="event-thumb activity-thumb">` +
+			`{{if .PrimaryEvent.SnapshotAvailable}}<img src="/api/events/{{.PrimaryEvent.ID}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}" loading="lazy">` +
+			`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}" loading="lazy">{{end}}` +
+			`{{if gt .EventCount 1}}<span class="activity-evidence-count">{{.EventCount}} events</span>{{end}}` +
+			`{{if .MissedDoorbell}}<span class="event-missed-badge">missed ring</span>{{else if .HasDoorbell}}<span class="event-answered-badge">doorbell</span>{{end}}` +
+			`</div>` +
+			`<div class="event-card-footer">` +
+			`<div class="event-card-heading"><span class="event-card-title">{{activityTitle .}}</span><span class="event-time">{{timeAgo .StartTime}}</span></div>` +
+			`<div class="event-card-context"><span class="event-camera-name">{{displayName .CameraName}}</span><span>{{activityDuration .}}</span>` +
+			`{{with activityFacets .Zones}}<span>{{.}}</span>{{end}}` +
+			`{{if eq .Category "detection"}}<span class="event-tier">Low priority</span>{{end}}</div>` +
+			`</div></a>{{end}}`))
+	if err := tmpl.Execute(w, activities); err != nil {
+		slog.Error("activity gallery template error", "error", err)
+		return
+	}
+
+	if len(activities) == limit {
+		params := r.URL.Query()
+		params.Set("limit", strconv.Itoa(limit))
+		params.Set("offset", strconv.Itoa(offset+limit))
+		nextURL := "/partials/activities-gallery?" + params.Encode()
+		_, _ = fmt.Fprintf(w, `<div id="load-more-trigger" class="scroll-sentinel" hx-get="%s" hx-trigger="revealed" hx-swap="outerHTML" role="status" aria-label="Loading more activity"><span class="loading-spinner" aria-hidden="true"></span></div>`, template.HTMLEscapeString(nextURL))
+	}
+}
+
+func (s *Server) handleActivityDetailPartial(w http.ResponseWriter, r *http.Request) {
+	activity, err := s.db.GetActivityByID(r.PathValue("id"))
+	if err != nil {
+		s.serverErrorText(w, r, err)
+		return
+	}
+	if activity == nil {
+		http.Error(w, "activity not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	funcs := template.FuncMap{
+		"activityTitle":    activityTitle,
+		"activityDuration": activityDuration,
+		"activityFacets":   activityFacets,
+		"activityEvidenceURL": func(eventID string) string {
+			params := r.URL.Query()
+			params.Set("activity", activity.ID)
+			return "/event.html?id=" + url.QueryEscape(eventID) + "&" + params.Encode()
+		},
+	}
+	tmpl := template.Must(template.New("activity-detail").Funcs(s.funcMap).Funcs(funcs).Parse(
+		`<div class="activity-detail-root" data-activity-camera="{{.CameraName}}" data-activity-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}">` +
+			`<div class="page-header activity-page-header"><div><h1>{{activityTitle .}}</h1><p>{{displayName .CameraName}} · {{formatTime .StartTime}}</p></div>` +
+			`<a class="btn btn-secondary" href="/events.html">Back to Activity</a></div>` +
+			`<div class="activity-review-layout"><section class="activity-primary" aria-label="Primary evidence">` +
+			`<div class="activity-primary-media">{{if .PrimaryEvent.ClipAvailable}}<video controls preload="metadata" poster="/api/events/{{.PrimaryEvent.ID}}/snapshot"><source src="/api/events/{{.PrimaryEvent.ID}}/clip" type="video/mp4"></video>` +
+			`{{else if .PrimaryEvent.SnapshotAvailable}}<img src="/api/events/{{.PrimaryEvent.ID}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}">` +
+			`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="Current view of {{displayName .CameraName}}">{{end}}</div>` +
+			`<div class="activity-summary" aria-label="Activity summary">` +
+			`<div><span>When</span><strong>{{formatTime .StartTime}}</strong></div><div><span>Camera</span><strong>{{displayName .CameraName}}</strong></div>` +
+			`<div><span>Duration</span><strong>{{activityDuration .}}</strong></div><div><span>Evidence</span><strong>{{.EventCount}} {{if eq .EventCount 1}}event{{else}}events{{end}}</strong></div>` +
+			`{{with activityFacets .Zones}}<div><span>Zones</span><strong>{{.}}</strong></div>{{end}}` +
+			`{{with activityFacets .Labels}}<div><span>Detected</span><strong>{{.}}</strong></div>{{end}}</div></section>` +
+			`<aside class="activity-evidence" aria-labelledby="evidence-title"><div class="activity-evidence-heading"><h2 id="evidence-title">Evidence</h2><p>Every detection included in this activity.</p></div>` +
+			`<div class="activity-evidence-list">{{range .Events}}<a class="activity-evidence-item" href="{{activityEvidenceURL .ID}}">` +
+			`<div class="activity-evidence-thumb">{{if .SnapshotAvailable}}<img src="/api/events/{{.ID}}/snapshot" alt="{{displayName .Label}} evidence">{{else}}<span aria-hidden="true"></span>{{end}}</div>` +
+			`<div><strong>{{if .SubLabel}}{{.SubLabel}}{{else}}{{displayName .Label}}{{end}}</strong><span>{{formatTime .Timestamp}}{{with .ZoneName}} · {{displayName .}}{{end}}</span></div>` +
+			`<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></a>{{end}}</div>` +
+			`</aside></div></div>`))
+	if err := tmpl.Execute(w, activity); err != nil {
+		slog.Error("activity detail template error", "error", err)
+	}
+}
+
 func eventReviewQuery(query url.Values) string {
-	allowed := []string{"camera", "label", "object", "category", "q", "range", "after", "before"}
+	allowed := []string{"activity", "camera", "label", "object", "category", "q", "range", "after", "before"}
 	params := url.Values{}
 	for _, key := range allowed {
 		if value := query.Get(key); value != "" {

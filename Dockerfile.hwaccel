@@ -30,7 +30,7 @@ FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.source=https://github.com/rvben/vedetta
 LABEL org.opencontainers.image.description="Vedetta NVR - hardware-accelerated (VA-API + NVDEC) variant"
-LABEL org.opencontainers.image.licenses=MIT
+LABEL org.opencontainers.image.licenses=Apache-2.0
 
 # Runtime shared libraries plus the VA-API drivers (Intel + Mesa/AMD).
 RUN apt-get update && \

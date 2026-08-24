@@ -1,63 +1,96 @@
-# Camera Reference
+# Camera setup
 
-## Discovered Cameras on Network
+Vedetta works best with cameras that expose an H.264 RTSP stream and an ONVIF
+profile. A low-resolution substream for detection and a high-resolution main
+stream for recording give the best resource usage.
 
-### Tapo Cameras (TP-Link)
-| IP | MAC | RTSP Port | Model (TBD) |
-|----|-----|-----------|-------------|
-| 192.168.1.17 | 70:03:9f:17:c4:8a | — | Tapo (HTTP on 80) |
-| 192.168.1.100 | c0:4b:24:9f:45:74 | — | Tapo |
+See [Compatibility](COMPATIBILITY.md) for codec and platform boundaries. Camera
+models are only described as verified after a reproducible community report;
+vendor family names below are URL examples, not compatibility guarantees.
 
-### Reolink Cameras
-| IP | MAC | RTSP Port | Model (TBD) |
-|----|-----|-----------|-------------|
-| 192.168.1.190 | 60:22:32:58:b8:0 | — | Reolink |
-| 192.168.1.198 | d8:b3:70:dc:f0:14 | — | Reolink |
-| 192.168.1.241 | 3c:39:e7:2d:5a:30 | — | Reolink |
-| 192.168.1.242 | 48:0b:b2:58:52:15 | — | Reolink |
+## Discover and inspect
 
-### RTSP-capable devices (d8:07:b6 prefix — possibly Tapo or TP-Link IoT)
-| IP | MAC | RTSP Port | Notes |
-|----|-----|-----------|-------|
-| 192.168.1.97 | d8:07:b6:25:e3:c8 | 554 | RTSP active |
-| 192.168.1.139 | d8:07:b6:25:dd:a9 | 554 | RTSP active |
-| 192.168.1.236 | d8:07:b6:16:e4:e9 | 554 | RTSP active |
+Run discovery from a host on the same broadcast network as the cameras:
 
-### Other RTSP devices
-| IP | RTSP Port | Notes |
-|----|-----------|-------|
-| 192.168.1.143 | 554 | Supports OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY |
-| 192.168.1.215 | 554 | RTSP active |
-
-## Common RTSP URLs
-
-### Tapo Cameras
-```
-# Stream 1 (high quality)
-rtsp://<username>:<password>@<ip>:554/stream1
-
-# Stream 2 (low quality, good for detection)
-rtsp://<username>:<password>@<ip>:554/stream2
+```sh
+vedetta discover
+vedetta discover -probe-rtsp
 ```
 
-### Reolink Cameras
+The first command queries ONVIF WS-Discovery. `-probe-rtsp` also tries likely
+RTSP paths and reports stream metadata. Discovery can be blocked by VLAN
+boundaries, firewalls, client isolation, or a vendor setting that disables
+ONVIF.
+
+After configuring cameras, inspect the effective stream roles without starting
+the server:
+
+```sh
+vedetta streams -config config.yml
 ```
-# Main stream (high quality)
-rtsp://<username>:<password>@<ip>:554/h264Preview_01_main
 
-# Sub stream (low quality, good for detection)
-rtsp://<username>:<password>@<ip>:554/h264Preview_01_sub
+## Configure stream roles
 
-# Alternative URL format (newer firmware)
-rtsp://<username>:<password>@<ip>:554//Preview_01_main
+```yaml
+cameras:
+  - name: front_door
+    url: rtsp://viewer:change-me@192.0.2.10:554/stream2
+    record_url: rtsp://viewer:change-me@192.0.2.10:554/stream1
+    rtsp_transport: tcp
+    detect:
+      enabled: true
+      width: 640
+      height: 360
+      fps: 5
+    record:
+      width: 1920
+      height: 1080
+      fps: 15
 ```
 
-## Restreaming (Vedetta's own RTSP output)
+- `url` is the lower-bandwidth detection and preview stream.
+- `record_url` is the higher-quality recording stream. When omitted, `url` is
+  used for both roles.
+- `rtsp_transport` accepts `tcp`, `udp`, or `auto`. Start with TCP; try UDP when
+  a camera produces corrupt or stalled video specifically over TCP.
+- `on_demand: true` is intended for sleeping battery cameras whose RTSP path
+  exists only during a wake or PIR event. Do not use it to hide an unreliable
+  mains-powered camera.
 
-Vedetta can re-publish every enabled camera as a clean RTSP stream so that
-downstream consumers (go2rtc, Frigate, VLC, WebRTC gateways) pull from
-Vedetta instead of each one connecting to the camera directly. Enable it in
-`config.yml`:
+Use camera-local, least-privilege viewer credentials where the vendor supports
+them. Keep the configuration file out of source control and restrict its file
+permissions because RTSP URLs commonly contain credentials.
+
+## Common RTSP path patterns
+
+Replace placeholders with values from the camera. Firmware and channel numbers
+can change the correct path.
+
+| Family | Main stream | Substream |
+| --- | --- | --- |
+| TP-Link Tapo | `rtsp://<user>:<pass>@<camera-host>:554/stream1` | `rtsp://<user>:<pass>@<camera-host>:554/stream2` |
+| Reolink | `rtsp://<user>:<pass>@<camera-host>:554/h264Preview_01_main` | `rtsp://<user>:<pass>@<camera-host>:554/h264Preview_01_sub` |
+| Hikvision | `rtsp://<user>:<pass>@<camera-host>:554/Streaming/Channels/101` | `rtsp://<user>:<pass>@<camera-host>:554/Streaming/Channels/102` |
+| Dahua | `rtsp://<user>:<pass>@<camera-host>:554/cam/realmonitor?channel=1&subtype=0` | `rtsp://<user>:<pass>@<camera-host>:554/cam/realmonitor?channel=1&subtype=1` |
+
+Select H.264 in the camera's own settings. H.265/HEVC is not currently
+supported by Vedetta. If possible, use fixed frame rates and keyframe intervals
+close to one or two seconds for predictable startup and seeking.
+
+## ONVIF and PTZ
+
+ONVIF discovery can supply profiles and stream URLs. Vedetta also exposes
+manual PTZ controls for compatible cameras. Support for discovery does not
+guarantee support for every optional ONVIF service, and Vedetta does not yet
+perform PTZ autotracking.
+
+Keep ONVIF on a trusted camera network. Some cameras use different credentials
+for ONVIF and their mobile app, and some require ONVIF to be explicitly enabled.
+
+## RTSP republishing
+
+Vedetta can republish configured cameras so that downstream tools pull one
+normalized source instead of opening more connections to each camera:
 
 ```yaml
 rtsp_server:
@@ -65,72 +98,35 @@ rtsp_server:
   port: 8554
 ```
 
-### Published paths
+For a camera named `front_door`, the paths are:
 
-For a camera named `front_door`:
+| Path | Source |
+| --- | --- |
+| `rtsp://<vedetta-host>:8554/front_door` | `record_url`, or `url` when no recording stream is set |
+| `rtsp://<vedetta-host>:8554/front_door_sub` | `url`, when it differs from `record_url` |
 
-| Path | Source | Notes |
-|------|--------|-------|
-| `rtsp://<vedetta-host>:8554/front_door` | `record_url` (high-res) | Always published |
-| `rtsp://<vedetta-host>:8554/front_door_sub` | `url` (low-res) | Published only when `url` differs from `record_url` |
+When `auth.users` is configured, RTSP clients use the same username and
+password with Basic authentication. With no configured users, the republish
+server is open to its reachable network. `/api/streaming/capabilities` lists
+the live URLs Vedetta exposes for each camera.
 
-The `_sub` suffix (not a `/sub` path segment) matches the go2rtc ecosystem
-convention, so a single config entry can address both substreams.
+## Troubleshooting checklist
 
-### Authentication
+1. Confirm the URL in VLC or another RTSP client from the Vedetta host.
+2. Confirm the stream is H.264, not H.265/HEVC.
+3. Check that the configured width, height, and frame rate describe the actual
+   stream.
+4. Try TCP first, then UDP if the camera has transport-specific problems.
+5. Confirm OpenH264 is available on the system/setup page when snapshots and
+   detection are unavailable but recording still connects.
+6. Check `/api/health/ready`, the system page, and authenticated `/metrics` for
+   reconnects, dropped frames, decode latency, and recording gaps.
+7. If a battery camera normally sleeps, set `on_demand: true` and test during a
+   real wake event.
 
-When `auth.users` is configured, RTSP clients must send Basic Auth with the
-same username/password (`rtsp://user:pass@<host>:8554/front_door`). With no
-auth users configured, the republish is open on the LAN.
+## Reporting compatibility
 
-### Example: go2rtc consumer
-
-```yaml
-streams:
-  front_door: rtsp://user:pass@vedetta.lan:8554/front_door
-  front_door_sub: rtsp://user:pass@vedetta.lan:8554/front_door_sub
-```
-
-### Querying available streams
-
-- `GET /api/streaming/capabilities` returns, per camera, every consumable
-  URL across all protocols (RTSP main/sub, WebRTC, HLS, MJPEG, MSE, snapshot)
-  plus whether auth is required. This is the agent-readable source of truth.
-- `vedetta streams` prints the same table from config without a running
-  server.
-
-## Testing Configuration
-
-To test with real cameras, create `config.yml`:
-
-```yaml
-cameras:
-  - name: tapo_camera
-    url: rtsp://user:pass@192.168.1.97:554/stream2
-    record_url: rtsp://user:pass@192.168.1.97:554/stream1
-    detect:
-      width: 640
-      height: 480
-      fps: 5
-
-  - name: reolink_camera
-    url: rtsp://admin:pass@192.168.1.190:554/h264Preview_01_sub
-    record_url: rtsp://admin:pass@192.168.1.190:554/h264Preview_01_main
-    detect:
-      width: 640
-      height: 480
-      fps: 5
-```
-
-## Camera Credentials
-
-Credentials are NOT stored in this file. Set them via environment variables:
-
-```bash
-export TAPO_USER=...
-export TAPO_PASS=...
-export REOLINK_USER=...
-export REOLINK_PASS=...
-```
-
-Or use the config file with actual credentials (do not commit).
+Use the **Camera compatibility report** issue form. Remove public IP addresses,
+local IP addresses, MAC addresses, usernames, passwords, serial numbers, and
+private snapshots before posting. Include model, firmware, stream codecs and
+resolutions, transport, ONVIF/PTZ results, and a redacted log excerpt.

@@ -12,6 +12,8 @@ security:
   - cookieAuth: []
 
 tags:
+  - name: activities
+    description: Incident-sized review items assembled from related camera events
   - name: auth
     description: Authentication, sessions, and API tokens
   - name: cameras
@@ -34,6 +36,110 @@ tags:
     description: Live camera streaming (WebRTC, MSE, MJPEG)
 
 paths:
+  /api/activities:
+    get:
+      operationId: listActivities
+      summary: List review activities
+      description: Returns camera-local incidents assembled from related raw events.
+      tags: [activities]
+      parameters:
+        - name: camera
+          in: query
+          schema:
+            type: string
+        - name: label
+          in: query
+          schema:
+            type: string
+        - name: zone
+          in: query
+          schema:
+            type: string
+        - name: object
+          in: query
+          schema:
+            type: string
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [alert, detection]
+        - name: kind
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          description: Search camera, label, zone, or recognized name
+          schema:
+            type: string
+        - name: after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: before
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Activity list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivityListEnvelope"
+
+  /api/activities/counts:
+    get:
+      operationId: getActivityCounts
+      summary: Get activity totals
+      tags: [activities]
+      responses:
+        "200":
+          description: Activity counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivityCounts"
+
+  /api/activities/{id}:
+    get:
+      operationId: getActivity
+      summary: Get an activity and all supporting evidence
+      tags: [activities]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Activity detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Activity"
+        "404":
+          description: Activity not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/auth/login:
     post:
       operationId: login
@@ -3208,6 +3314,86 @@ components:
           type: string
           enum: [alert, detection]
           description: Review/notification priority. "detection" is low priority (e.g. a stationary/parked vehicle); everything else is "alert".
+        kind:
+          type: string
+        answered_at:
+          type: string
+          format: date-time
+        answered_by:
+          type: string
+
+    Activity:
+      type: object
+      required: [id, camera, start_time, end_time, category, event_count, duration_seconds, labels, zones, recognized_names, has_doorbell, missed_doorbell, primary_event]
+      properties:
+        id:
+          type: string
+        camera:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        category:
+          type: string
+          enum: [alert, detection]
+        event_count:
+          type: integer
+        duration_seconds:
+          type: integer
+          format: int64
+        labels:
+          type: array
+          items:
+            type: string
+        zones:
+          type: array
+          items:
+            type: string
+        recognized_names:
+          type: array
+          items:
+            type: string
+        has_doorbell:
+          type: boolean
+        missed_doorbell:
+          type: boolean
+        primary_event:
+          $ref: "#/components/schemas/Event"
+        events:
+          type: array
+          description: Ordered supporting evidence; present on detail responses.
+          items:
+            $ref: "#/components/schemas/Event"
+
+    ActivityListEnvelope:
+      type: object
+      required: [items, total, limit, offset, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Activity"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        has_more:
+          type: boolean
+
+    ActivityCounts:
+      type: object
+      required: [total, today]
+      properties:
+        total:
+          type: integer
+        today:
+          type: integer
+          description: Number of activities overlapping today in the server's local time zone.
 
     EventListEnvelope:
       type: object

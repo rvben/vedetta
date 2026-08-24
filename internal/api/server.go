@@ -270,6 +270,8 @@ func (s *Server) registerRoutes() {
 	// HTML partial endpoints for htmx (not in OpenAPI spec)
 	s.mux.HandleFunc("GET /partials/camera-grid", s.handleCameraGridPartial)
 	s.mux.HandleFunc("GET /partials/dashboard-stats", s.handleDashboardStatsPartial)
+	s.mux.HandleFunc("GET /partials/activities-gallery", s.handleActivitiesGalleryPartial)
+	s.mux.HandleFunc("GET /partials/activity/{id}", s.handleActivityDetailPartial)
 	s.mux.HandleFunc("GET /partials/events-gallery", s.handleEventsGalleryPartial)
 	s.mux.HandleFunc("GET /partials/event/{id}", s.handleEventDetailPartial)
 	s.mux.HandleFunc("GET /partials/system-status", s.handleSystemStatusPartial)

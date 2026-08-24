@@ -1,31 +1,28 @@
 # Vedetta
 
-Lightweight open-source network video recorder (NVR) with real-time object detection. Written in Go, ships as a single binary.
+Vedetta is a local-first network video recorder with recording, review,
+multi-protocol live video, and real-time object detection. The application is
+written in Go and does not require Python at runtime.
 
-## Features
+## Package status
 
-- YOLOv8 object detection via ONNX Runtime
-- Continuous recording with configurable retention
-- Motion detection with contour analysis
-- WebRTC live streaming with MJPEG fallback
-- Home Assistant integration via MQTT
-- Web dashboard with timeline scrubber and event gallery
-- Hardware acceleration (VAAPI, VideoToolbox, CUDA)
-- Single binary, no Python dependency
-
-## Installation
-
-Vedetta is a Go application. This PyPI package is a placeholder for future `pip install vedetta` support.
-
-For now, install via Docker or build from source:
+This PyPI project is reserved for Vedetta. It does not currently install the
+application. Use a release binary, Docker image, or source build instead:
 
 ```sh
 # Docker
-docker run -d --name vedetta -p 5050:5050 ghcr.io/rvben/vedetta:latest
+docker run -d --name vedetta --network host \
+  -v vedetta-config:/config -v vedetta-data:/data \
+  ghcr.io/rvben/vedetta:latest
 
 # Build from source
 git clone https://github.com/rvben/vedetta.git
 cd vedetta && make build
 ```
 
-See the [GitHub repository](https://github.com/rvben/vedetta) for full documentation.
+Hardware-accelerated H.264 decoding is available through VideoToolbox on macOS
+and through opt-in VA-API/NVDEC builds on Linux. Object inference currently
+runs on CPU.
+
+See the [GitHub repository](https://github.com/rvben/vedetta) for releases,
+compatibility details, and documentation.

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Events - Vedetta</title>
+  <title>Activity - Vedetta</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/htmx.min.js"></script>
   <meta name="theme-color" content="#0a0e14">
@@ -12,7 +12,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="apple-mobile-web-app-title" content="Vedetta">
 </head>
-<body data-shortcuts="nav,general">
+<body class="activity-surface" data-shortcuts="nav,general">
   <a href="#main" class="skip-link">Skip to content</a>
 
   <nav class="topnav" role="navigation" aria-label="Main">
@@ -38,7 +38,7 @@
   <main class="page" id="main" tabindex="-1">
     <div class="page-header">
       <div>
-        <h1>Events</h1>
+        <h1>Activity</h1>
         <p class="events-summary" id="events-summary" aria-live="polite">Reviewing recorded activity…</p>
       </div>
     </div>
@@ -52,13 +52,13 @@
       <div class="events-toolbar-primary">
         <div class="search-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="search" id="event-search" class="search-input" placeholder="Search events…" aria-label="Search by camera, label, or recognized name" autocomplete="off">
+          <input type="search" id="event-search" class="search-input" placeholder="Search activity…" aria-label="Search by camera, label, zone, or recognized name" autocomplete="off">
         </div>
         <label class="events-range-control">
           <span class="sr-only">Time range</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
           <select id="event-range" data-action-change="reloadEvents()" aria-label="Event time range">
-            <option value="">All time</option>
+            <option value="">All activity</option>
             <option value="today">Today</option>
             <option value="24h">Last 24 hours</option>
             <option value="7d">Last 7 days</option>
@@ -70,7 +70,7 @@
         </button>
       </div>
 
-      <div class="events-quick-row">
+      <div class="events-quick-row" id="events-quick-row" hidden>
         <span class="events-active-filter-summary" id="events-active-filter-summary" hidden></span>
         <button class="btn btn-sm btn-ghost events-clear-filters" id="events-clear-filters" data-action-click="clearAllEventFilters()" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -115,15 +115,15 @@
       <span id="events-new-banner-label">New activity</span>
     </button>
 
-    <!-- Event Gallery -->
+    <!-- Incident-sized activity gallery; raw events remain available from activity detail. -->
     <div class="event-gallery"
          id="events-gallery"
-         hx-get="/partials/events-gallery"
+         data-partial="/partials/activities-gallery"
+         hx-get="/partials/activities-gallery"
          hx-trigger="load"
          hx-swap="innerHTML"
-         role="list"
-         aria-label="Detection events">
-      <div class="loading-state">Loading events...</div>
+         aria-label="Camera activity">
+      <div class="loading-state">Loading activity…</div>
     </div>
 
   </main>
@@ -226,6 +226,7 @@
       activeSummary.textContent = advancedLabels.join(' · ');
       activeSummary.hidden = advancedLabels.length === 0;
       clearBtn.hidden = !eventsHasActiveFilter();
+      document.getElementById('events-quick-row').hidden = activeSummary.hidden && clearBtn.hidden;
       updateEventsSummary(eventsVisibleTotal);
     };
 
@@ -244,11 +245,11 @@
 
       if (hasFilter) {
         var n = isFinite(eventsVisibleTotal) ? eventsVisibleTotal : 0;
-        summary.textContent = n.toLocaleString() + ' event' + (n === 1 ? '' : 's') + ' in this view';
+        summary.textContent = n.toLocaleString() + ' activit' + (n === 1 ? 'y' : 'ies') + ' in this view';
         if (eventsTotalAll > 0) summary.textContent += ' · ' + eventsTotalAll.toLocaleString() + ' recorded';
       } else {
         var total = eventsTotalAll || eventsVisibleTotal;
-        var parts = [total.toLocaleString() + ' event' + (total === 1 ? '' : 's') + ' recorded'];
+        var parts = [total.toLocaleString() + ' activit' + (total === 1 ? 'y' : 'ies') + ' recorded'];
         if (eventsTodayCount > 0) parts.push(eventsTodayCount.toLocaleString() + ' today');
         summary.textContent = parts.join(' · ');
       }
@@ -342,7 +343,7 @@
       gallery.innerHTML = ''
         + '<div class="empty-state events-empty-state">'
         + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>'
-        + '<h2>No matching events</h2>'
+        + '<h2>No matching activity</h2>'
         + '<p>Try a broader time range or remove one of the filters.</p>'
         + '<button class="btn btn-sm btn-primary" data-action-click="clearAllEventFilters()">Reset filters</button>'
         + '</div>';
@@ -350,7 +351,7 @@
 
     document.body.addEventListener('htmx:afterSwap', function(e) {
       var xhr = e.detail && e.detail.xhr;
-      if (!xhr || xhr.responseURL.indexOf('/partials/events-gallery') === -1) return;
+      if (!xhr || xhr.responseURL.indexOf('/partials/activities-gallery') === -1) return;
       var total = xhr ? parseInt(xhr.getResponseHeader('X-Total-Count') || '', 10) : NaN;
       if (!isFinite(total)) total = document.querySelectorAll('#events-gallery .event-card').length;
       updateEventsSummary(total);
@@ -363,7 +364,7 @@
       pendingEventCount++;
       var banner = document.getElementById('events-new-banner');
       var label = document.getElementById('events-new-banner-label');
-      label.textContent = pendingEventCount === 1 ? '1 new event' : pendingEventCount + ' new events';
+      label.textContent = 'New camera activity';
       banner.hidden = false;
     });
 
@@ -436,7 +437,7 @@
 
     Promise.allSettled([
       fetchEventPageJSON('/api/cameras'),
-      fetchEventPageJSON('/api/events/counts'),
+      fetchEventPageJSON('/api/activities/counts'),
       fetchEventPageJSON('/api/objects').then(function(data) { return data.items || data || []; })
     ]).then(function(results) {
       if (results[0].status === 'fulfilled') populateEventCameras(results[0].value);

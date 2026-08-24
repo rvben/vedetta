@@ -1,0 +1,73 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Vedetta
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not post credentials, API tokens, private stream URLs, public IPs,
+        database contents, identifiable footage, or security vulnerabilities.
+        Follow SECURITY.md for private vulnerability reports.
+  - type: input
+    id: version
+    attributes:
+      label: Vedetta version
+      description: Release tag or commit SHA. Do not write "latest".
+      placeholder: v0.7.15
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation
+      options:
+        - Linux binary
+        - macOS native build
+        - Default Docker image
+        - Hardware-accelerated Docker image
+        - Source build
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, camera make/model, codec, and accelerator if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Configure...
+        2. Open...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or diagnostics
+      description: Redact all secrets and private data. Use a fenced code block.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I searched for an existing issue.
+          required: true
+        - label: I removed credentials, tokens, private URLs, public IPs, and identifiable footage.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

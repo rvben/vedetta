@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Event - Vedetta</title>
+  <title>Activity - Vedetta</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/htmx.min.js"></script>
   <meta name="theme-color" content="#0a0e14">
@@ -12,7 +12,8 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="apple-mobile-web-app-title" content="Vedetta">
 </head>
-<body data-shortcuts="nav,events,general">
+<body class="activity-surface" data-shortcuts="nav,events,general">
+  <!-- THESIS: Review one camera incident as a coherent story, with primary evidence first and raw detections close at hand. OWN-WORLD: Inherits Vedetta’s Night Slate surfaces, Signal Cyan actions, precise type, and restrained motion. STORY: orient to who/what and where; inspect the strongest visual; verify time, duration, zones, and detections; drill into any raw event. FIRST VIEWPORT: activity identity, timestamp, primary evidence, and the beginning of the evidence rail. FORM: Evidence-led incident review within the established Vedetta visual world; concept seed d05ff99d corroborates the selected incident-first structure. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance -->
   <a href="#main" class="skip-link">Skip to content</a>
 
   <nav class="topnav" role="navigation" aria-label="Main">
@@ -25,7 +26,7 @@
       <a href="/events.html" class="topnav-link active" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>Events</a>
       <a href="/recordings.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>Recordings</a>
       <a href="/people.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Recognition</a>
-      <a href="/settings.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>System</a>
+      <a href="/settings.html" class="topnav-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06-.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09A1.65 1.65 0 0 0 19.4 15z"/></svg>System</a>
     </div>
     <button class="btn btn-icon btn-ghost" data-action-click="toggleTheme()" aria-label="Toggle theme" title="Toggle dark/light theme" id="theme-toggle">
       <svg id="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -35,16 +36,10 @@
     <a href="/settings.html" class="conn-status" title="System health"><span class="conn-dot ok" id="conn-dot"></span><span id="conn-label">Connected</span></a>
   </nav>
 
-  <main class="page" id="main" tabindex="-1">
-    <div class="breadcrumb">
-      <a href="/events.html">Events</a><span class="sep">/</span><span id="event-breadcrumb">Detail</span>
-    </div>
-
-    <div id="event-detail"
-         hx-swap="innerHTML"
-         data-error-title="Could not load this event"
-         data-error-message="The event detail is temporarily unavailable. Your review filters are preserved.">
-      <div class="loading-state">Loading event...</div>
+  <main class="page activity-detail-page" id="main" tabindex="-1">
+    <div class="breadcrumb"><a href="/events.html">Activity</a><span class="sep">/</span><span id="activity-breadcrumb">Review</span></div>
+    <div id="activity-detail" hx-swap="innerHTML" data-error-title="Could not load this activity" data-error-message="The activity is temporarily unavailable. Return to Activity and try again.">
+      <div class="loading-state">Loading activity…</div>
     </div>
   </main>
 
@@ -54,13 +49,11 @@
       <a href="/events.html" class="bottom-tab active" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>Events</a>
       <a href="/recordings.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>Recordings</a>
       <a href="/people.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Recognition</a>
-      <a href="/settings.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>System</a>
+      <a href="/settings.html" class="bottom-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06-.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09A1.65 1.65 0 0 0 19.4 15z"/></svg>System</a>
     </div>
   </nav>
 
-  <!-- Keyboard Shortcut Modal -->
   <div class="toast-container" id="toasts"></div>
-  <script src="/hls.min.js"></script>
   <script src="/app.js"></script>
   <script>
     (function() {
@@ -68,38 +61,28 @@
       const id = pageParams.get('id');
       if (!id) { location.href = '/events.html'; return; }
 
-      const activityID = pageParams.get('activity');
       pageParams.delete('id');
-      const reviewQuery = pageParams.toString();
-      const eventsParams = new URLSearchParams(pageParams);
-      eventsParams.delete('activity');
-      eventsParams.delete('after');
-      eventsParams.delete('before');
-      const eventsQuery = eventsParams.toString();
-      const eventsURL = activityID
-        ? '/activity.html?id=' + encodeURIComponent(activityID) + (eventsQuery ? '&' + eventsQuery : '')
-        : '/events.html' + (eventsQuery ? '?' + eventsQuery : '');
+      const backQuery = pageParams.toString();
+      const backURL = '/events.html' + (backQuery ? '?' + backQuery : '');
       const breadcrumbLink = document.querySelector('.breadcrumb a');
-      if (breadcrumbLink) {
-        breadcrumbLink.href = eventsURL;
-        if (activityID) breadcrumbLink.textContent = 'Activity';
-      }
+      if (breadcrumbLink) breadcrumbLink.href = backURL;
 
-      const el = document.getElementById('event-detail');
-      el.setAttribute('hx-get', '/partials/event/' + encodeURIComponent(id) + (reviewQuery ? '?' + reviewQuery : ''));
-      el.setAttribute('hx-trigger', 'load');
-      htmx.process(el);
+      const detail = document.getElementById('activity-detail');
+      detail.setAttribute('hx-get', '/partials/activity/' + encodeURIComponent(id) + (backQuery ? '?' + backQuery : ''));
+      detail.setAttribute('hx-trigger', 'load');
+      htmx.process(detail);
 
-      el.addEventListener('htmx:afterSwap', function() {
-        const root = el.querySelector('.event-detail-root');
+      detail.addEventListener('htmx:afterSwap', function() {
+        const root = detail.querySelector('.activity-detail-root');
         if (!root) return;
-        const camera = root.dataset.eventCamera || '';
-        const label = root.dataset.eventLabel || '';
-        const time = root.dataset.eventTime || '';
-        const displayLabel = label.replace(/[-_]+/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
-        const crumb = document.getElementById('event-breadcrumb');
-        if (crumb && camera) crumb.textContent = camera + ' · ' + time;
-        if (camera && label) document.title = displayLabel + ' · ' + camera + ' - Vedetta';
+        const camera = root.dataset.activityCamera || '';
+        const at = root.dataset.activityTime ? new Date(root.dataset.activityTime) : null;
+        const crumb = document.getElementById('activity-breadcrumb');
+        if (crumb && camera) crumb.textContent = camera.replace(/[-_]+/g, ' ');
+        const backButton = detail.querySelector('.activity-page-header .btn');
+        if (backButton) backButton.href = backURL;
+        const heading = detail.querySelector('h1');
+        if (heading) document.title = heading.textContent + ' · ' + camera + ' - Vedetta';
       });
     })();
   </script>

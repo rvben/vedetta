@@ -11,7 +11,7 @@ import (
 // currentSchemaVersion is the schema version this build expects. It is stored
 // in SQLite's PRAGMA user_version. A database reporting a lower version is
 // upgraded by migrate; databases created before versioning report 0.
-const currentSchemaVersion = 6
+const currentSchemaVersion = 7
 
 // baselineSchema creates every table and index for a fresh database. It is
 // idempotent (CREATE ... IF NOT EXISTS) and a cheap no-op for existing DBs.
@@ -49,6 +49,26 @@ const baselineSchema = `
 	CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_events_label ON events(label);
 	CREATE INDEX IF NOT EXISTS idx_events_camera_timestamp ON events(camera, timestamp);
+
+	CREATE TABLE IF NOT EXISTS activities (
+		id TEXT PRIMARY KEY,
+		camera TEXT NOT NULL,
+		start_time DATETIME NOT NULL,
+		end_time DATETIME NOT NULL,
+		category TEXT NOT NULL DEFAULT 'alert',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_activities_camera_time ON activities(camera, start_time DESC);
+	CREATE INDEX IF NOT EXISTS idx_activities_time ON activities(start_time DESC);
+
+	CREATE TABLE IF NOT EXISTS activity_events (
+		activity_id TEXT NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+		event_id TEXT NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,
+		added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (activity_id, event_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_activity_events_activity ON activity_events(activity_id);
 
 	CREATE TABLE IF NOT EXISTS segments (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -363,6 +383,15 @@ func migrate(db *sql.DB) error {
 		}
 		if restored, rowsErr := result.RowsAffected(); rowsErr == nil && restored > 0 {
 			slog.Info("restored historical object sighting event links", "count", restored)
+		}
+	}
+
+	// Version 7: activities group nearby evidence from one camera into the
+	// incident-sized unit shown in review. Backfill walks events in chronological
+	// order through the same deterministic aggregator used for live writes.
+	if version < 7 {
+		if err := backfillActivities(db); err != nil {
+			return fmt.Errorf("backfill activities: %w", err)
 		}
 	}
 

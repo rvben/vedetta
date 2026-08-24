@@ -1,0 +1,50 @@
+name: Camera compatibility report
+description: Report a working or failing camera configuration
+title: "compat(camera): "
+body:
+  - type: input
+    id: camera
+    attributes:
+      label: Camera make and model
+      placeholder: Reolink RLC-810A
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version
+  - type: input
+    id: vedetta
+    attributes:
+      label: Vedetta version
+      placeholder: v0.7.15
+    validations:
+      required: true
+  - type: checkboxes
+    id: capabilities
+    attributes:
+      label: Verified capabilities
+      options:
+        - label: ONVIF discovery
+        - label: RTSP detection stream
+        - label: RTSP recording stream
+        - label: Audio recording/playback
+        - label: WebRTC live view
+        - label: MSE live view
+        - label: HLS live view
+        - label: ONVIF PTZ
+        - label: ONVIF doorbell events
+  - type: textarea
+    id: details
+    attributes:
+      label: Results and required settings
+      description: Include transport and codec details. Replace credentials and IPs with placeholders.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I removed credentials, private URLs, public IPs, MAC addresses, serial numbers, and identifiable footage.
+          required: true

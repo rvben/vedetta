@@ -5901,7 +5901,9 @@ function eventGalleryRequestURL(params) {
   request.set('limit', '50');
   var after = eventRangeAfter(request.get('range'));
   if (after) request.set('after', after);
-  return '/partials/events-gallery?' + request.toString();
+  var gallery = el('events-gallery');
+  var partial = gallery && gallery.dataset.partial ? gallery.dataset.partial : '/partials/events-gallery';
+  return partial + '?' + request.toString();
 }
 
 function reloadEvents() {
@@ -6470,7 +6472,14 @@ function addObjectReference(objectId, objectName, eventId) {
       localStorage.setItem('vedetta-push-prompt-dismissed', '1');
       bar.remove();
     });
-    document.body.appendChild(bar);
+    var activitySurface = document.body.classList.contains('activity-surface');
+    if (activitySurface) bar.classList.add('push-prompt-inline');
+    var activityAnchor = activitySurface && document.querySelector('.events-toolbar, #activity-detail');
+    if (activityAnchor) {
+      activityAnchor.insertAdjacentElement('afterend', bar);
+    } else {
+      document.body.appendChild(bar);
+    }
   }
 
   if (document.readyState === 'loading') {

@@ -63,6 +63,9 @@ func TestOpenAPISpecIsValid(t *testing.T) {
 		"/api/cameras/{name}/zones/{zone}/presence",
 
 		// Events
+		"/api/activities",
+		"/api/activities/counts",
+		"/api/activities/{id}",
 		"/api/events",
 		"/api/events/{id}",
 		"/api/events/{id}/snapshot",

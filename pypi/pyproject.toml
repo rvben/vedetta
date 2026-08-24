@@ -7,7 +7,7 @@ name = "vedetta"
 version = "0.7.15"
 description = "Vedetta NVR — lightweight open-source network video recorder with object detection"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 authors = [
     { name = "Ruben Jongejan", email = "ruben.jongejan@gmail.com" }
 ]
@@ -16,7 +16,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Topic :: Multimedia :: Video",
     "Topic :: Home Automation",

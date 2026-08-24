@@ -1,34 +1,48 @@
 # Vedetta
 
-Vedetta is an open-source Network Video Recorder (NVR) written in Go. Inspired by [Frigate](https://frigate.video), it ships as a single binary with no Python dependency.
+Vedetta is a local-first network video recorder for people who want a capable
+Frigate-class system without operating a collection of services. It combines
+camera ingest, recording, review, live video, object detection, and home
+automation in one Go application.
 
-## Features
+Vedetta is under active development. Read [Compatibility](docs/COMPATIBILITY.md)
+before choosing cameras or hardware for a production installation.
 
-- **Object detection** -- YOLOv8 via ONNX Runtime (pure-Go or C backend)
-- **Continuous recording** -- segment-based with configurable retention
-- **Event clips** -- pre/post capture around detected objects
-- **Motion detection** -- contour-based; YOLO runs only when motion is detected
-- **Object tracking** -- Hungarian algorithm across frames
-- **Live streaming** -- WebRTC with MJPEG fallback
-- **Web dashboard** -- dark theme, htmx + vanilla JS, no build step
-- **Session auth + API tokens** -- browser sessions with CSRF protection and scoped bearer tokens
-- **Home Assistant** -- MQTT integration with auto-discovery
-- **ONVIF discovery** -- find cameras on the network (`vedetta discover`)
-- **Per-camera zones** -- filter which objects matter in each zone
-- **Storage management** -- max storage cap, automatic cleanup
-- **SQLite** -- WAL-mode database, embedded in the binary
-- **Single binary** -- static files embedded with `go:embed`
+## Why Vedetta
 
-## Quick Start
+- **Recording and review:** incident-sized Activity review with inspectable raw
+  evidence, continuous fragmented-MP4 recording, event clips with pre/post
+  capture, snapshots, calendar and timeline navigation, ranged export,
+  retention policies, disk-pressure protection, and optional tiered
+  recompression.
+- **Live video:** WebRTC, Media Source Extensions (MSE), HLS, MJPEG, snapshots,
+  and an optional RTSP republish server for downstream consumers.
+- **Camera support:** separate low-resolution detection and high-resolution
+  recording streams, ONVIF discovery and PTZ, doorbell events, and on-demand
+  handling for sleeping battery cameras.
+- **Local intelligence:** motion-gated YOLOv8 detection, Hungarian object
+  tracking, zones and presence, face recognition, and object re-identification.
+- **Operations:** guided setup, an installable web app, Prometheus metrics,
+  optional OpenTelemetry traces and logs, health probes, and recording-gap and
+  storage safeguards.
+- **Security:** browser sessions with CSRF protection, scoped API tokens,
+  trusted-proxy authentication, configurable CORS, and optional TLS.
 
-### Binary
+## Current boundaries
 
-Download the latest release from [Releases](https://github.com/rvben/vedetta/releases), or build from source:
+Vedetta is deliberately honest about what it does not support yet:
 
-```sh
-make build
-./build/vedetta
-```
+- H.264 is the supported video codec; HEVC/H.265 ingest is not implemented.
+- The standard detector backends execute inference on CPU. `codecs.hwaccel`
+  accelerates H.264 **decoding**, not object detection.
+- There is no birdseye compositor, PTZ autotracking, license-plate recognition,
+  audio-event detection, semantic search, or camera-scoped role model yet.
+- Camera behavior varies by firmware. ONVIF or RTSP support on a product page is
+  not a substitute for a tested compatibility report.
+
+The [roadmap](docs/ROADMAP.md) explains which gaps matter next and why.
+
+## Quick start
 
 ### Docker
 
@@ -41,228 +55,166 @@ docker run -d \
   ghcr.io/rvben/vedetta:latest
 ```
 
-A `docker-compose.yml` is included in the repository.
+Host networking gives Vedetta direct access to RTSP cameras and ONVIF multicast
+discovery. A `docker-compose.yml` is also included. On first run, open
+`http://<host>:5050` and complete the setup wizard.
 
-Host networking is required for RTSP camera access and ONVIF multicast discovery. On first run without a config file, Vedetta starts a setup wizard at `http://<host>:5050`.
+### Native build
 
-## Configuration
+```sh
+make build
+./build/vedetta -config config.yml
+```
 
-Vedetta is configured with a single YAML file. See [`config.example.yml`](config.example.yml) for a complete example.
+Go 1.26 or newer is required to build the current tree. Release artifacts are
+available on the [GitHub Releases page](https://github.com/rvben/vedetta/releases).
 
-### Cameras
+On first use, Vedetta can download pinned detection models and, when enabled,
+the OpenH264 runtime. Downloaded artifacts are size-limited and checksum
+verified. Offline installations can provide the model and codec library ahead
+of time; see [Camera setup](docs/CAMERAS.md) and
+[Hardware decoding](docs/HARDWARE_DECODE.md).
+
+## Minimal configuration
+
+Vedetta reads one YAML file. The example below uses the documentation-only
+`192.0.2.0/24` address range:
 
 ```yaml
 cameras:
   - name: front_door
-    url: rtsp://user:pass@192.168.1.100:554/stream1
-    record_url: rtsp://user:pass@192.168.1.100:554/stream0  # optional high-res stream
+    url: rtsp://viewer:change-me@192.0.2.10:554/stream2
+    record_url: rtsp://viewer:change-me@192.0.2.10:554/stream1
     detect:
       enabled: true
       width: 640
-      height: 480
+      height: 360
       fps: 5
     record:
       width: 1920
       height: 1080
       fps: 15
     zones:
-      - name: driveway
+      - name: approach
         points:
-          - [0.1, 0.5]
-          - [0.9, 0.5]
-          - [0.9, 1.0]
-          - [0.1, 1.0]
-        labels: [person, car]
+          - [0.10, 0.50]
+          - [0.90, 0.50]
+          - [0.90, 1.00]
+          - [0.10, 1.00]
+        labels: [person]
+
+recording:
+  path: ./recordings
+  continuous: true
+  retain_days: 7
+  event_retain_days: 30
+  min_disk_free: 2GB
+
+storage:
+  db_path: ./vedetta.db
+
+api:
+  host: 0.0.0.0
+  port: 5050
+  exposure: lan
 ```
 
-Each camera has two optional streams: `url` for the detection stream (lower resolution, less CPU) and `record_url` for recording (full resolution). If `record_url` is omitted, `url` is used for both.
+See [`config.example.yml`](config.example.yml) for every setting. Use
+`vedetta discover -probe-rtsp` to discover ONVIF cameras and probe likely RTSP
+streams, then `vedetta streams` to inspect configured stream roles.
 
-Zones are polygons defined as normalized points (0.0--1.0). Event matching uses the detection anchor point `(center_x, bottom_y)`.
-
-### Detection
+### Detection and decode
 
 ```yaml
 detect:
-  model_path: ""            # path to YOLOv8 ONNX model
-  score_threshold: 0.5      # minimum confidence score
+  model_path: ""        # empty uses the managed YOLOv8n model
+  score_threshold: 0.5
   motion:
     pixel_threshold: 25
     min_area: 200
     background_alpha: 0.05
     min_region_score: 0.02
+
+codecs:
+  hwaccel: auto          # auto | software | videotoolbox | vaapi | nvdec
+  openh264:
+    auto_install: true
 ```
 
-### Recording
+The default build uses the pure-Go ONNX Runtime binding. `make build-capi`
+builds the C API variant. Both currently run inference on CPU. VideoToolbox is
+available on macOS; VA-API and NVDEC require the opt-in Linux hardware build.
 
-```yaml
-recording:
-  path: ./recordings
-  continuous: true           # record continuously, not just events
-  segment_length: 10m        # length of each continuous segment
-  pre_capture: 5s            # seconds before event to include in clip
-  post_capture: 10s          # seconds after event to include in clip
-  retain_days: 7             # delete continuous segments after N days
-  event_retain_days: 30      # keep event clips longer
-```
-
-### Storage
-
-```yaml
-storage:
-  db_path: ./vedetta.db
-```
-
-### MQTT
+### MQTT and Home Assistant
 
 ```yaml
 mqtt:
-  enabled: false
-  host: 127.0.0.1
+  enabled: true
+  host: 192.0.2.20
   port: 1883
   topic: vedetta
 ```
 
-### API
+Vedetta publishes detections and Home Assistant MQTT discovery records. Keep
+the broker on a trusted network and configure its authentication separately.
 
-```yaml
-api:
-  host: 0.0.0.0
-  port: 5050
-  exposure: lan
-  # trusted_proxies:
-  #   - 127.0.0.1/32
-  # tls_cert: /etc/vedetta/tls.crt
-  # tls_key: /etc/vedetta/tls.key
-```
-
-### Auth
+### Authentication
 
 ```yaml
 auth:
   users:
     - username: admin
-      password_hash: "$2a$10$7EqJtq98hPqEX7fNZaFWoOHi8V6I5WJFlQ7Y7S6d6n9zQ0jD4S3yu"
+      password_hash: "<bcrypt hash>"
 ```
 
-Generate hashes with `vedetta auth hash-password <password>`.
-
-## Camera Setup
-
-Common RTSP URL formats for popular camera brands:
-
-| Brand | Main Stream | Sub Stream |
-|-------|------------|------------|
-| **Tapo** | `rtsp://user:pass@IP:554/stream1` | `rtsp://user:pass@IP:554/stream2` |
-| **Reolink** | `rtsp://user:pass@IP:554/h264Preview_01_main` | `rtsp://user:pass@IP:554/h264Preview_01_sub` |
-| **Hikvision** | `rtsp://user:pass@IP:554/Streaming/Channels/101` | `rtsp://user:pass@IP:554/Streaming/Channels/102` |
-| **Dahua** | `rtsp://user:pass@IP:554/cam/realmonitor?channel=1&subtype=0` | `rtsp://user:pass@IP:554/cam/realmonitor?channel=1&subtype=1` |
-
-Use `vedetta discover` to scan the local network for ONVIF-compatible cameras and print their RTSP URLs.
-
-## MQTT / Home Assistant
-
-When MQTT is enabled, Vedetta publishes Home Assistant auto-discovery messages so cameras and sensors appear automatically.
-
-The default topic prefix is `vedetta`. Messages are published under:
-
-- `vedetta/<camera>/detection` -- object detection events
-- `homeassistant/binary_sensor/vedetta_<camera>/config` -- auto-discovery
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/health` | Health check |
-| `GET` | `/api/health/live` | Liveness probe |
-| `GET` | `/api/health/ready` | Readiness probe |
-| `POST` | `/api/auth/login` | Create browser session |
-| `POST` | `/api/auth/logout` | End browser session |
-| `GET` | `/api/auth/me` | Current principal |
-| `POST` | `/api/tokens` | Create scoped API token |
-| `DELETE` | `/api/tokens/{id}` | Revoke API token |
-| `GET` | `/metrics` | Prometheus metrics |
-| `GET` | `/api/system` | System status (CPU, memory, storage) |
-| `GET` | `/api/cameras` | List all cameras and their status |
-| `GET` | `/api/cameras/{name}/snapshot` | Current JPEG snapshot from camera |
-| `GET` | `/api/cameras/{name}/mjpeg` | MJPEG live stream |
-| `POST` | `/api/cameras/{name}/webrtc/offer` | WebRTC signaling (SDP offer/answer) |
-| `GET` | `/api/events` | List recorded events |
-| `GET` | `/api/events/{id}` | Get single event details |
-| `GET` | `/api/events/{id}/snapshot` | Event thumbnail |
-| `GET` | `/api/events/{id}/clip` | Download event video clip |
-
-The web dashboard is served at `/` and uses htmx partials for dynamic updates.
-
-## Monitoring
-
-`/metrics` serves Prometheus metrics: HTTP request rate and latency by status
-class, per-camera detection and decode latency, frames processed/dropped,
-camera reconnect counts, and storage/disk usage. Like the rest of the API the
-endpoint requires authentication, so its labels (camera names, online state,
-activity counts) are never readable anonymously.
-
-Scrape it with a least-privilege bearer token. Create one scoped to
-`metrics:read` via `POST /api/tokens`. A token principal can only grant scopes
-it already holds, so mint the scrape token from an admin browser session or from
-a token that carries the `*` scope. The `metrics:read` scope can read `/metrics`
-and nothing else, so a leaked scrape credential cannot pull snapshots, events,
-or the people/faces database:
+Generate a password hash with:
 
 ```sh
-curl -X POST https://vedetta-host/api/tokens \
-  -H "Authorization: Bearer <token with the * scope>" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "prometheus", "scopes": ["metrics:read"]}'
+vedetta auth hash-password 'a-long-unique-password'
 ```
 
-The response returns the raw token once; use it as the scrape credential:
+Automation clients should use scoped API tokens. A `metrics:read` token can
+scrape `/metrics` without access to recordings, snapshots, or identities.
 
-```yaml
-# prometheus.yml
-scrape_configs:
-  - job_name: vedetta
-    scheme: https
-    authorization:
-      type: Bearer
-      credentials: "<metrics:read token>"
-    static_configs:
-      - targets: ["vedetta-host:5050"]
-```
+## Operations
+
+- `/api/health/live` reports process liveness.
+- `/api/health/ready` reports whether the service is ready for traffic.
+- `/metrics` exposes authenticated Prometheus metrics.
+- Optional OTLP export covers HTTP/event traces and structured logs.
+- The OpenAPI contract lives at [`internal/api/openapi.yaml`](internal/api/openapi.yaml).
+
+Treat camera URLs, snapshots, recordings, face data, and telemetry labels as
+sensitive. The [security policy](SECURITY.md) describes private reporting and
+deployment expectations.
 
 ## Development
 
-Prerequisites: Go 1.22+. Vedetta no longer downloads the ONNX model or OpenH264 at runtime; install them ahead of time or bundle them with your deployment.
-
 ```sh
-make build          # build the binary
-make build-capi     # build with C ONNX Runtime backend
-make test           # run tests
-make bench          # run detection benchmarks
-make lint           # run golangci-lint
-make fmt            # format code
-make check          # lint + test
-make clean          # remove build artifacts
+make build          # build the default binary
+make build-capi     # build with the C ONNX Runtime binding
+make test           # JavaScript unit tests and Go tests
+make test-browser   # Playwright browser tests
+make bench          # detector benchmarks
+make lint           # golangci-lint
+make check          # lint, JavaScript tests, and race-enabled Go tests
 ```
 
-## Architecture
+Start with [Contributing](CONTRIBUTING.md), then read the
+[architecture](docs/ARCHITECTURE.md) and [architecture decisions](docs/adr/README.md).
+Camera reports have their own structured issue template.
 
-```
-RTSP Camera
-    |
-    v
- Native Go RTP/H264 decode ──> Motion Detector
-                                   |
-                              (motion detected)
-                                   |
-                                   v
-                             YOLOv8 Detector ──> Object Tracker
-                                   |                  |
-                                   v                  v
-                             Event Manager       MQTT Publisher
-                                   |
-                             +-----+-----+
-                             |           |
-                       Event Clips   Continuous Segments
-```
+## Project documents
 
-Frames flow from camera through motion detection. YOLO only runs when motion is detected, keeping CPU usage low. Detected objects are tracked across frames with the Hungarian algorithm to maintain identity. Events trigger clip extraction from the continuous recording buffer.
+- [Compatibility](docs/COMPATIBILITY.md)
+- [Camera setup](docs/CAMERAS.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Benchmarking](docs/BENCHMARKING.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Support](SUPPORT.md)
+- [Security](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+
+## License
+
+Vedetta is licensed under the [Apache License 2.0](LICENSE).

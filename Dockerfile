@@ -12,7 +12,7 @@ FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.source=https://github.com/rvben/vedetta
 LABEL org.opencontainers.image.description="Vedetta NVR - lightweight network video recorder"
-LABEL org.opencontainers.image.licenses=MIT
+LABEL org.opencontainers.image.licenses=Apache-2.0
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \

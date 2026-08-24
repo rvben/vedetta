@@ -11,7 +11,7 @@ import (
 // currentSchemaVersion is the schema version this build expects. It is stored
 // in SQLite's PRAGMA user_version. A database reporting a lower version is
 // upgraded by migrate; databases created before versioning report 0.
-const currentSchemaVersion = 8
+const currentSchemaVersion = 9
 
 // baselineSchema creates every table and index for a fresh database. It is
 // idempotent (CREATE ... IF NOT EXISTS) and a cheap no-op for existing DBs.
@@ -72,6 +72,22 @@ const baselineSchema = `
 		PRIMARY KEY (activity_id, event_id)
 	);
 	CREATE INDEX IF NOT EXISTS idx_activity_events_activity ON activity_events(activity_id);
+
+	CREATE TABLE IF NOT EXISTS activity_event_corrections (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		activity_id TEXT NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+		event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+		action TEXT NOT NULL CHECK(action = 'excluded'),
+		reason TEXT NOT NULL DEFAULT '',
+		actor TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		restored_at DATETIME,
+		restored_by TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_activity_event_corrections_activity
+		ON activity_event_corrections(activity_id, created_at);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_event_corrections_active_event
+		ON activity_event_corrections(event_id) WHERE restored_at IS NULL;
 
 	CREATE TABLE IF NOT EXISTS segments (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -421,6 +437,31 @@ func migrate(db *sql.DB) error {
 		}
 		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_activities_state_end ON activities(state, end_time)`); err != nil {
 			return fmt.Errorf("create idx_activities_state_end: %w", err)
+		}
+	}
+
+	// Version 9: operator evidence corrections are durable, attributable, and
+	// reversible. The baseline schema creates the new table for both fresh and
+	// existing databases; this step documents the version boundary explicitly.
+	if version < 9 {
+		if _, err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS activity_event_corrections (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				activity_id TEXT NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+				event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+				action TEXT NOT NULL CHECK(action = 'excluded'),
+				reason TEXT NOT NULL DEFAULT '',
+				actor TEXT NOT NULL,
+				created_at DATETIME NOT NULL,
+				restored_at DATETIME,
+				restored_by TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_activity_event_corrections_activity
+				ON activity_event_corrections(activity_id, created_at);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_event_corrections_active_event
+				ON activity_event_corrections(event_id) WHERE restored_at IS NULL;
+		`); err != nil {
+			return fmt.Errorf("create activity evidence corrections: %w", err)
 		}
 	}
 

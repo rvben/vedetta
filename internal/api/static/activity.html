@@ -58,7 +58,7 @@
   <script>
     (function() {
       const pageParams = new URLSearchParams(location.search);
-      const id = pageParams.get('id');
+      let id = pageParams.get('id');
       if (!id) { location.href = '/events.html'; return; }
 
       pageParams.delete('id');
@@ -68,9 +68,27 @@
       if (breadcrumbLink) breadcrumbLink.href = backURL;
 
       const detail = document.getElementById('activity-detail');
-      detail.setAttribute('hx-get', '/partials/activity/' + encodeURIComponent(id) + (backQuery ? '?' + backQuery : ''));
+      function detailURL() {
+        return '/partials/activity/' + encodeURIComponent(id) + (backQuery ? '?' + backQuery : '');
+      }
+      detail.setAttribute('hx-get', detailURL());
       detail.setAttribute('hx-trigger', 'load');
       htmx.process(detail);
+
+      let refreshTimer = null;
+      function refreshActivity(nextID) {
+        if (nextID && nextID !== id) {
+          id = nextID;
+          const locationParams = new URLSearchParams(location.search);
+          locationParams.set('id', id);
+          history.replaceState(null, '', location.pathname + '?' + locationParams.toString());
+        }
+        detail.setAttribute('hx-get', detailURL());
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(function() {
+          htmx.ajax('GET', detailURL(), { target: '#activity-detail', swap: 'innerHTML' });
+        }, 80);
+      }
 
       detail.addEventListener('htmx:afterSwap', function() {
         const root = detail.querySelector('.activity-detail-root');
@@ -85,9 +103,39 @@
         if (heading) document.title = heading.textContent + ' · ' + camera + ' - Vedetta';
       });
 
+      detail.addEventListener('click', function(event) {
+        const button = event.target.closest('[data-activity-evidence-action]');
+        if (!button || button.disabled || button.classList.contains('btn-loading')) return;
+        const action = button.dataset.activityEvidenceAction;
+        const eventID = button.dataset.eventId;
+        if (!eventID || (action !== 'exclude' && action !== 'restore')) return;
+
+        button.classList.add('btn-loading');
+        button.setAttribute('aria-busy', 'true');
+        const endpoint = '/api/activities/' + encodeURIComponent(id) + '/evidence/' + encodeURIComponent(eventID) + '/' + action;
+        const options = { method: 'POST' };
+        if (action === 'exclude') {
+          options.headers = { 'Content-Type': 'application/json' };
+          options.body = JSON.stringify({ reason: 'Does not belong to this activity' });
+        }
+        fetch(endpoint, options).then(function(response) {
+          return response.json().catch(function() { return {}; }).then(function(body) {
+            if (!response.ok) throw new Error(body.error || 'The activity could not be updated');
+            return body;
+          });
+        }).then(function(activity) {
+          toast(action === 'exclude' ? 'Evidence excluded — you can restore it below' : 'Evidence restored to this activity');
+          refreshActivity(activity.id);
+        }).catch(function(error) {
+          button.classList.remove('btn-loading');
+          button.removeAttribute('aria-busy');
+          toast(error.message + '. Try again.', 'error');
+        });
+      });
+
       document.addEventListener('vedetta:activity', function(event) {
         if (!event.detail || event.detail.id !== id) return;
-        htmx.ajax('GET', detail.getAttribute('hx-get'), { target: '#activity-detail', swap: 'innerHTML' });
+        refreshActivity();
       });
     })();
   </script>

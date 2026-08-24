@@ -81,9 +81,10 @@ func TestGetActivityIncludesEvidenceAndNotFound(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		HasDoorbell    bool           `json:"has_doorbell"`
-		MissedDoorbell bool           `json:"missed_doorbell"`
-		Events         []camera.Event `json:"events"`
+		HasDoorbell    bool                     `json:"has_doorbell"`
+		MissedDoorbell bool                     `json:"missed_doorbell"`
+		Grouping       storage.ActivityGrouping `json:"grouping"`
+		Events         []camera.Event           `json:"events"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -91,12 +92,70 @@ func TestGetActivityIncludesEvidenceAndNotFound(t *testing.T) {
 	if !body.HasDoorbell || !body.MissedDoorbell || len(body.Events) != 1 {
 		t.Fatalf("unexpected activity detail: %+v", body)
 	}
+	if body.Grouping.Strategy != "camera_local_quiet_period" || body.Grouping.QuietPeriodSeconds != 90 {
+		t.Fatalf("unexpected grouping explanation: %+v", body.Grouping)
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/activities/missing", nil)
 	rec = httptest.NewRecorder()
 	srv.mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("missing status = %d", rec.Code)
+	}
+}
+
+func TestActivityEvidenceCorrectionAPIExcludesAndRestores(t *testing.T) {
+	srv, db := newTestServer(t)
+	start := time.Now().Add(-time.Hour).UTC()
+	seedEvent(t, db, "person", "front_door", "person", 0.92, start)
+	seedEvent(t, db, "car", "front_door", "car", 0.84, start.Add(30*time.Second))
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/activities/act_person/evidence/car/exclude",
+		strings.NewReader(`{"reason":"Wrong incident"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("exclude status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var corrected storage.Activity
+	if err := json.Unmarshal(rec.Body.Bytes(), &corrected); err != nil {
+		t.Fatal(err)
+	}
+	if corrected.EventCount != 1 || len(corrected.ExcludedEvidence) != 1 {
+		t.Fatalf("corrected activity = %+v", corrected)
+	}
+	if correction := corrected.ExcludedEvidence[0]; correction.Event.ID != "car" || correction.Reason != "Wrong incident" || correction.Actor != "local" {
+		t.Fatalf("correction = %+v", correction)
+	}
+
+	req = httptest.NewRequest(http.MethodPost,
+		"/api/activities/act_person/evidence/car/restore", nil)
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restore status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var restored storage.Activity
+	if err := json.Unmarshal(rec.Body.Bytes(), &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.EventCount != 2 || len(restored.ExcludedEvidence) != 0 {
+		t.Fatalf("restored activity = %+v", restored)
+	}
+}
+
+func TestActivityEvidenceCorrectionAPIProtectsSoleEvidence(t *testing.T) {
+	srv, db := newTestServer(t)
+	seedEvent(t, db, "only", "front_door", "person", 0.92, time.Now().Add(-time.Hour).UTC())
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/activities/act_only/evidence/only/exclude", nil)
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -159,11 +218,26 @@ func TestActivityPartialsExposeIncidentAndEvidence(t *testing.T) {
 		"activity-review-layout",
 		"Activity summary",
 		"Evidence",
+		"Why these belong together",
+		"no more than 90 seconds apart",
+		"Exclude Person evidence from this activity",
 		"/event.html?id=person&amp;activity=act_person&amp;camera=front_door&amp;q=Alex",
 		"/event.html?id=car&amp;activity=act_person&amp;camera=front_door&amp;q=Alex",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("activity detail missing %q: %s", want, rec.Body.String())
+		}
+	}
+
+	if _, err := db.ExcludeActivityEvidence("act_person", "car", "Wrong incident", "alex"); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/partials/activity/act_person", nil)
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	for _, want := range []string{"Excluded evidence", "Wrong incident · by alex", "Restore Car evidence to this activity"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("corrected activity detail missing %q: %s", want, rec.Body.String())
 		}
 	}
 }

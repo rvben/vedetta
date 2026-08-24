@@ -66,6 +66,8 @@ func TestOpenAPISpecIsValid(t *testing.T) {
 		"/api/activities",
 		"/api/activities/counts",
 		"/api/activities/{id}",
+		"/api/activities/{id}/evidence/{eventId}/exclude",
+		"/api/activities/{id}/evidence/{eventId}/restore",
 		"/api/events",
 		"/api/events/{id}",
 		"/api/events/{id}/snapshot",

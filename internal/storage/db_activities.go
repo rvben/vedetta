@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,6 +17,12 @@ import (
 // and live ingestion agree.
 const activityMergeGap = 90 * time.Second
 
+var (
+	ErrActivityNotFound        = errors.New("activity not found")
+	ErrActivityEvidenceMissing = errors.New("activity evidence not found")
+	ErrActivityNeedsEvidence   = errors.New("an activity must retain at least one evidence event")
+)
+
 type ActivityState string
 
 const (
@@ -23,28 +30,49 @@ const (
 	ActivityStateFinalized ActivityState = "finalized"
 )
 
+// ActivityGrouping describes the deterministic rule used to assemble raw
+// detections into a review-level incident.
+type ActivityGrouping struct {
+	Strategy           string `json:"strategy"`
+	QuietPeriodSeconds int64  `json:"quiet_period_seconds"`
+	Explanation        string `json:"explanation"`
+}
+
+// ActivityEvidenceCorrection is an active operator decision to keep a raw
+// event visible but out of the incident summary. Restored decisions remain in
+// the database as history and are omitted from this active view.
+type ActivityEvidenceCorrection struct {
+	Event     camera.Event `json:"event"`
+	Action    string       `json:"action"`
+	Reason    string       `json:"reason,omitempty"`
+	Actor     string       `json:"actor"`
+	CreatedAt time.Time    `json:"created_at"`
+}
+
 // Activity is the review-level incident assembled from one or more raw events.
 // Events is populated for detail queries; list queries expose PrimaryEvent and
 // compact summaries so clients do not need to understand aggregation internals.
 type Activity struct {
-	ID              string         `json:"id"`
-	CameraName      string         `json:"camera"`
-	StartTime       time.Time      `json:"start_time"`
-	EndTime         time.Time      `json:"end_time"`
-	Category        string         `json:"category"`
-	State           ActivityState  `json:"state"`
-	ClosesAt        time.Time      `json:"closes_at"`
-	FinalizedAt     *time.Time     `json:"finalized_at,omitempty"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	EventCount      int            `json:"event_count"`
-	DurationSeconds int64          `json:"duration_seconds"`
-	Labels          []string       `json:"labels"`
-	Zones           []string       `json:"zones"`
-	RecognizedNames []string       `json:"recognized_names"`
-	HasDoorbell     bool           `json:"has_doorbell"`
-	MissedDoorbell  bool           `json:"missed_doorbell"`
-	PrimaryEvent    camera.Event   `json:"primary_event"`
-	Events          []camera.Event `json:"events,omitempty"`
+	ID               string                       `json:"id"`
+	CameraName       string                       `json:"camera"`
+	StartTime        time.Time                    `json:"start_time"`
+	EndTime          time.Time                    `json:"end_time"`
+	Category         string                       `json:"category"`
+	State            ActivityState                `json:"state"`
+	ClosesAt         time.Time                    `json:"closes_at"`
+	FinalizedAt      *time.Time                   `json:"finalized_at,omitempty"`
+	UpdatedAt        time.Time                    `json:"updated_at"`
+	EventCount       int                          `json:"event_count"`
+	DurationSeconds  int64                        `json:"duration_seconds"`
+	Labels           []string                     `json:"labels"`
+	Zones            []string                     `json:"zones"`
+	RecognizedNames  []string                     `json:"recognized_names"`
+	HasDoorbell      bool                         `json:"has_doorbell"`
+	MissedDoorbell   bool                         `json:"missed_doorbell"`
+	Grouping         ActivityGrouping             `json:"grouping"`
+	PrimaryEvent     camera.Event                 `json:"primary_event"`
+	Events           []camera.Event               `json:"events,omitempty"`
+	ExcludedEvidence []ActivityEvidenceCorrection `json:"excluded_evidence,omitempty"`
 }
 
 // ActivityFilters narrows review incidents. Evidence filters match an activity
@@ -80,9 +108,21 @@ func scanActivityBase(scanner rowScanner, activity *Activity) error {
 		return err
 	}
 	activity.ClosesAt = activity.EndTime.Add(activityMergeGap)
+	activity.Grouping = ActivityGrouping{
+		Strategy:           "camera_local_quiet_period",
+		QuietPeriodSeconds: int64(activityMergeGap / time.Second),
+		Explanation:        "Evidence from the same camera is grouped while detections remain no more than 90 seconds apart.",
+	}
 	if finalizedAt.Valid {
 		finalized := finalizedAt.Time
 		activity.FinalizedAt = &finalized
+	}
+	return nil
+}
+
+func moveActivityCorrectionsTx(tx *sql.Tx, canonicalID, mergedID string) error {
+	if _, err := tx.Exec(`UPDATE activity_event_corrections SET activity_id = ? WHERE activity_id = ?`, canonicalID, mergedID); err != nil {
+		return fmt.Errorf("merge activity correction history: %w", err)
 	}
 	return nil
 }
@@ -149,6 +189,9 @@ func assignEventToActivityTx(tx *sql.Tx, event camera.Event) error {
 			}
 			if _, err := tx.Exec(`UPDATE activity_events SET activity_id = ? WHERE activity_id = ?`, activityID, candidate.ID); err != nil {
 				return fmt.Errorf("merge activity evidence: %w", err)
+			}
+			if err := moveActivityCorrectionsTx(tx, activityID, candidate.ID); err != nil {
+				return err
 			}
 			if _, err := tx.Exec(`DELETE FROM activities WHERE id = ?`, candidate.ID); err != nil {
 				return fmt.Errorf("delete merged activity: %w", err)
@@ -287,6 +330,9 @@ func reconcileActivityTx(tx *sql.Tx, activityID string) (string, error) {
 			}
 			if _, err := tx.Exec(`UPDATE activity_events SET activity_id = ? WHERE activity_id = ?`, canonicalID, mergeID); err != nil {
 				return "", fmt.Errorf("merge reconciled evidence: %w", err)
+			}
+			if err := moveActivityCorrectionsTx(tx, canonicalID, mergeID); err != nil {
+				return "", err
 			}
 			if _, err := tx.Exec(`DELETE FROM activities WHERE id = ?`, mergeID); err != nil {
 				return "", fmt.Errorf("delete reconciled activity: %w", err)
@@ -466,6 +512,126 @@ func (d *DB) GetActivityByEventID(eventID string) (*Activity, error) {
 	return &activity, nil
 }
 
+// ExcludeActivityEvidence removes one event from an activity's computed
+// summary while preserving the raw event and an attributable correction row.
+func (d *DB) ExcludeActivityEvidence(activityID, eventID, reason, actor string) (*Activity, error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var exists int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM activities WHERE id = ?`, activityID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists == 0 {
+		return nil, ErrActivityNotFound
+	}
+	if err := tx.QueryRow(`
+		SELECT COUNT(*) FROM activity_event_corrections
+		WHERE activity_id = ? AND event_id = ? AND restored_at IS NULL`, activityID, eventID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists > 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return d.GetActivityByID(activityID)
+	}
+	if err := tx.QueryRow(`
+		SELECT COUNT(*) FROM activity_events
+		WHERE activity_id = ? AND event_id = ?`, activityID, eventID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists == 0 {
+		return nil, ErrActivityEvidenceMissing
+	}
+	var evidenceCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM activity_events WHERE activity_id = ?`, activityID).Scan(&evidenceCount); err != nil {
+		return nil, err
+	}
+	if evidenceCount <= 1 {
+		return nil, ErrActivityNeedsEvidence
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "Does not belong to this activity"
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "local"
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO activity_event_corrections
+			(activity_id, event_id, action, reason, actor, created_at)
+		VALUES (?, ?, 'excluded', ?, ?, ?)`, activityID, eventID, reason, actor, utc(time.Now())); err != nil {
+		return nil, fmt.Errorf("record activity evidence correction: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM activity_events WHERE activity_id = ? AND event_id = ?`, activityID, eventID); err != nil {
+		return nil, fmt.Errorf("exclude activity evidence: %w", err)
+	}
+	survivingID, err := reconcileActivityTx(tx, activityID)
+	if err != nil {
+		return nil, err
+	}
+	if survivingID == "" {
+		return nil, ErrActivityNeedsEvidence
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return d.GetActivityByID(survivingID)
+}
+
+// RestoreActivityEvidence reverses the active exclusion without erasing its
+// audit history. Reconciliation safely merges any incident boundary the event
+// bridges, but does not reopen or re-notify a finalized incident.
+func (d *DB) RestoreActivityEvidence(activityID, eventID, actor string) (*Activity, error) {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var activityExists int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM activities WHERE id = ?`, activityID).Scan(&activityExists); err != nil {
+		return nil, err
+	}
+	if activityExists == 0 {
+		return nil, ErrActivityNotFound
+	}
+	var correctionID int64
+	if err := tx.QueryRow(`
+		SELECT id FROM activity_event_corrections
+		WHERE activity_id = ? AND event_id = ? AND restored_at IS NULL`, activityID, eventID).Scan(&correctionID); err == sql.ErrNoRows {
+		return nil, ErrActivityEvidenceMissing
+	} else if err != nil {
+		return nil, err
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "local"
+	}
+	now := utc(time.Now())
+	if _, err := tx.Exec(`
+		UPDATE activity_event_corrections
+		SET restored_at = ?, restored_by = ? WHERE id = ?`, now, actor, correctionID); err != nil {
+		return nil, fmt.Errorf("restore activity correction history: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO activity_events (activity_id, event_id) VALUES (?, ?)`, activityID, eventID); err != nil {
+		return nil, fmt.Errorf("restore activity evidence: %w", err)
+	}
+	survivingID, err := reconcileActivityTx(tx, activityID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return d.GetActivityByID(survivingID)
+}
+
 // FinalizeDueActivities closes open incidents whose quiet period has elapsed.
 func (d *DB) FinalizeDueActivities(now time.Time, limit int) ([]Activity, error) {
 	if limit <= 0 {
@@ -633,6 +799,47 @@ func (d *DB) hydrateActivity(activity *Activity, includeEvents bool) error {
 	activity.PrimaryEvent = events[best]
 	if includeEvents {
 		activity.Events = events
+		correctionRows, err := d.db.Query(`
+			SELECT event_id, action, reason, actor, created_at
+			FROM activity_event_corrections
+			WHERE activity_id = ? AND restored_at IS NULL
+			ORDER BY created_at ASC, id ASC`, activity.ID)
+		if err != nil {
+			return err
+		}
+		type correctionRow struct {
+			eventID, action, reason, actor string
+			createdAt                      time.Time
+		}
+		var corrections []correctionRow
+		for correctionRows.Next() {
+			var correction correctionRow
+			if err := correctionRows.Scan(&correction.eventID, &correction.action, &correction.reason, &correction.actor, &correction.createdAt); err != nil {
+				_ = correctionRows.Close()
+				return err
+			}
+			corrections = append(corrections, correction)
+		}
+		if err := correctionRows.Err(); err != nil {
+			_ = correctionRows.Close()
+			return err
+		}
+		if err := correctionRows.Close(); err != nil {
+			return err
+		}
+		for _, correction := range corrections {
+			event, err := d.GetEventByID(correction.eventID)
+			if err != nil {
+				return err
+			}
+			if event == nil {
+				continue
+			}
+			activity.ExcludedEvidence = append(activity.ExcludedEvidence, ActivityEvidenceCorrection{
+				Event: *event, Action: correction.action, Reason: correction.reason,
+				Actor: correction.actor, CreatedAt: correction.createdAt,
+			})
+		}
 	}
 	return nil
 }

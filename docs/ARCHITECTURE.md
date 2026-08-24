@@ -86,7 +86,10 @@ analysis, YOLOv8 inference, tracking, face work, and model management.
 notifications, and integration messages. An Activity stays open until its
 camera has been quiet for 90 seconds. New or late evidence reopens and extends
 it; a periodic sweep finalizes due Activities and queues at most one
-Activity-level notification.
+Activity-level notification. Review exposes that grouping rule directly.
+Operators can exclude an unrelated event without deleting it and restore it
+later; both decisions remain attributable correction history, separate from
+immutable raw evidence.
 
 The pure-Go and C ONNX Runtime bindings currently execute inference on CPU.
 VideoToolbox, VA-API, and NVDEC are decode backends, not detector providers.
@@ -107,10 +110,11 @@ compatibility path and requires `libfdk-aac`.
 
 ## State and persistence
 
-SQLite runs in WAL mode through `internal/storage`. It holds events, segments,
-zones and presence, people and faces, known-object references and sightings,
-sessions and API tokens, motion activity, notification preferences, and storage
-audit data. Media files and snapshots remain on the configured filesystem.
+SQLite runs in WAL mode through `internal/storage`. It holds events, Activities
+and their evidence/correction history, segments, zones and presence, people and
+faces, known-object references and sightings, sessions and API tokens, motion
+activity, notification preferences, and storage audit data. Media files and
+snapshots remain on the configured filesystem.
 
 Schema changes are forward migrations in code. Configuration is currently a
 strict YAML document loaded at process start; the future control-plane design

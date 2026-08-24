@@ -166,6 +166,98 @@ func TestGetActivityIncludesOrderedEvidence(t *testing.T) {
 	}
 }
 
+func TestActivityEvidenceCorrectionExcludesAndRestoresRawEvent(t *testing.T) {
+	db := newTestDB(t)
+	start := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	for _, event := range []camera.Event{
+		activityEvent("first", "front_door", "person", start),
+		activityEvent("second", "front_door", "car", start.Add(30*time.Second)),
+		activityEvent("unrelated", "front_door", "cat", start.Add(60*time.Second)),
+	} {
+		mustSaveEvent(t, db, event)
+	}
+
+	activity, err := db.ExcludeActivityEvidence("act_first", "unrelated", "Wrong detection", "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activity.EventCount != 2 || len(activity.Events) != 2 {
+		t.Fatalf("corrected activity = %+v, want two included events", activity)
+	}
+	if !activity.EndTime.Equal(start.Add(30 * time.Second)) {
+		t.Errorf("corrected end = %s, want %s", activity.EndTime, start.Add(30*time.Second))
+	}
+	if len(activity.ExcludedEvidence) != 1 {
+		t.Fatalf("excluded evidence = %+v, want one correction", activity.ExcludedEvidence)
+	}
+	correction := activity.ExcludedEvidence[0]
+	if correction.Event.ID != "unrelated" || correction.Actor != "alex" || correction.Reason != "Wrong detection" {
+		t.Errorf("correction = %+v", correction)
+	}
+	if raw, err := db.GetEventByID("unrelated"); err != nil || raw == nil {
+		t.Fatalf("raw event was not preserved: event=%+v err=%v", raw, err)
+	}
+
+	restored, err := db.RestoreActivityEvidence("act_first", "unrelated", "sam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.EventCount != 3 || len(restored.ExcludedEvidence) != 0 {
+		t.Fatalf("restored activity = %+v, want all evidence active", restored)
+	}
+	var restoredBy string
+	var restoredAt time.Time
+	if err := db.db.QueryRow(`
+		SELECT restored_by, restored_at FROM activity_event_corrections
+		WHERE event_id = 'unrelated'`).Scan(&restoredBy, &restoredAt); err != nil {
+		t.Fatal(err)
+	}
+	if restoredBy != "sam" || restoredAt.IsZero() {
+		t.Errorf("restore audit = %q at %s", restoredBy, restoredAt)
+	}
+}
+
+func TestActivityEvidenceCorrectionRequiresOneIncludedEvent(t *testing.T) {
+	db := newTestDB(t)
+	mustSaveEvent(t, db, activityEvent("only", "front_door", "person", time.Now()))
+
+	if _, err := db.ExcludeActivityEvidence("act_only", "only", "", "operator"); err != ErrActivityNeedsEvidence {
+		t.Fatalf("exclude sole evidence error = %v, want %v", err, ErrActivityNeedsEvidence)
+	}
+	activity, err := db.GetActivityByID("act_only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activity == nil || activity.EventCount != 1 || len(activity.ExcludedEvidence) != 0 {
+		t.Fatalf("sole-evidence activity changed: %+v", activity)
+	}
+}
+
+func TestActivityMergeMovesCorrectionHistoryToCanonicalIncident(t *testing.T) {
+	db := newTestDB(t)
+	start := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	mustSaveEvent(t, db, activityEvent("early", "driveway", "person", start))
+	mustSaveEvent(t, db, activityEvent("late-first", "driveway", "car", start.Add(3*time.Minute)))
+	mustSaveEvent(t, db, activityEvent("late-extra", "driveway", "cat", start.Add(200*time.Second)))
+	if _, err := db.ExcludeActivityEvidence("act_late-first", "late-extra", "Unrelated", "operator"); err != nil {
+		t.Fatal(err)
+	}
+
+	// This late-arriving event sits exactly one quiet period from both
+	// incidents, so the normal aggregator merges them.
+	mustSaveEvent(t, db, activityEvent("bridge", "driveway", "dog", start.Add(90*time.Second)))
+	activity, err := db.GetActivityByID("act_early")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activity == nil || activity.EventCount != 3 || len(activity.ExcludedEvidence) != 1 {
+		t.Fatalf("merged activity = %+v", activity)
+	}
+	if activity.ExcludedEvidence[0].Event.ID != "late-extra" {
+		t.Errorf("moved correction = %+v", activity.ExcludedEvidence[0])
+	}
+}
+
 func TestDeleteEventRemovesEmptyActivity(t *testing.T) {
 	db := newTestDB(t)
 	mustSaveEvent(t, db, activityEvent("only", "front_door", "person", time.Now()))
@@ -245,6 +337,28 @@ func TestMigrateV8AddsLifecycleColumnsToExistingActivities(t *testing.T) {
 	}
 	if state != string(ActivityStateFinalized) || finalizedAt.IsZero() || queuedAt.IsZero() {
 		t.Fatalf("migrated lifecycle = %q, %s, %s", state, finalizedAt, queuedAt)
+	}
+}
+
+func TestMigrateV9AddsActivityEvidenceCorrectionHistory(t *testing.T) {
+	raw, _ := openRaw(t)
+	if _, err := raw.Exec(baselineSchema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`DROP TABLE activity_event_corrections; PRAGMA user_version = 8;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(raw); err != nil {
+		t.Fatal(err)
+	}
+	var table string
+	if err := raw.QueryRow(`
+		SELECT name FROM sqlite_master
+		WHERE type = 'table' AND name = 'activity_event_corrections'`).Scan(&table); err != nil {
+		t.Fatal(err)
+	}
+	if table != "activity_event_corrections" {
+		t.Fatalf("migrated table = %q", table)
 	}
 }
 

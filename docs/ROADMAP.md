@@ -43,8 +43,9 @@ Focus on the two jobs users repeat: deciding what matters and finding it later.
 
 - Extend the implemented **Activity** lifecycle—which durably groups nearby
   camera-local evidence, exposes collecting/finalized state live, and notifies
-  once per incident—with grouping explanations, operator corrections, and
-  automation consumers.
+  once per incident and now includes grouping explanations plus reversible,
+  attributable evidence corrections—with automation consumers and higher-order
+  split/merge workflows backed by real correction data.
 - Add rule composition for labels, zones, time windows, dwell/loitering, known
   identities, and notification severity.
 - Add motion masks and tuneable object inertia without exposing raw detector

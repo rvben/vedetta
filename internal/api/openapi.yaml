@@ -146,6 +146,86 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/activities/{id}/evidence/{eventId}/exclude:
+    post:
+      operationId: excludeActivityEvidence
+      summary: Exclude unrelated evidence from an activity
+      description: Preserves the raw event and records an attributable, reversible correction.
+      tags: [activities]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActivityEvidenceCorrectionRequest"
+      responses:
+        "200":
+          description: Corrected activity detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Activity"
+        "400":
+          description: Invalid correction reason
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Activity or included evidence not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The activity must retain at least one included event
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/activities/{id}/evidence/{eventId}/restore:
+    post:
+      operationId: restoreActivityEvidence
+      summary: Restore excluded evidence to an activity
+      description: Re-includes the raw event while retaining the correction and restoration audit history.
+      tags: [activities]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Restored activity detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Activity"
+        "404":
+          description: Activity or active correction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/auth/login:
     post:
       operationId: login
@@ -3330,7 +3410,7 @@ components:
 
     Activity:
       type: object
-      required: [id, camera, start_time, end_time, category, state, closes_at, updated_at, event_count, duration_seconds, labels, zones, recognized_names, has_doorbell, missed_doorbell, primary_event]
+      required: [id, camera, start_time, end_time, category, state, closes_at, updated_at, event_count, duration_seconds, labels, zones, recognized_names, has_doorbell, missed_doorbell, grouping, primary_event]
       properties:
         id:
           type: string
@@ -3380,6 +3460,8 @@ components:
           type: boolean
         missed_doorbell:
           type: boolean
+        grouping:
+          $ref: "#/components/schemas/ActivityGrouping"
         primary_event:
           $ref: "#/components/schemas/Event"
         events:
@@ -3387,6 +3469,48 @@ components:
           description: Ordered supporting evidence; present on detail responses.
           items:
             $ref: "#/components/schemas/Event"
+        excluded_evidence:
+          type: array
+          description: Active operator exclusions; raw events remain available and can be restored.
+          items:
+            $ref: "#/components/schemas/ActivityEvidenceCorrection"
+
+    ActivityGrouping:
+      type: object
+      required: [strategy, quiet_period_seconds, explanation]
+      properties:
+        strategy:
+          type: string
+          enum: [camera_local_quiet_period]
+        quiet_period_seconds:
+          type: integer
+          format: int64
+        explanation:
+          type: string
+
+    ActivityEvidenceCorrection:
+      type: object
+      required: [event, action, actor, created_at]
+      properties:
+        event:
+          $ref: "#/components/schemas/Event"
+        action:
+          type: string
+          enum: [excluded]
+        reason:
+          type: string
+        actor:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ActivityEvidenceCorrectionRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 240
 
     ActivityListEnvelope:
       type: object

@@ -12,10 +12,10 @@ before choosing cameras or hardware for a production installation.
 
 - **Recording and review:** incident-sized Activity review with explicit
   collecting/finalized state, one notification per incident, inspectable raw
-  evidence, continuous fragmented-MP4 recording, event clips with pre/post
-  capture, snapshots, calendar and timeline navigation, ranged export,
-  retention policies, disk-pressure protection, and optional tiered
-  recompression.
+  evidence, explainable grouping, reversible operator evidence corrections,
+  continuous fragmented-MP4 recording, event clips with pre/post capture,
+  snapshots, calendar and timeline navigation, ranged export, retention
+  policies, disk-pressure protection, and optional tiered recompression.
 - **Live video:** WebRTC, Media Source Extensions (MSE), HLS, MJPEG, snapshots,
   and an optional RTSP republish server for downstream consumers.
 - **Camera support:** separate low-resolution detection and high-resolution

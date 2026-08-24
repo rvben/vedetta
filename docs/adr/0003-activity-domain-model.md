@@ -1,6 +1,6 @@
 # ADR 0003: Activity domain model
 
-- Status: Accepted (lifecycle implemented)
+- Status: Accepted (lifecycle and evidence corrections implemented)
 - Date: 2026-08-23
 
 ## Context
@@ -47,9 +47,15 @@ incident cannot create duplicate notifications. The Activity ID is also the OS
 notification replacement tag, limiting the effect of a crash between queue
 admission and the durable marker write.
 
-Cross-camera journeys, user corrections, and versioned model assertions remain
-follow-up decisions. They must extend the Activity boundary rather than
-overload or discard raw events.
+Operator evidence corrections are stored as attributable, reversible facts.
+Excluding evidence removes only the Activity relationship: the raw event and
+media remain inspectable, the Activity must retain at least one included event,
+and restoration records who reversed the decision. Correction history follows
+the canonical Activity when late evidence merges incidents.
+
+Manual split/merge workflows, cross-camera journeys, and versioned model
+assertions remain follow-up decisions. They must extend the Activity boundary
+rather than overload or discard raw events.
 
 Aggregation is deterministic for the same ordered inputs and rules. Late
 evidence can extend or enrich an open Activity; it cannot silently rewrite an
@@ -81,7 +87,7 @@ facts separate from model assertions.
    fixtures produce understandable Activities.
 2. Replay is idempotent and safe across restart boundaries.
 3. Existing event links and clips remain resolvable during migration.
-4. The Activity detail surface exposes every source event and its media, and
-   live state changes refresh the matching review. A grouping explanation and
-   correction controls remain to be added.
+4. The Activity detail surface exposes every source event and its media,
+   explains the camera-local quiet-period rule, supports reversible evidence
+   corrections, and refreshes matching lifecycle/correction changes live.
 5. Review-time testing must quantify the improvement over the raw event list.

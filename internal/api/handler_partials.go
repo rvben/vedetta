@@ -163,6 +163,7 @@ func activityFiltersFromRequest(r *http.Request) storage.ActivityFilters {
 		Object:   query.Get("object"),
 		Category: query.Get("category"),
 		Kind:     query.Get("kind"),
+		State:    storage.ActivityState(query.Get("state")),
 		Search:   query.Get("q"),
 	}
 	if after, err := time.Parse(time.RFC3339, query.Get("after")); err == nil {
@@ -258,14 +259,21 @@ func (s *Server) handleActivitiesGalleryPartial(w http.ResponseWriter, r *http.R
 		"activityTitle":    activityTitle,
 		"activityDuration": activityDuration,
 		"activityFacets":   activityFacets,
+		"activityStateLabel": func(state storage.ActivityState) string {
+			if state == storage.ActivityStateOpen {
+				return "Collecting evidence"
+			}
+			return "Finalized"
+		},
 	}
 	tmpl := template.Must(template.New("activities").Funcs(s.funcMap).Funcs(funcs).Parse(
 		`{{range .}}` +
-			`<a class="event-card activity-card" href="/activity.html?id={{.ID}}" data-event-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}" data-activity-category="{{.Category}}">` +
+			`<a class="event-card activity-card" href="/activity.html?id={{.ID}}" data-event-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}" data-activity-category="{{.Category}}" data-activity-state="{{.State}}">` +
 			`<div class="event-thumb activity-thumb">` +
 			`{{if .PrimaryEvent.SnapshotAvailable}}<img src="/api/events/{{.PrimaryEvent.ID}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}" loading="lazy">` +
 			`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}" loading="lazy">{{end}}` +
 			`{{if gt .EventCount 1}}<span class="activity-evidence-count">{{.EventCount}} events</span>{{end}}` +
+			`{{if eq .State "open"}}<span class="activity-state-badge">{{activityStateLabel .State}}</span>{{end}}` +
 			`{{if .MissedDoorbell}}<span class="event-missed-badge">missed ring</span>{{else if .HasDoorbell}}<span class="event-answered-badge">doorbell</span>{{end}}` +
 			`</div>` +
 			`<div class="event-card-footer">` +
@@ -304,6 +312,12 @@ func (s *Server) handleActivityDetailPartial(w http.ResponseWriter, r *http.Requ
 		"activityTitle":    activityTitle,
 		"activityDuration": activityDuration,
 		"activityFacets":   activityFacets,
+		"activityStateLabel": func(state storage.ActivityState) string {
+			if state == storage.ActivityStateOpen {
+				return "Collecting evidence"
+			}
+			return "Finalized"
+		},
 		"activityEvidenceURL": func(eventID string) string {
 			params := r.URL.Query()
 			params.Set("activity", activity.ID)
@@ -311,8 +325,8 @@ func (s *Server) handleActivityDetailPartial(w http.ResponseWriter, r *http.Requ
 		},
 	}
 	tmpl := template.Must(template.New("activity-detail").Funcs(s.funcMap).Funcs(funcs).Parse(
-		`<div class="activity-detail-root" data-activity-camera="{{.CameraName}}" data-activity-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}">` +
-			`<div class="page-header activity-page-header"><div><h1>{{activityTitle .}}</h1><p>{{displayName .CameraName}} · {{formatTime .StartTime}}</p></div>` +
+		`<div class="activity-detail-root" data-activity-id="{{.ID}}" data-activity-state="{{.State}}" data-activity-camera="{{.CameraName}}" data-activity-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}">` +
+			`<div class="page-header activity-page-header"><div><h1>{{activityTitle .}}</h1><p>{{displayName .CameraName}} · {{formatTime .StartTime}}</p><span class="activity-detail-state {{.State}}">{{activityStateLabel .State}}{{if eq .State "open"}} · updates as evidence arrives{{end}}</span></div>` +
 			`<a class="btn btn-secondary" href="/events.html">Back to Activity</a></div>` +
 			`<div class="activity-review-layout"><section class="activity-primary" aria-label="Primary evidence">` +
 			`<div class="activity-primary-media">{{if .PrimaryEvent.ClipAvailable}}<video controls preload="metadata" poster="/api/events/{{.PrimaryEvent.ID}}/snapshot"><source src="/api/events/{{.PrimaryEvent.ID}}/clip" type="video/mp4"></video>` +
@@ -320,7 +334,7 @@ func (s *Server) handleActivityDetailPartial(w http.ResponseWriter, r *http.Requ
 			`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="Current view of {{displayName .CameraName}}">{{end}}</div>` +
 			`<div class="activity-summary" aria-label="Activity summary">` +
 			`<div><span>When</span><strong>{{formatTime .StartTime}}</strong></div><div><span>Camera</span><strong>{{displayName .CameraName}}</strong></div>` +
-			`<div><span>Duration</span><strong>{{activityDuration .}}</strong></div><div><span>Evidence</span><strong>{{.EventCount}} {{if eq .EventCount 1}}event{{else}}events{{end}}</strong></div>` +
+			`<div><span>Status</span><strong>{{activityStateLabel .State}}</strong></div><div><span>Duration</span><strong>{{activityDuration .}}</strong></div><div><span>Evidence</span><strong>{{.EventCount}} {{if eq .EventCount 1}}event{{else}}events{{end}}</strong></div>` +
 			`{{with activityFacets .Zones}}<div><span>Zones</span><strong>{{.}}</strong></div>{{end}}` +
 			`{{with activityFacets .Labels}}<div><span>Detected</span><strong>{{.}}</strong></div>{{end}}</div></section>` +
 			`<aside class="activity-evidence" aria-labelledby="evidence-title"><div class="activity-evidence-heading"><h2 id="evidence-title">Evidence</h2><p>Every detection included in this activity.</p></div>` +
@@ -335,7 +349,7 @@ func (s *Server) handleActivityDetailPartial(w http.ResponseWriter, r *http.Requ
 }
 
 func eventReviewQuery(query url.Values) string {
-	allowed := []string{"activity", "camera", "label", "object", "category", "q", "range", "after", "before"}
+	allowed := []string{"activity", "camera", "label", "object", "category", "state", "q", "range", "after", "before"}
 	params := url.Values{}
 	for _, key := range allowed {
 		if value := query.Get(key); value != "" {

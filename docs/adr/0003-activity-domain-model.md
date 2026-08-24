@@ -1,6 +1,6 @@
 # ADR 0003: Activity domain model
 
-- Status: Accepted (initial slice implemented)
+- Status: Accepted (lifecycle implemented)
 - Date: 2026-08-23
 
 ## Context
@@ -35,9 +35,21 @@ representative event. It references source event IDs instead of copying or
 deleting their raw evidence. The existing event API and detail surface remain
 available for compatibility and provenance.
 
-Cross-camera journeys, explicit open/finalized lifecycle state, user
-corrections, and versioned model assertions remain follow-up decisions. They
-must extend the Activity boundary rather than overload or discard raw events.
+Each Activity has an explicit lifecycle. It is `open` while it may still collect
+nearby evidence and becomes `finalized` after 90 seconds of camera-local quiet.
+New or late evidence inside the grouping window reopens the Activity and moves
+its close time. Finalization is durable and published over server-sent events.
+
+Notifications consume finalized Activities, not individual detections. Queue
+admission is recorded durably, historical Activities are marked as already
+considered during migration, and late evidence preserves that marker so one
+incident cannot create duplicate notifications. The Activity ID is also the OS
+notification replacement tag, limiting the effect of a crash between queue
+admission and the durable marker write.
+
+Cross-camera journeys, user corrections, and versioned model assertions remain
+follow-up decisions. They must extend the Activity boundary rather than
+overload or discard raw events.
 
 Aggregation is deterministic for the same ordered inputs and rules. Late
 evidence can extend or enrich an open Activity; it cannot silently rewrite an
@@ -69,6 +81,7 @@ facts separate from model assertions.
    fixtures produce understandable Activities.
 2. Replay is idempotent and safe across restart boundaries.
 3. Existing event links and clips remain resolvable during migration.
-4. The Activity detail surface exposes every source event and its media. An
-   explicit grouping explanation and correction controls remain to be added.
+4. The Activity detail surface exposes every source event and its media, and
+   live state changes refresh the matching review. A grouping explanation and
+   correction controls remain to be added.
 5. Review-time testing must quantify the improvement over the raw event list.

@@ -16,6 +16,13 @@ import (
 // and live ingestion agree.
 const activityMergeGap = 90 * time.Second
 
+type ActivityState string
+
+const (
+	ActivityStateOpen      ActivityState = "open"
+	ActivityStateFinalized ActivityState = "finalized"
+)
+
 // Activity is the review-level incident assembled from one or more raw events.
 // Events is populated for detail queries; list queries expose PrimaryEvent and
 // compact summaries so clients do not need to understand aggregation internals.
@@ -25,6 +32,10 @@ type Activity struct {
 	StartTime       time.Time      `json:"start_time"`
 	EndTime         time.Time      `json:"end_time"`
 	Category        string         `json:"category"`
+	State           ActivityState  `json:"state"`
+	ClosesAt        time.Time      `json:"closes_at"`
+	FinalizedAt     *time.Time     `json:"finalized_at,omitempty"`
+	UpdatedAt       time.Time      `json:"updated_at"`
 	EventCount      int            `json:"event_count"`
 	DurationSeconds int64          `json:"duration_seconds"`
 	Labels          []string       `json:"labels"`
@@ -45,17 +56,35 @@ type ActivityFilters struct {
 	Object   string
 	Category string
 	Kind     string
+	State    ActivityState
 	Search   string
 	After    time.Time
 	Before   time.Time
 }
 
 type activityRow struct {
-	ID         string
-	CameraName string
-	StartTime  time.Time
-	EndTime    time.Time
-	Category   string
+	ID        string
+	StartTime time.Time
+}
+
+const activitySelectCols = "a.id, a.camera, a.start_time, a.end_time, a.category, a.state, a.finalized_at, a.updated_at"
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanActivityBase(scanner rowScanner, activity *Activity) error {
+	var finalizedAt sql.NullTime
+	if err := scanner.Scan(&activity.ID, &activity.CameraName, &activity.StartTime, &activity.EndTime,
+		&activity.Category, &activity.State, &finalizedAt, &activity.UpdatedAt); err != nil {
+		return err
+	}
+	activity.ClosesAt = activity.EndTime.Add(activityMergeGap)
+	if finalizedAt.Valid {
+		finalized := finalizedAt.Time
+		activity.FinalizedAt = &finalized
+	}
+	return nil
 }
 
 func eventActivityBounds(event camera.Event) (time.Time, time.Time) {
@@ -107,14 +136,17 @@ func assignEventToActivityTx(tx *sql.Tx, event camera.Event) error {
 			category = camera.CategoryAlert
 		}
 		if _, err := tx.Exec(`
-			INSERT INTO activities (id, camera, start_time, end_time, category, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			activityID, event.CameraName, start, end, category, utc(time.Now())); err != nil {
+			INSERT INTO activities (id, camera, start_time, end_time, category, state, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			activityID, event.CameraName, start, end, category, ActivityStateOpen, utc(time.Now())); err != nil {
 			return fmt.Errorf("create activity: %w", err)
 		}
 	} else {
 		activityID = candidates[0].ID
 		for _, candidate := range candidates[1:] {
+			if err := preserveActivityNotificationTx(tx, activityID, candidate.ID); err != nil {
+				return err
+			}
 			if _, err := tx.Exec(`UPDATE activity_events SET activity_id = ? WHERE activity_id = ?`, activityID, candidate.ID); err != nil {
 				return fmt.Errorf("merge activity evidence: %w", err)
 			}
@@ -130,8 +162,35 @@ func assignEventToActivityTx(tx *sql.Tx, event camera.Event) error {
 		ON CONFLICT(event_id) DO UPDATE SET activity_id = excluded.activity_id`, activityID, event.ID); err != nil {
 		return fmt.Errorf("link event to activity: %w", err)
 	}
-	_, err = reconcileActivityTx(tx, activityID)
-	return err
+	activityID, err = reconcileActivityTx(tx, activityID)
+	if err != nil || activityID == "" {
+		return err
+	}
+	return reopenActivityTx(tx, activityID)
+}
+
+func preserveActivityNotificationTx(tx *sql.Tx, canonicalID, mergedID string) error {
+	_, err := tx.Exec(`
+		UPDATE activities
+		SET notification_queued_at = COALESCE(
+			notification_queued_at,
+			(SELECT notification_queued_at FROM activities WHERE id = ?))
+		WHERE id = ?`, mergedID, canonicalID)
+	if err != nil {
+		return fmt.Errorf("preserve activity notification state: %w", err)
+	}
+	return nil
+}
+
+func reopenActivityTx(tx *sql.Tx, activityID string) error {
+	_, err := tx.Exec(`
+		UPDATE activities
+		SET state = ?, finalized_at = NULL, updated_at = ?
+		WHERE id = ?`, ActivityStateOpen, utc(time.Now()), activityID)
+	if err != nil {
+		return fmt.Errorf("reopen activity: %w", err)
+	}
+	return nil
 }
 
 // reconcileActivityTx recomputes durable bounds/category and merges neighbors
@@ -223,6 +282,9 @@ func reconcileActivityTx(tx *sql.Tx, activityID string) (string, error) {
 			if mergeID == canonicalID {
 				continue
 			}
+			if err := preserveActivityNotificationTx(tx, canonicalID, mergeID); err != nil {
+				return "", err
+			}
 			if _, err := tx.Exec(`UPDATE activity_events SET activity_id = ? WHERE activity_id = ?`, canonicalID, mergeID); err != nil {
 				return "", fmt.Errorf("merge reconciled evidence: %w", err)
 			}
@@ -265,6 +327,10 @@ func activityFilterClause(filters ActivityFilters) (string, []any) {
 	if filters.Camera != "" {
 		clauses = append(clauses, "a.camera = ?")
 		args = append(args, filters.Camera)
+	}
+	if filters.State != "" {
+		clauses = append(clauses, "a.state = ?")
+		args = append(args, filters.State)
 	}
 	if !filters.After.IsZero() {
 		clauses = append(clauses, "a.end_time >= ?")
@@ -315,7 +381,7 @@ func activityFilterClause(filters ActivityFilters) (string, []any) {
 // activity record.
 func (d *DB) QueryActivitiesFiltered(filters ActivityFilters, limit, offset int) ([]Activity, error) {
 	where, args := activityFilterClause(filters)
-	query := `SELECT a.id, a.camera, a.start_time, a.end_time, a.category FROM activities a` + where + ` ORDER BY a.start_time DESC, a.id DESC`
+	query := `SELECT ` + activitySelectCols + ` FROM activities a` + where + ` ORDER BY a.start_time DESC, a.id DESC`
 	if limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, limit)
@@ -332,7 +398,7 @@ func (d *DB) QueryActivitiesFiltered(filters ActivityFilters, limit, offset int)
 	var activities []Activity
 	for rows.Next() {
 		var activity Activity
-		if err := rows.Scan(&activity.ID, &activity.CameraName, &activity.StartTime, &activity.EndTime, &activity.Category); err != nil {
+		if err := scanActivityBase(rows, &activity); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -366,10 +432,10 @@ func (d *DB) CountActivitiesFiltered(filters ActivityFilters) (int, error) {
 
 func (d *DB) GetActivityByID(id string) (*Activity, error) {
 	var activity Activity
-	err := d.db.QueryRow(`
-		SELECT id, camera, start_time, end_time, category
-		FROM activities WHERE id = ?`, id).Scan(
-		&activity.ID, &activity.CameraName, &activity.StartTime, &activity.EndTime, &activity.Category)
+	row := d.db.QueryRow(`
+		SELECT `+activitySelectCols+`
+		FROM activities a WHERE a.id = ?`, id)
+	err := scanActivityBase(row, &activity)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -380,6 +446,126 @@ func (d *DB) GetActivityByID(id string) (*Activity, error) {
 		return nil, err
 	}
 	return &activity, nil
+}
+
+func (d *DB) GetActivityByEventID(eventID string) (*Activity, error) {
+	var activity Activity
+	row := d.db.QueryRow(`
+		SELECT `+activitySelectCols+`
+		FROM activities a
+		JOIN activity_events ae ON ae.activity_id = a.id
+		WHERE ae.event_id = ?`, eventID)
+	if err := scanActivityBase(row, &activity); err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if err := d.hydrateActivity(&activity, false); err != nil {
+		return nil, err
+	}
+	return &activity, nil
+}
+
+// FinalizeDueActivities closes open incidents whose quiet period has elapsed.
+func (d *DB) FinalizeDueActivities(now time.Time, limit int) ([]Activity, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.Query(`
+		SELECT id FROM activities
+		WHERE state = ? AND end_time <= ?
+		ORDER BY end_time ASC, id ASC LIMIT ?`, ActivityStateOpen, utc(now.Add(-activityMergeGap)), limit)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	finalizedAt := utc(now)
+	for _, id := range ids {
+		if _, err := tx.Exec(`
+			UPDATE activities SET state = ?, finalized_at = ?, updated_at = ?
+			WHERE id = ? AND state = ?`, ActivityStateFinalized, finalizedAt, finalizedAt, id, ActivityStateOpen); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	activities := make([]Activity, 0, len(ids))
+	for _, id := range ids {
+		activity, err := d.GetActivityByID(id)
+		if err != nil {
+			return nil, err
+		}
+		if activity != nil {
+			activities = append(activities, *activity)
+		}
+	}
+	return activities, nil
+}
+
+// PendingActivityNotifications returns finalized alert incidents that have not
+// yet been accepted by the notification queue.
+func (d *DB) PendingActivityNotifications(limit int) ([]Activity, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := d.db.Query(`
+		SELECT `+activitySelectCols+`
+		FROM activities a
+		WHERE a.state = ? AND a.category != ? AND a.notification_queued_at IS NULL
+		ORDER BY a.finalized_at ASC, a.id ASC LIMIT ?`, ActivityStateFinalized, camera.CategoryDetection, limit)
+	if err != nil {
+		return nil, err
+	}
+	var activities []Activity
+	for rows.Next() {
+		var activity Activity
+		if err := scanActivityBase(rows, &activity); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		activities = append(activities, activity)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range activities {
+		if err := d.hydrateActivity(&activities[i], false); err != nil {
+			return nil, err
+		}
+	}
+	return activities, nil
+}
+
+func (d *DB) MarkActivityNotificationQueued(id string, at time.Time) (bool, error) {
+	result, err := d.db.Exec(`
+		UPDATE activities SET notification_queued_at = ?, updated_at = ?
+		WHERE id = ? AND state = ? AND notification_queued_at IS NULL`,
+		utc(at), utc(at), id, ActivityStateFinalized)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count == 1, err
 }
 
 func (d *DB) hydrateActivity(activity *Activity, includeEvents bool) error {

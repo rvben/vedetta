@@ -52,6 +52,82 @@ func TestProcessorStopsWhenContextIsCancelled(t *testing.T) {
 	}
 }
 
+type recordingActivityNotifier struct {
+	events     chan camera.Event
+	activities chan storage.Activity
+}
+
+func (n *recordingActivityNotifier) Enqueue(event camera.Event) {
+	n.events <- event
+}
+
+func (n *recordingActivityNotifier) EnqueueActivity(activity storage.Activity) bool {
+	select {
+	case n.activities <- activity:
+		return true
+	default:
+		return false
+	}
+}
+
+func TestProcessorFinalizesAndQueuesActivityOnStartup(t *testing.T) {
+	db := newEventTestDB(t)
+	event := camera.Event{
+		ID: "old", CameraName: "front_door", Label: "person", Score: 0.9,
+		Timestamp: time.Now().Add(-5 * time.Minute), Category: camera.CategoryAlert,
+	}
+	if err := db.SaveEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	inputs := eventprocessor.Inputs{
+		Events: make(chan camera.Event), EventEnds: make(chan camera.EventEnd),
+		PresenceEvents: make(chan camera.PresenceEvent), FaceEvents: make(chan camera.FaceEvent),
+		MotionActivity: make(chan camera.MotionActivity), Detections: make(chan camera.DetectionFrame),
+	}
+	notifier := &recordingActivityNotifier{
+		events: make(chan camera.Event, 1), activities: make(chan storage.Activity, 1),
+	}
+	processor, err := eventprocessor.NewProcessor(eventprocessor.Options{
+		Config: &config.Config{}, DB: db, Inputs: inputs, Notifier: notifier, Tracer: otel.Tracer("test"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { processor.Run(ctx); close(done) }()
+
+	select {
+	case activity := <-notifier.activities:
+		if activity.ID != "act_old" || activity.State != storage.ActivityStateFinalized {
+			t.Fatalf("queued activity = %+v", activity)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for finalized activity")
+	}
+	select {
+	case unexpected := <-notifier.events:
+		t.Fatalf("queued raw event instead of activity: %+v", unexpected)
+	default:
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		pending, err := db.PendingActivityNotifications(10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pending) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("activity notification was not durably marked")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+}
+
 func TestProcessorPersistsSubmittedEvent(t *testing.T) {
 	db := newEventTestDB(t)
 
@@ -376,6 +452,7 @@ func (*recordingRuntimeServer) RecordDoorbellPress(string)                  {}
 func (*recordingRuntimeServer) BroadcastDoorbellSSE(string, string, string) {}
 func (*recordingRuntimeServer) BroadcastDoorbellPersonSSE(string, string, string) {
 }
+func (*recordingRuntimeServer) BroadcastActivitySSE(string, storage.Activity) {}
 func (s *recordingRuntimeServer) PublishDetection(frame camera.DetectionFrame) {
 	s.detections <- frame
 }

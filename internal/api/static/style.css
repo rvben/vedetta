@@ -1067,6 +1067,32 @@ body.activity-surface input[type="search"] {
   font-variant-numeric: tabular-nums;
 }
 
+.activity-state-badge {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  padding: 0.1875rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--cyan) 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 82%, transparent);
+  color: var(--cyan);
+  font-size: var(--text-xs);
+  font-weight: 650;
+  backdrop-filter: blur(5px);
+}
+
+.activity-detail-state {
+  display: inline-flex;
+  margin-top: 0.625rem;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.activity-detail-state.open {
+  color: var(--cyan);
+}
+
 .activity-empty {
   grid-column: 1 / -1;
   min-height: 15rem;

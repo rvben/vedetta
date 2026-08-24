@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/storage"
 )
 
 func TestListActivitiesReturnsGroupedReviewItems(t *testing.T) {
@@ -26,8 +27,10 @@ func TestListActivitiesReturnsGroupedReviewItems(t *testing.T) {
 	}
 	var body struct {
 		Items []struct {
-			Camera     string `json:"camera"`
-			EventCount int    `json:"event_count"`
+			Camera     string    `json:"camera"`
+			EventCount int       `json:"event_count"`
+			State      string    `json:"state"`
+			ClosesAt   time.Time `json:"closes_at"`
 		} `json:"items"`
 		Total   int  `json:"total"`
 		HasMore bool `json:"has_more"`
@@ -38,8 +41,24 @@ func TestListActivitiesReturnsGroupedReviewItems(t *testing.T) {
 	if body.Total != 1 || len(body.Items) != 1 || body.Items[0].Camera != "front_door" || body.Items[0].EventCount != 2 {
 		t.Fatalf("unexpected activity response: %+v", body)
 	}
+	if body.Items[0].State != "open" || body.Items[0].ClosesAt.IsZero() {
+		t.Fatalf("missing lifecycle fields: %+v", body.Items[0])
+	}
 	if body.HasMore {
 		t.Error("has_more = true, want false")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/activities?state=finalized", nil)
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("state filter status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Total != 0 || len(body.Items) != 0 {
+		t.Fatalf("finalized filter returned open activities: %+v", body)
 	}
 }
 
@@ -93,14 +112,16 @@ func TestGetActivityCounts(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		Total int `json:"total"`
-		Today int `json:"today"`
+		Total     int `json:"total"`
+		Today     int `json:"today"`
+		Open      int `json:"open"`
+		Finalized int `json:"finalized"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Total != 2 || body.Today != 1 {
-		t.Fatalf("counts = %+v, want total=2 today=1", body)
+	if body.Total != 2 || body.Today != 1 || body.Open != 2 || body.Finalized != 0 {
+		t.Fatalf("counts = %+v, want total=2 today=1 open=2 finalized=0", body)
 	}
 }
 
@@ -122,7 +143,7 @@ func TestActivityPartialsExposeIncidentAndEvidence(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("gallery status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{"activity-card", "Alex", "2 events", "/activity.html?id=act_person", "data-event-time="} {
+	for _, want := range []string{"activity-card", "Alex", "2 events", "/activity.html?id=act_person", "data-event-time=", "Collecting evidence"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("activity gallery missing %q: %s", want, rec.Body.String())
 		}
@@ -144,5 +165,25 @@ func TestActivityPartialsExposeIncidentAndEvidence(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("activity detail missing %q: %s", want, rec.Body.String())
 		}
+	}
+}
+
+func TestBroadcastActivitySSE(t *testing.T) {
+	srv, _ := newTestServer(t)
+	client := make(chan []byte, 1)
+	srv.sseMu.Lock()
+	srv.sseClients[client] = struct{}{}
+	srv.sseMu.Unlock()
+	srv.BroadcastActivitySSE("activity_finalized", storage.Activity{
+		ID: "act_1", State: storage.ActivityStateFinalized,
+	})
+	select {
+	case message := <-client:
+		body := string(message)
+		if !strings.Contains(body, "event: activity_finalized") || !strings.Contains(body, `"id":"act_1"`) {
+			t.Fatalf("SSE message = %q", body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("activity SSE was not broadcast")
 	}
 }

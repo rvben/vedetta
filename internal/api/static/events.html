@@ -97,6 +97,14 @@
             <button class="chip" data-filter="category" data-value="detection" data-action-click="toggleChip(this, 'category')" aria-pressed="false">Low priority</button>
           </div>
         </section>
+        <section class="events-filter-group" aria-labelledby="events-state-label">
+          <h2 id="events-state-label">Status</h2>
+          <div class="chip-bar" id="state-chips" role="toolbar" aria-label="Activity status">
+            <button class="chip active" data-filter="state" data-value="" data-action-click="toggleChip(this, 'state')" aria-pressed="true">Any status</button>
+            <button class="chip" data-filter="state" data-value="open" data-action-click="toggleChip(this, 'state')" aria-pressed="false">Collecting evidence</button>
+            <button class="chip" data-filter="state" data-value="finalized" data-action-click="toggleChip(this, 'state')" aria-pressed="false">Finalized</button>
+          </div>
+        </section>
         <section class="events-filter-group" aria-labelledby="events-camera-label">
           <h2 id="events-camera-label">Camera</h2>
           <div class="chip-bar" id="camera-chips" role="toolbar" aria-label="Cameras">
@@ -144,6 +152,7 @@
   <script>
     var eventsTotalAll = 0;
     var eventsTodayCount = 0;
+    var eventsOpenCount = 0;
     var eventsVisibleTotal = 0;
     var pendingEventCount = 0;
 
@@ -160,7 +169,7 @@
 
     function applyEventFiltersFromURL() {
       var params = new URLSearchParams(location.search);
-      ['label', 'camera', 'object', 'category'].forEach(function(type) {
+      ['label', 'camera', 'object', 'category', 'state'].forEach(function(type) {
         var value = params.get(type) || '';
         if (!setEventChipValue(type, value)) setEventChipValue(type, '');
       });
@@ -173,7 +182,7 @@
     function initialEventRequestURL() {
       var source = new URLSearchParams(location.search);
       var params = new URLSearchParams();
-      ['label', 'camera', 'object', 'category', 'q', 'range'].forEach(function(key) {
+      ['label', 'camera', 'object', 'category', 'state', 'q', 'range'].forEach(function(key) {
         if (source.get(key)) params.set(key, source.get(key));
       });
       return eventGalleryRequestURL(params);
@@ -211,7 +220,7 @@
     }
 
     window.updateEventsFilterUI = function() {
-      var advancedLabels = ['category', 'camera', 'object']
+      var advancedLabels = ['category', 'state', 'camera', 'object']
         .map(selectedEventFilterLabel)
         .filter(Boolean);
       var count = advancedLabels.length;
@@ -251,6 +260,7 @@
         var total = eventsTotalAll || eventsVisibleTotal;
         var parts = [total.toLocaleString() + ' activit' + (total === 1 ? 'y' : 'ies') + ' recorded'];
         if (eventsTodayCount > 0) parts.push(eventsTodayCount.toLocaleString() + ' today');
+        if (eventsOpenCount > 0) parts.push(eventsOpenCount.toLocaleString() + ' collecting evidence');
         summary.textContent = parts.join(' · ');
       }
     }
@@ -272,6 +282,11 @@
         c.setAttribute('aria-pressed', active ? 'true' : 'false');
       });
       document.querySelectorAll('.chip[data-filter="category"]').forEach(function(c) {
+        var active = !c.dataset.value;
+        c.classList.toggle('active', active);
+        c.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      document.querySelectorAll('.chip[data-filter="state"]').forEach(function(c) {
         var active = !c.dataset.value;
         c.classList.toggle('active', active);
         c.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -359,12 +374,11 @@
       enhanceEventGallery();
     });
 
-    document.addEventListener('vedetta:event', function() {
-      if (eventsHasActiveFilter()) return;
+    document.addEventListener('vedetta:activity', function() {
       pendingEventCount++;
       var banner = document.getElementById('events-new-banner');
       var label = document.getElementById('events-new-banner-label');
-      label.textContent = 'New camera activity';
+      label.textContent = eventsHasActiveFilter() ? 'Activity updated — refresh view' : 'New camera activity';
       banner.hidden = false;
     });
 
@@ -444,6 +458,7 @@
       if (results[1].status === 'fulfilled') {
         eventsTotalAll = results[1].value.total || 0;
         eventsTodayCount = results[1].value.today || 0;
+        eventsOpenCount = results[1].value.open || 0;
       }
       if (results[2].status === 'fulfilled') populateEventObjects(results[2].value);
       applyEventFiltersFromURL();

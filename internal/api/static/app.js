@@ -5868,7 +5868,7 @@ function buildEventSkeletonHTML() {
 
 function collectEventFilterParams() {
   var params = new URLSearchParams();
-  ['label', 'camera', 'object', 'category'].forEach(function(type) {
+  ['label', 'camera', 'object', 'category', 'state'].forEach(function(type) {
     var chip = document.querySelector('.chip[data-filter="' + type + '"].active');
     if (chip && chip.dataset.value) params.set(type, chip.dataset.value);
   });
@@ -6542,6 +6542,16 @@ function addObjectReference(objectId, objectName, eventId) {
         var data = JSON.parse(e.data);
         document.dispatchEvent(new CustomEvent('vedetta:event', { detail: data }));
       } catch(err) {}
+    });
+
+    ['activity_updated', 'activity_finalized'].forEach(function(eventType) {
+      evtSource.addEventListener(eventType, function(e) {
+        try {
+          var data = JSON.parse(e.data);
+          data.lifecycle_event = eventType;
+          document.dispatchEvent(new CustomEvent('vedetta:activity', { detail: data }));
+        } catch(err) {}
+      });
     });
 
     evtSource.onerror = function() {

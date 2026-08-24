@@ -6,6 +6,7 @@ import (
 
 	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/recording"
+	"github.com/rvben/vedetta/internal/storage"
 )
 
 // Recorder owns snapshot persistence, temporary recording, and clip creation.
@@ -46,11 +47,18 @@ type Enqueuer interface {
 	Enqueue(event camera.Event)
 }
 
+// ActivityEnqueuer accepts a finalized incident and reports whether the
+// non-blocking queue accepted it.
+type ActivityEnqueuer interface {
+	EnqueueActivity(activity storage.Activity) bool
+}
+
 // RuntimeServer is the event processor's UI/status publication surface.
 type RuntimeServer interface {
 	RecordDoorbellPress(cameraName string)
 	BroadcastDoorbellSSE(cameraName, eventID, person string)
 	BroadcastDoorbellPersonSSE(cameraName, eventID, person string)
+	BroadcastActivitySSE(eventType string, activity storage.Activity)
 	PublishDetection(frame camera.DetectionFrame)
 }
 

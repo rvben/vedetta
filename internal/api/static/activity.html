@@ -84,6 +84,11 @@
         const heading = detail.querySelector('h1');
         if (heading) document.title = heading.textContent + ' · ' + camera + ' - Vedetta';
       });
+
+      document.addEventListener('vedetta:activity', function(event) {
+        if (!event.detail || event.detail.id !== id) return;
+        htmx.ajax('GET', detail.getAttribute('hx-get'), { target: '#activity-detail', swap: 'innerHTML' });
+      });
     })();
   </script>
 </body>

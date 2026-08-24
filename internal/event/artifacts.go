@@ -77,7 +77,11 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 	}
 
 	if notifier != nil && submitted.Category != camera.CategoryDetection {
-		notifier.Enqueue(submitted)
+		// Activity-aware dispatchers notify once after the incident quiet period.
+		// Keep event enqueueing for lightweight/custom Enqueuer implementations.
+		if _, activityAware := notifier.(ActivityEnqueuer); !activityAware {
+			notifier.Enqueue(submitted)
+		}
 	}
 }
 

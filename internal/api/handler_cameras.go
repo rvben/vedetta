@@ -9,6 +9,7 @@ import (
 
 	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/media"
+	"github.com/rvben/vedetta/internal/storage"
 )
 
 func (s *Server) ListCameras(w http.ResponseWriter, _ *http.Request) {
@@ -294,6 +295,11 @@ func (s *Server) BroadcastDoorbellPersonSSE(camera, eventID, person string) {
 		"camera":   camera,
 		"person":   person,
 	})
+}
+
+// BroadcastActivitySSE publishes an incident lifecycle change to review UIs.
+func (s *Server) BroadcastActivitySSE(eventType string, activity storage.Activity) {
+	s.broadcastSSE(eventType, activity)
 }
 
 func (s *Server) ListZones(w http.ResponseWriter, r *http.Request, name string) {

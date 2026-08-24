@@ -11,7 +11,7 @@ import (
 // currentSchemaVersion is the schema version this build expects. It is stored
 // in SQLite's PRAGMA user_version. A database reporting a lower version is
 // upgraded by migrate; databases created before versioning report 0.
-const currentSchemaVersion = 7
+const currentSchemaVersion = 8
 
 // baselineSchema creates every table and index for a fresh database. It is
 // idempotent (CREATE ... IF NOT EXISTS) and a cheap no-op for existing DBs.
@@ -56,6 +56,9 @@ const baselineSchema = `
 		start_time DATETIME NOT NULL,
 		end_time DATETIME NOT NULL,
 		category TEXT NOT NULL DEFAULT 'alert',
+		state TEXT NOT NULL DEFAULT 'finalized',
+		finalized_at DATETIME,
+		notification_queued_at DATETIME,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
@@ -392,6 +395,32 @@ func migrate(db *sql.DB) error {
 	if version < 7 {
 		if err := backfillActivities(db); err != nil {
 			return fmt.Errorf("backfill activities: %w", err)
+		}
+	}
+
+	// Version 8: activities gain an explicit lifecycle. Historical activities
+	// are finalized and marked as already considered for notifications so an
+	// upgrade never floods users with old incidents. New live writes explicitly
+	// create or reopen an activity in the open state.
+	if version < 8 {
+		for _, c := range []legacyColumn{
+			{"activities", "state", "ALTER TABLE activities ADD COLUMN state TEXT NOT NULL DEFAULT 'finalized'"},
+			{"activities", "finalized_at", "ALTER TABLE activities ADD COLUMN finalized_at DATETIME"},
+			{"activities", "notification_queued_at", "ALTER TABLE activities ADD COLUMN notification_queued_at DATETIME"},
+		} {
+			if err := ensureColumn(db, c.table, c.column, c.ddl); err != nil {
+				return fmt.Errorf("backfill column %s.%s: %w", c.table, c.column, err)
+			}
+		}
+		if _, err := db.Exec(`
+			UPDATE activities
+			SET state = 'finalized',
+			    finalized_at = COALESCE(finalized_at, updated_at, end_time),
+			    notification_queued_at = COALESCE(notification_queued_at, finalized_at, updated_at, end_time)`); err != nil {
+			return fmt.Errorf("finalize historical activities: %w", err)
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_activities_state_end ON activities(state, end_time)`); err != nil {
+			return fmt.Errorf("create idx_activities_state_end: %w", err)
 		}
 	}
 

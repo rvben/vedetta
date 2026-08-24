@@ -17,7 +17,10 @@ import (
 	"github.com/rvben/vedetta/internal/storage"
 )
 
-const emitWaitTimeout = 5 * time.Second
+const (
+	emitWaitTimeout       = 5 * time.Second
+	activitySweepInterval = 5 * time.Second
+)
 
 // Inputs contains the event streams consumed by a Processor. EventEnds is
 // bidirectional because the processor also schedules synthetic ends for
@@ -93,11 +96,16 @@ func NewProcessor(options Options) (*Processor, error) {
 // Run processes events until ctx is cancelled. It blocks for the lifetime of
 // the processor so callers can wait for a clean shutdown.
 func (p *Processor) Run(ctx context.Context) {
+	activityTicker := time.NewTicker(activitySweepInterval)
+	defer activityTicker.Stop()
+	p.finalizeActivities(time.Now())
 	for {
 		select {
 		case <-ctx.Done():
 			p.stopActiveTimers()
 			return
+		case now := <-activityTicker.C:
+			p.finalizeActivities(now)
 		case submitted, ok := <-p.options.Inputs.Events:
 			if !ok {
 				p.stopActiveTimers()
@@ -164,6 +172,9 @@ func (p *Processor) acceptEvent(ctx context.Context, submitted camera.Event) {
 		"score", fmt.Sprintf("%.2f", submitted.Score))
 
 	eventCtx, rootSpan, saveErr := p.persistEvent(ctx, submitted)
+	if saveErr == nil {
+		p.publishActivityForEvent(submitted.ID, "activity_updated")
+	}
 	if saveErr == nil && submitted.Kind == camera.EventKindDoorbell && p.options.Server != nil {
 		p.options.Server.RecordDoorbellPress(submitted.CameraName)
 		p.options.Server.BroadcastDoorbellSSE(submitted.CameraName, submitted.ID, submitted.SubLabel)
@@ -278,6 +289,8 @@ func (p *Processor) finalizeEvent(ctx context.Context, active *activeEvent, endT
 		endSpan.RecordError(err)
 		endSpan.SetStatus(codes.Error, "update end time")
 		slog.Error("failed to update event end time", "event", event.ID, "error", err)
+	} else {
+		p.publishActivityForEvent(event.ID, "activity_updated")
 	}
 
 	WaitForEmit(ctx, active.emitDone, emitWaitTimeout)
@@ -323,6 +336,55 @@ func (p *Processor) finalizeEvent(ctx context.Context, active *activeEvent, endT
 	if p.options.Recorder != nil {
 		clipCtx := trace.ContextWithSpanContext(ctx, active.rootSpanCtx)
 		go p.extractClip(clipCtx, event)
+	}
+}
+
+func (p *Processor) publishActivityForEvent(eventID, eventType string) {
+	if p.options.Server == nil {
+		return
+	}
+	activity, err := p.options.DB.GetActivityByEventID(eventID)
+	if err != nil {
+		slog.Error("failed to load activity for live update", "event", eventID, "error", err)
+		return
+	}
+	if activity != nil {
+		p.options.Server.BroadcastActivitySSE(eventType, *activity)
+	}
+}
+
+func (p *Processor) finalizeActivities(now time.Time) {
+	activities, err := p.options.DB.FinalizeDueActivities(now, 100)
+	if err != nil {
+		slog.Error("failed to finalize activities", "error", err)
+		return
+	}
+	if p.options.Server != nil {
+		for _, activity := range activities {
+			p.options.Server.BroadcastActivitySSE("activity_finalized", activity)
+		}
+	}
+	p.enqueuePendingActivityNotifications(now)
+}
+
+func (p *Processor) enqueuePendingActivityNotifications(now time.Time) {
+	enqueuer, ok := p.options.Notifier.(ActivityEnqueuer)
+	if !ok {
+		return
+	}
+	pending, err := p.options.DB.PendingActivityNotifications(100)
+	if err != nil {
+		slog.Error("failed to load pending activity notifications", "error", err)
+		return
+	}
+	for _, activity := range pending {
+		if !enqueuer.EnqueueActivity(activity) {
+			return
+		}
+		if _, err := p.options.DB.MarkActivityNotificationQueued(activity.ID, now); err != nil {
+			slog.Error("failed to mark activity notification queued", "activity", activity.ID, "error", err)
+			return
+		}
 	}
 }
 

@@ -10,7 +10,8 @@ before choosing cameras or hardware for a production installation.
 
 ## Why Vedetta
 
-- **Recording and review:** incident-sized Activity review with inspectable raw
+- **Recording and review:** incident-sized Activity review with explicit
+  collecting/finalized state, one notification per incident, inspectable raw
   evidence, continuous fragmented-MP4 recording, event clips with pre/post
   capture, snapshots, calendar and timeline navigation, ranged export,
   retention policies, disk-pressure protection, and optional tiered

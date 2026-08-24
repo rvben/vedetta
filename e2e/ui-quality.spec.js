@@ -11,6 +11,7 @@ const pages = [
   { path: '/', name: 'Cameras' },
   { path: '/camera.html?name=front_door', name: 'Camera detail' },
   { path: '/events.html', name: 'Events' },
+  { path: '/activity.html?id=act_event-1', name: 'Activity detail' },
   { path: '/event.html?id=event-1', name: 'Event detail' },
   { path: '/doorbell.html', name: 'Doorbell' },
   { path: '/recordings.html', name: 'Recordings' },
@@ -28,9 +29,9 @@ const viewports = [
 
 const imageBody = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><rect width="640" height="360" fill="#151b23"/><rect x="250" y="85" width="140" height="190" rx="18" fill="#52677a"/></svg>';
 
-function eventCard(id, label, camera, timestamp) {
+function activityCard(id, label, camera, timestamp) {
   const image = 'data:image/svg+xml,' + encodeURIComponent(imageBody);
-  return `<a class="event-card" href="/event.html?id=${id}" role="listitem" data-event-time="${timestamp}" data-event-category="alert">
+  return `<a class="event-card activity-card" href="/activity.html?id=act_${id}" role="listitem" data-event-time="${timestamp}" data-activity-category="alert" data-activity-state="finalized">
     <div class="event-thumb"><img src="${image}" alt="${label} detected by ${camera}"></div>
     <div class="event-card-footer">
       <div class="event-card-heading"><span class="event-card-title">${label}</span><span class="event-time">2m ago</span></div>
@@ -42,9 +43,9 @@ function eventCard(id, label, camera, timestamp) {
 async function mockApplication(page) {
   const now = new Date('2026-08-13T10:00:00Z');
   const gallery = [
-    eventCard('event-1', 'Ruben', 'Front Door', now.toISOString()),
-    eventCard('event-2', 'Car', 'Driveway', new Date(now - 60_000).toISOString()),
-    eventCard('event-3', 'Dog', 'Back Garden', new Date(now - 86_400_000).toISOString()),
+    activityCard('event-1', 'Ruben', 'Front Door', now.toISOString()),
+    activityCard('event-2', 'Car', 'Driveway', new Date(now - 60_000).toISOString()),
+    activityCard('event-3', 'Dog', 'Back Garden', new Date(now - 86_400_000).toISOString()),
   ].join('');
 
   await page.route('**/*', async route => {
@@ -63,8 +64,11 @@ async function mockApplication(page) {
       if (path === '/partials/camera-grid') {
         return route.fulfill({ contentType: 'text/html', body: '<article class="cam-card"><a href="/camera.html?name=front_door" aria-label="Open Front Door camera"><div class="cam-media"><img src="data:image/svg+xml,' + encodeURIComponent(imageBody) + '" alt="Front Door camera snapshot"></div><div class="cam-footer"><strong class="cam-name">Front Door</strong><span class="badge badge-success">Online</span></div></a></article><article class="cam-card"><a href="/camera.html?name=driveway" aria-label="Open Driveway camera"><div class="cam-media"><img src="data:image/svg+xml,' + encodeURIComponent(imageBody) + '" alt="Driveway camera snapshot"></div><div class="cam-footer"><strong class="cam-name">Driveway</strong><span class="badge">Sleeping</span></div></a></article>' });
       }
-      if (path === '/partials/events-gallery') {
+      if (path === '/partials/activities-gallery') {
         return route.fulfill({ contentType: 'text/html', headers: { 'X-Total-Count': '3' }, body: gallery });
+      }
+      if (path.startsWith('/partials/activity/')) {
+        return route.fulfill({ contentType: 'text/html', body: '<div class="activity-detail-root" data-activity-id="act_event-1" data-activity-state="finalized" data-activity-camera="front_door" data-activity-time="2026-08-13T10:00:00Z"><div class="page-header activity-page-header"><div><h1>Ruben</h1><p>Front Door · Today at 10:00</p><span class="activity-detail-state finalized">Finalized</span></div><a class="btn btn-secondary" href="/events.html">Back to Activity</a></div><div class="activity-review-layout"><section class="activity-primary" aria-label="Primary evidence"><div class="activity-primary-media"><img src="data:image/svg+xml,' + encodeURIComponent(imageBody) + '" alt="Ruben at Front Door"></div><div class="activity-summary" aria-label="Activity summary"><div><span>When</span><strong>Today at 10:00</strong></div><div><span>Camera</span><strong>Front Door</strong></div><div><span>Status</span><strong>Finalized</strong></div><div><span>Duration</span><strong>8s</strong></div><div><span>Evidence</span><strong>2 events</strong></div></div></section><aside class="activity-evidence" aria-labelledby="evidence-title"><div class="activity-evidence-heading"><h2 id="evidence-title">Evidence</h2><p>Every detection included in this activity.</p></div><div class="activity-evidence-list"><a class="activity-evidence-item" href="/event.html?id=event-1"><div class="activity-evidence-thumb"><img src="data:image/svg+xml,' + encodeURIComponent(imageBody) + '" alt="Person evidence"></div><div><strong>Ruben</strong><span>Today at 10:00</span></div></a></div></aside></div></div>' });
       }
       if (path.startsWith('/partials/event/')) {
         return route.fulfill({ contentType: 'text/html', body: '<article class="event-detail-card"><header><h2>Person at Front Door</h2><p class="text-tertiary">Today at 10:00 · 92% confidence</p></header><img src="data:image/svg+xml,' + encodeURIComponent(imageBody) + '" alt="Person detected at the Front Door"><div class="event-detail-actions"><a class="btn btn-primary" href="/recordings.html">View recording</a><button class="btn btn-ghost" type="button">Download snapshot</button></div></article>' });
@@ -86,7 +90,7 @@ async function mockApplication(page) {
       else if (path === '/api/cameras/front_door') json = { name: 'front_door', online: false, sleeping: true, last_seen: '2026-08-13T09:55:00Z' };
       else if (path.endsWith('/timeline')) json = { segments: [], activity: [], events: [] };
       else if (path.endsWith('/zones')) json = { items: [] };
-      else if (path === '/api/events/counts') json = { total: 1284, today: 42 };
+      else if (path === '/api/activities/counts') json = { total: 1284, today: 42, open: 1, finalized: 1283 };
       else if (path === '/api/events') json = { items: [{ id: 'event-4', camera: 'Front Door', label: 'person', score: 0.91, timestamp: now.toISOString(), snapshot_available: true, sub_label: '' }] };
       else if (path === '/api/people') json = { items: [{ id: 1, name: 'Ruben', face_count: 8, appearance_count: 16, best_face_id: 1, ignore: false, created_at: now.toISOString() }] };
       else if (path === '/api/faces/unmatched') json = { items: [{ id: 2, event_id: 'event-4', camera: 'Front Door', timestamp: now.toISOString() }] };

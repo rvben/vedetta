@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/storage"
 )
 
 func newTestSigner(t *testing.T) *SnapshotSigner {
@@ -106,6 +107,35 @@ func TestBuildPayload_FitsUnder4KB(t *testing.T) {
 	data := BuildPayload(ev, newTestSigner(t))
 	if len(data) > 4000 {
 		t.Fatalf("payload too large: %d bytes", len(data))
+	}
+}
+
+func TestBuildActivityPayload(t *testing.T) {
+	start := time.Date(2026, 8, 24, 18, 42, 0, 0, time.UTC)
+	activity := storage.Activity{
+		ID:           "act_front-1",
+		CameraName:   "front_door",
+		StartTime:    start,
+		EventCount:   2,
+		Labels:       []string{"car", "person"},
+		PrimaryEvent: camera.Event{ID: "front-1", SnapshotAvailable: true},
+	}
+	data := BuildActivityPayload(activity, newTestSigner(t))
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["title"] != "Front Door" || got["url"] != "/activity.html?id=act_front-1" {
+		t.Fatalf("activity payload = %s", data)
+	}
+	if got["tag"] != "activity:act_front-1" {
+		t.Errorf("tag = %v", got["tag"])
+	}
+	if body, _ := got["body"].(string); !strings.Contains(body, "Car, Person · 2 events · 18:42 UTC") {
+		t.Errorf("body = %q", body)
+	}
+	if image, _ := got["image"].(string); !strings.HasPrefix(image, "/api/push/snapshot/front-1?") {
+		t.Errorf("image = %q", image)
 	}
 }
 

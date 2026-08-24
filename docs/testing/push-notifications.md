@@ -24,18 +24,21 @@ Run this once before merging PWA-related changes, and once after any change to
    `"Person detected · HH:MM UTC"`. The thumbnail is absent for the test
    button because `SnapshotAvailable=false` on synthetic events — that's
    expected degradation.
-9. Walk in front of a camera with object detection enabled. A real detection
-   notification should arrive within 5 seconds, with the camera snapshot in
-   the expanded view.
+9. Walk in front of a camera with object detection enabled. After 90 seconds
+   without new evidence on that camera, one Activity notification should
+   arrive with the strongest available camera snapshot in the expanded view.
 10. Tap the notification. The PWA should launch in standalone mode, landing
-    on `/event.html?id=<id>` with the event detail loaded.
+    on `/activity.html?id=<id>` with the incident and its evidence loaded.
 
-## Cooldown
+## Incident grouping and deduplication
 
-11. Trigger a second detection within 30 seconds on the same camera + label.
-    Expect: **no second notification**. Check `/metrics` for
-    `vedetta_notify_events_sent_total{result="cooldown"}` to confirm suppression.
-12. Wait 4 minutes. Trigger again. Expect: new notification arrives.
+11. Trigger several detections on the same camera less than 90 seconds apart.
+    Expect: Activity shows **Collecting evidence**, its evidence count grows,
+    and only one notification arrives after the final quiet period.
+12. After that Activity finalizes, inject late evidence that still falls inside
+    its grouping window. Expect: it briefly reopens and finalizes again, but no
+    duplicate notification is delivered. A later, separate Activity should
+    produce its own notification even when camera and label are unchanged.
 
 ## Multi-page deep-link
 
@@ -55,7 +58,7 @@ intact.
 17. Expand it: the snapshot should be **absent** (iOS fetched the image URL
     and got 401).
 18. Tap the notification. It should land on `/login.html?next=...`, not the
-    event view.
+    Activity view.
 19. This is expected graceful degradation, not a bug.
 
 ## Snapshot-missing
@@ -63,8 +66,8 @@ intact.
 20. SSH to mac-mini, `chmod 000 ~/vedetta/snapshots` to force SaveSnapshot to
     fail. (Don't do this on production.)
 21. Trigger a detection. A notification arrives **without** a thumbnail.
-22. Tap: lands on the event view, which renders its own "snapshot unavailable"
-    placeholder.
+22. Tap: lands on the Activity view, which uses its current-camera fallback
+    when the primary evidence snapshot is unavailable.
 23. Restore permissions: `chmod 755 ~/vedetta/snapshots`.
 
 ## Account-switch rebind defense

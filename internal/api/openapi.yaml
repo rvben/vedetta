@@ -68,6 +68,12 @@ paths:
           in: query
           schema:
             type: string
+        - name: state
+          in: query
+          description: Incident lifecycle state
+          schema:
+            type: string
+            enum: [open, finalized]
         - name: q
           in: query
           description: Search camera, label, zone, or recognized name
@@ -3324,7 +3330,7 @@ components:
 
     Activity:
       type: object
-      required: [id, camera, start_time, end_time, category, event_count, duration_seconds, labels, zones, recognized_names, has_doorbell, missed_doorbell, primary_event]
+      required: [id, camera, start_time, end_time, category, state, closes_at, updated_at, event_count, duration_seconds, labels, zones, recognized_names, has_doorbell, missed_doorbell, primary_event]
       properties:
         id:
           type: string
@@ -3339,6 +3345,20 @@ components:
         category:
           type: string
           enum: [alert, detection]
+        state:
+          type: string
+          enum: [open, finalized]
+        closes_at:
+          type: string
+          format: date-time
+          description: Earliest time the activity may finalize if no new evidence arrives.
+        finalized_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
         event_count:
           type: integer
         duration_seconds:
@@ -3387,13 +3407,19 @@ components:
 
     ActivityCounts:
       type: object
-      required: [total, today]
+      required: [total, today, open, finalized]
       properties:
         total:
           type: integer
         today:
           type: integer
           description: Number of activities overlapping today in the server's local time zone.
+        open:
+          type: integer
+          description: Activities still collecting nearby evidence.
+        finalized:
+          type: integer
+          description: Activities whose quiet period has elapsed.
 
     EventListEnvelope:
       type: object

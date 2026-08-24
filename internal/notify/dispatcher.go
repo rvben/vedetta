@@ -11,6 +11,7 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/storage"
 )
 
 // Sender is the narrow interface over the webpush library. Tests inject a
@@ -50,9 +51,14 @@ type NotificationDispatcher struct {
 	metrics        *Metrics
 	logger         *slog.Logger
 	window         time.Duration
-	jobs           chan camera.Event
+	jobs           chan notificationJob
 	workers        int
 	wg             sync.WaitGroup
+}
+
+type notificationJob struct {
+	event    camera.Event
+	activity *storage.Activity
 }
 
 // Options bundles dispatcher construction params. Zero values fall back to
@@ -96,7 +102,7 @@ func New(opts Options) *NotificationDispatcher {
 		metrics:        opts.Metrics,
 		logger:         opts.Logger,
 		window:         opts.CooldownWindow,
-		jobs:           make(chan camera.Event, opts.QueueCapacity),
+		jobs:           make(chan notificationJob, opts.QueueCapacity),
 		workers:        opts.Workers,
 	}
 }
@@ -130,14 +136,27 @@ func (d *NotificationDispatcher) VAPIDPublicKey() string {
 // EventsDropped is incremented. The detection hot path must never be stalled
 // on notification fan-out.
 func (d *NotificationDispatcher) Enqueue(ev camera.Event) {
+	d.enqueue(notificationJob{event: ev})
+}
+
+// EnqueueActivity is non-blocking and returns whether the incident was
+// accepted. The processor only marks durable notification state after true.
+func (d *NotificationDispatcher) EnqueueActivity(activity storage.Activity) bool {
+	copy := activity
+	return d.enqueue(notificationJob{event: activity.PrimaryEvent, activity: &copy})
+}
+
+func (d *NotificationDispatcher) enqueue(job notificationJob) bool {
 	d.metrics.EventsReceived.Add(1)
 	select {
-	case d.jobs <- ev:
+	case d.jobs <- job:
 		d.metrics.QueueDepth.Store(int64(len(d.jobs)))
+		return true
 	default:
 		d.metrics.EventsDropped.Add(1)
 		d.logger.Warn("notification queue full, dropping event",
-			"event", ev.ID, "camera", ev.CameraName, "label", ev.Label)
+			"event", job.event.ID, "camera", job.event.CameraName, "label", job.event.Label)
+		return false
 	}
 }
 
@@ -198,9 +217,9 @@ func (d *NotificationDispatcher) workerLoop(ctx context.Context, id int) {
 		select {
 		case <-ctx.Done():
 			return
-		case ev := <-d.jobs:
+		case job := <-d.jobs:
 			d.metrics.QueueDepth.Store(int64(len(d.jobs)))
-			d.handleEvent(ctx, ev)
+			d.handleJob(ctx, job)
 		}
 	}
 }
@@ -208,7 +227,8 @@ func (d *NotificationDispatcher) workerLoop(ctx context.Context, id int) {
 // handleEvent implements the per-event dispatch logic described in the
 // design spec (each worker's inner loop, steps 1–7). A panic in any one
 // event's handling must not kill the worker.
-func (d *NotificationDispatcher) handleEvent(ctx context.Context, ev camera.Event) {
+func (d *NotificationDispatcher) handleJob(ctx context.Context, job notificationJob) {
+	ev := job.event
 	defer func() {
 		if r := recover(); r != nil {
 			d.logger.Error("panic in notification worker",
@@ -223,11 +243,19 @@ func (d *NotificationDispatcher) handleEvent(ctx context.Context, ev camera.Even
 		return
 	}
 	payload := BuildPayload(ev, d.snapshotSigner)
+	identity := ev.CameraName + ":" + ev.Label
+	activityID := ""
+	if job.activity != nil {
+		payload = BuildActivityPayload(*job.activity, d.snapshotSigner)
+		identity = "activity:" + job.activity.ID
+		activityID = job.activity.ID
+	}
 
 	// Debug: log per-event payload characteristics so production pushes
 	// can be inspected without adding a decrypted body to the log stream.
 	d.logger.Info("push dispatch",
 		"event", ev.ID,
+		"activity", activityID,
 		"camera", ev.CameraName,
 		"label", ev.Label,
 		"snapshot_available", ev.SnapshotAvailable,
@@ -238,7 +266,7 @@ func (d *NotificationDispatcher) handleEvent(ctx context.Context, ev camera.Even
 	)
 
 	for _, user := range users {
-		d.dispatchToUser(ctx, user, ev, payload)
+		d.dispatchToUser(ctx, user, ev, identity, payload)
 	}
 }
 
@@ -260,7 +288,7 @@ func indexOfImageKey(s string) int {
 	return -1
 }
 
-func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string, ev camera.Event, payload []byte) {
+func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string, ev camera.Event, identity string, payload []byte) {
 	// 1. Mute check.
 	if muted, _, _ := d.store.GetKV("notify:" + user + ":muted"); muted == "1" {
 		d.metrics.EventsMuted.Add(1)
@@ -277,7 +305,7 @@ func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string
 		return
 	}
 	// 3. Cooldown check.
-	key := user + ":" + ev.CameraName + ":" + ev.Label
+	key := user + ":" + identity
 	if d.cooldown.Check(key) {
 		d.metrics.EventsCooldown.Add(1)
 		return

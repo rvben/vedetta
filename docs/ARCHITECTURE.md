@@ -82,8 +82,11 @@ detection produces events.
 `internal/media` decodes selected H.264 frames. `internal/detect` performs motion
 analysis, YOLOv8 inference, tracking, face work, and model management.
 `internal/reid` manages object embeddings and known-object matching.
-`internal/event` turns detections into durable events, artifacts, notifications,
-and integration messages.
+`internal/event` turns detections into durable events, artifacts, Activities,
+notifications, and integration messages. An Activity stays open until its
+camera has been quiet for 90 seconds. New or late evidence reopens and extends
+it; a periodic sweep finalizes due Activities and queues at most one
+Activity-level notification.
 
 The pure-Go and C ONNX Runtime bindings currently execute inference on CPU.
 VideoToolbox, VA-API, and NVDEC are decode backends, not detector providers.
@@ -161,10 +164,11 @@ transport details should not become the shared domain model.
 The architecture keeps the reliable core and is adding three boundaries in
 order:
 
-1. an aggregate **Activity** model now groups nearby, camera-local detection
-   and doorbell evidence into durable incidents for review while preserving the
-   raw event API; rules, automation, and richer lifecycle state follow on this
-   boundary;
+1. an aggregate **Activity** model groups nearby, camera-local detection and
+   doorbell evidence into durable incidents, exposes open/finalized lifecycle
+   state over REST and SSE, and sends one notification per finalized incident
+   while preserving the raw event API; operator corrections, rules, and
+   automation follow on this boundary;
 2. a versioned **configuration control plane** that can safely validate, diff,
    apply, roll back, and reconcile changes; and
 3. an optional **inference provider/worker contract** so hardware-specific

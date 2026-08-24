@@ -3,9 +3,11 @@ package notify
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/storage"
 )
 
 // pushPayload is the JSON shape delivered to the service worker.
@@ -49,6 +51,50 @@ func BuildPayload(ev camera.Event, signer *SnapshotSigner) []byte {
 	if len(data) > 4000 {
 		// Defensive truncation: drop image first (already conditional above),
 		// then clip body. Extreme case only.
+		p.Image = ""
+		if len(p.Body) > 120 {
+			p.Body = p.Body[:120]
+		}
+		data, _ = json.Marshal(p)
+	}
+	return data
+}
+
+// BuildActivityPayload produces one notification for a finalized incident.
+func BuildActivityPayload(activity storage.Activity, signer *SnapshotSigner) []byte {
+	ev := activity.PrimaryEvent
+	labels := make([]string, 0, len(activity.Labels))
+	for _, label := range activity.Labels {
+		labels = append(labels, titleCase(label))
+	}
+	labelSummary := strings.Join(labels, ", ")
+	if labelSummary == "" {
+		labelSummary = "Activity"
+	}
+	evidence := "event"
+	if activity.EventCount != 1 {
+		evidence = "events"
+	}
+	p := pushPayload{
+		Title: friendlyCameraName(activity.CameraName),
+		Body: fmt.Sprintf("%s · %d %s · %s UTC", labelSummary, activity.EventCount, evidence,
+			activity.StartTime.UTC().Format("15:04")),
+		URL: "/activity.html?id=" + url.QueryEscape(activity.ID),
+		Tag: "activity:" + activity.ID,
+		TS:  activity.StartTime.UTC().Unix(),
+	}
+	if activity.HasDoorbell {
+		p.Title = "Someone's at the door"
+		p.Body = friendlyCameraName(activity.CameraName) + " · " + activity.StartTime.UTC().Format("15:04") + " UTC"
+		if len(activity.RecognizedNames) > 0 {
+			p.Title = activity.RecognizedNames[0] + " is at the door"
+		}
+	}
+	if ev.SnapshotAvailable && signer != nil {
+		p.Image = signer.Sign(ev.ID)
+	}
+	data, _ := json.Marshal(p)
+	if len(data) > 4000 {
 		p.Image = ""
 		if len(p.Body) > 120 {
 			p.Body = p.Body[:120]

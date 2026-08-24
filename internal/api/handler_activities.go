@@ -29,6 +29,9 @@ func (s *Server) ListActivities(w http.ResponseWriter, r *http.Request, params L
 	if params.Kind != nil {
 		filters.Kind = *params.Kind
 	}
+	if params.State != nil {
+		filters.State = storage.ActivityState(*params.State)
+	}
 	if params.Q != nil {
 		filters.Search = *params.Q
 	}
@@ -85,7 +88,19 @@ func (s *Server) GetActivityCounts(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"total": total, "today": today})
+	open, err := s.db.CountActivitiesFiltered(storage.ActivityFilters{State: storage.ActivityStateOpen})
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	finalized, err := s.db.CountActivitiesFiltered(storage.ActivityFilters{State: storage.ActivityStateFinalized})
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{
+		"total": total, "today": today, "open": open, "finalized": finalized,
+	})
 }
 
 func (s *Server) GetActivity(w http.ResponseWriter, r *http.Request, id string) {

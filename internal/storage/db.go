@@ -129,8 +129,14 @@ func (d *DB) UpdateEventEndTime(eventID string, endTime time.Time) error {
 		return err
 	}
 	if activityID != "" {
-		if _, err := reconcileActivityTx(tx, activityID); err != nil {
+		survivingID, err := reconcileActivityTx(tx, activityID)
+		if err != nil {
 			return err
+		}
+		if survivingID != "" {
+			if err := reopenActivityTx(tx, survivingID); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()

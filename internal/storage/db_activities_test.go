@@ -44,6 +44,12 @@ func TestActivityAggregationGroupsNearbyEvidence(t *testing.T) {
 	if activity.ID != "act_person-1" {
 		t.Errorf("ID = %q, want act_person-1", activity.ID)
 	}
+	if activity.State != ActivityStateOpen {
+		t.Errorf("State = %q, want open", activity.State)
+	}
+	if !activity.ClosesAt.Equal(activity.EndTime.Add(activityMergeGap)) {
+		t.Errorf("ClosesAt = %s, want %s", activity.ClosesAt, activity.EndTime.Add(activityMergeGap))
+	}
 	if activity.EventCount != 2 {
 		t.Errorf("EventCount = %d, want 2", activity.EventCount)
 	}
@@ -205,5 +211,136 @@ func TestMigrateV7BackfillsActivities(t *testing.T) {
 	}
 	if len(activities) != 1 || activities[0].EventCount != 2 {
 		t.Fatalf("backfilled activities = %+v, want one with two events", activities)
+	}
+	if activities[0].State != ActivityStateFinalized || activities[0].FinalizedAt == nil {
+		t.Fatalf("backfilled lifecycle = %+v, want finalized historical activity", activities[0])
+	}
+}
+
+func TestMigrateV8AddsLifecycleColumnsToExistingActivities(t *testing.T) {
+	raw, _ := openRaw(t)
+	if _, err := raw.Exec(baselineSchema); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"notification_queued_at", "finalized_at", "state"} {
+		if _, err := raw.Exec(`ALTER TABLE activities DROP COLUMN ` + column); err != nil {
+			t.Fatalf("drop %s: %v", column, err)
+		}
+	}
+	if _, err := raw.Exec(`
+		INSERT INTO activities (id, camera, start_time, end_time, category)
+		VALUES ('act_old', 'front_door', '2026-08-23 10:00:00', '2026-08-23 10:00:10', 'alert');
+		PRAGMA user_version = 7;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(raw); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var finalizedAt, queuedAt time.Time
+	if err := raw.QueryRow(`
+		SELECT state, finalized_at, notification_queued_at
+		FROM activities WHERE id = 'act_old'`).Scan(&state, &finalizedAt, &queuedAt); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(ActivityStateFinalized) || finalizedAt.IsZero() || queuedAt.IsZero() {
+		t.Fatalf("migrated lifecycle = %q, %s, %s", state, finalizedAt, queuedAt)
+	}
+}
+
+func TestActivityLifecycleFinalizesAfterQuietPeriod(t *testing.T) {
+	db := newTestDB(t)
+	start := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	mustSaveEvent(t, db, activityEvent("person", "front_door", "person", start))
+
+	finalized, err := db.FinalizeDueActivities(start.Add(activityMergeGap-time.Second), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(finalized) != 0 {
+		t.Fatalf("finalized early = %+v", finalized)
+	}
+
+	finalized, err = db.FinalizeDueActivities(start.Add(activityMergeGap+time.Second), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(finalized) != 1 || finalized[0].State != ActivityStateFinalized || finalized[0].FinalizedAt == nil {
+		t.Fatalf("finalized = %+v, want one finalized activity", finalized)
+	}
+	openCount, err := db.CountActivitiesFiltered(ActivityFilters{State: ActivityStateOpen})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalCount, err := db.CountActivitiesFiltered(ActivityFilters{State: ActivityStateFinalized})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if openCount != 0 || finalCount != 1 {
+		t.Fatalf("state counts = open %d, finalized %d", openCount, finalCount)
+	}
+}
+
+func TestLateEvidenceReopensWithoutDuplicateNotification(t *testing.T) {
+	db := newTestDB(t)
+	start := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	mustSaveEvent(t, db, activityEvent("first", "front_door", "person", start))
+	if _, err := db.FinalizeDueActivities(start.Add(activityMergeGap+time.Second), 10); err != nil {
+		t.Fatal(err)
+	}
+	marked, err := db.MarkActivityNotificationQueued("act_first", start.Add(2*time.Minute))
+	if err != nil || !marked {
+		t.Fatalf("mark queued = %v, %v", marked, err)
+	}
+
+	mustSaveEvent(t, db, activityEvent("late", "front_door", "car", start.Add(30*time.Second)))
+	activity, err := db.GetActivityByID("act_first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activity == nil || activity.State != ActivityStateOpen || activity.FinalizedAt != nil || activity.EventCount != 2 {
+		t.Fatalf("reopened activity = %+v", activity)
+	}
+	if _, err := db.FinalizeDueActivities(start.Add(3*time.Minute), 10); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := db.PendingActivityNotifications(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("late evidence queued a duplicate notification: %+v", pending)
+	}
+}
+
+func TestPendingActivityNotificationsAreClaimedOnce(t *testing.T) {
+	db := newTestDB(t)
+	start := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	mustSaveEvent(t, db, activityEvent("alert", "front_door", "person", start))
+	detection := activityEvent("detection", "garden", "cat", start)
+	detection.Category = camera.CategoryDetection
+	mustSaveEvent(t, db, detection)
+	if _, err := db.FinalizeDueActivities(start.Add(2*time.Minute), 10); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := db.PendingActivityNotifications(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ID != "act_alert" {
+		t.Fatalf("pending = %+v, want only alert activity", pending)
+	}
+	marked, err := db.MarkActivityNotificationQueued("act_alert", start.Add(2*time.Minute))
+	if err != nil || !marked {
+		t.Fatalf("first mark = %v, %v", marked, err)
+	}
+	marked, err = db.MarkActivityNotificationQueued("act_alert", start.Add(3*time.Minute))
+	if err != nil || marked {
+		t.Fatalf("second mark = %v, %v", marked, err)
+	}
+	pending, err = db.PendingActivityNotifications(10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending after claim = %+v, %v", pending, err)
 	}
 }

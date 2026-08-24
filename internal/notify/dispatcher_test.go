@@ -2,9 +2,11 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -186,6 +188,49 @@ func TestDispatcher_HappyPath(t *testing.T) {
 	calls := sender.Calls()
 	if len(calls) != 1 || calls[0].Endpoint != "https://push.example/a" {
 		t.Fatalf("unexpected calls: %+v", calls)
+	}
+}
+
+func TestDispatcher_TestImageReachesEverySubscriptionOwnedByRequester(t *testing.T) {
+	store := newFakeStore()
+	seedAlice(store, "https://push.example/alice-phone", "https://push.example/alice-tablet")
+	store.users = append(store.users, "bob")
+	store.kv["notify:alice:muted"] = "1"
+	store.disabledPrefs["alice|front_door|person"] = true
+	store.subs["bob"] = []storage.PushSubscription{{
+		ID: 3, Username: "bob", Endpoint: "https://push.example/bob-phone", P256dh: "p", Auth: "a",
+	}}
+	sender := &fakeSender{}
+	d := New(Options{
+		Store: store, Sender: sender,
+		VAPID:          &VAPID{publicKey: "pub", privateKey: "priv"},
+		SnapshotSigner: newTestSigner(t),
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		QueueCapacity:  16, Workers: 1, CooldownWindow: time.Minute,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	d.Start(ctx)
+	d.EnqueueTest("alice", "front_door", "front-latest")
+	waitForCalls(t, sender, 2)
+	cancel()
+	d.Wait()
+
+	calls := sender.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("test sends = %d, want both of Alice's subscriptions", len(calls))
+	}
+	for _, call := range calls {
+		if call.Endpoint == "https://push.example/bob-phone" {
+			t.Fatal("test notification leaked to another user's subscription")
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(call.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		image, _ := payload["image"].(string)
+		if !strings.HasPrefix(image, "/api/push/snapshot/front-latest?") {
+			t.Errorf("subscription %s image = %q", call.Endpoint, image)
+		}
 	}
 }
 

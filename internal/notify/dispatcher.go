@@ -57,8 +57,11 @@ type NotificationDispatcher struct {
 }
 
 type notificationJob struct {
-	event    camera.Event
-	activity *storage.Activity
+	event           camera.Event
+	activity        *storage.Activity
+	test            bool
+	targetUser      string
+	snapshotEventID string
 }
 
 // Options bundles dispatcher construction params. Zero values fall back to
@@ -160,11 +163,10 @@ func (d *NotificationDispatcher) enqueue(job notificationJob) bool {
 	}
 }
 
-// EnqueueTest synthesizes a test event and runs it through the normal
-// dispatch path. It fans out to ALL users with subscriptions — this is
-// acceptable because the test button is an admin action triggered
-// explicitly by the operator.
-func (d *NotificationDispatcher) EnqueueTest(username, cameraName string) {
+// EnqueueTest synthesizes a delivery check for every subscription owned by the
+// requesting operator. snapshotEventID may be empty; the service worker then
+// falls back to Vedetta's notification icon.
+func (d *NotificationDispatcher) EnqueueTest(username, cameraName, snapshotEventID string) {
 	if cameraName == "" {
 		cameraName = "test"
 	}
@@ -175,7 +177,9 @@ func (d *NotificationDispatcher) EnqueueTest(username, cameraName string) {
 		Timestamp:         time.Now().UTC(),
 		SnapshotAvailable: false,
 	}
-	d.Enqueue(ev)
+	d.enqueue(notificationJob{
+		event: ev, test: true, targetUser: username, snapshotEventID: snapshotEventID,
+	})
 }
 
 // Start launches worker goroutines and a periodic cooldown sweeper.
@@ -237,10 +241,14 @@ func (d *NotificationDispatcher) handleJob(ctx context.Context, job notification
 		}
 	}()
 
-	users, err := d.store.ListAllUsernames()
-	if err != nil {
-		d.logger.Error("list users", "error", err)
-		return
+	users := []string{job.targetUser}
+	if job.targetUser == "" {
+		var err error
+		users, err = d.store.ListAllUsernames()
+		if err != nil {
+			d.logger.Error("list users", "error", err)
+			return
+		}
 	}
 	payload := BuildPayload(ev, d.snapshotSigner)
 	identity := ev.CameraName + ":" + ev.Label
@@ -249,6 +257,9 @@ func (d *NotificationDispatcher) handleJob(ctx context.Context, job notification
 		payload = BuildActivityPayload(*job.activity, d.snapshotSigner)
 		identity = "activity:" + job.activity.ID
 		activityID = job.activity.ID
+	} else if job.test {
+		payload = BuildTestPayload(ev.CameraName, job.snapshotEventID, ev.Timestamp, d.snapshotSigner)
+		identity = "test"
 	}
 
 	// Debug: log per-event payload characteristics so production pushes
@@ -264,9 +275,53 @@ func (d *NotificationDispatcher) handleJob(ctx context.Context, job notification
 		"has_image_field", bytesContainsImageField(payload),
 		"users", len(users),
 	)
+	if job.test {
+		d.dispatchTestToUser(ctx, job.targetUser, payload)
+		return
+	}
 
 	for _, user := range users {
 		d.dispatchToUser(ctx, user, ev, identity, payload)
+	}
+}
+
+// dispatchTestToUser deliberately bypasses alert mute, preference, cooldown,
+// and endpoint backoff gates: an explicit delivery test must exercise every
+// registered device. Transport accounting and stale-subscription pruning stay
+// identical to production sends.
+func (d *NotificationDispatcher) dispatchTestToUser(ctx context.Context, user string, payload []byte) {
+	subs, err := d.store.ListPushSubscriptionsByUser(user)
+	if err != nil {
+		d.logger.Error("list test subscriptions", "user", user, "error", err)
+		return
+	}
+	if len(subs) == 0 {
+		d.metrics.EventsDisabled.Add(1)
+		return
+	}
+	anySuccess := false
+	for _, sub := range subs {
+		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		result := d.sender.Send(sendCtx, Subscription{
+			Endpoint: sub.Endpoint,
+			P256dh:   sub.P256dh,
+			Auth:     sub.Auth,
+		}, payload, d.vapid)
+		cancel()
+		d.recordResult(result, sub.Endpoint)
+		switch {
+		case result.Status >= 200 && result.Status < 300:
+			anySuccess = true
+		case result.Status == 404 || result.Status == 410:
+			if err := d.store.DeletePushSubscriptionByEndpoint(sub.Endpoint); err != nil {
+				d.logger.Error("prune test subscription", "error", err)
+			}
+		case result.Status == 429:
+			d.backoff.Mark(sub.Endpoint)
+		}
+	}
+	if anySuccess {
+		d.metrics.EventsSent.Add(1)
 	}
 }
 

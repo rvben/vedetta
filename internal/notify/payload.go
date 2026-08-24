@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/storage"
@@ -101,6 +102,25 @@ func BuildActivityPayload(activity storage.Activity, signer *SnapshotSigner) []b
 		}
 		data, _ = json.Marshal(p)
 	}
+	return data
+}
+
+// BuildTestPayload produces the operator-requested delivery check. When a
+// retained camera snapshot exists, it uses the same signed image route as real
+// detection and Activity notifications; otherwise the service worker's icon
+// remains the deliberate fallback.
+func BuildTestPayload(cameraName, snapshotEventID string, at time.Time, signer *SnapshotSigner) []byte {
+	p := pushPayload{
+		Title: "Vedetta notification test",
+		Body:  "Notifications are working · " + friendlyCameraName(cameraName),
+		URL:   "/settings.html",
+		Tag:   "vedetta-test",
+		TS:    at.UTC().Unix(),
+	}
+	if snapshotEventID != "" && signer != nil {
+		p.Image = signer.Sign(snapshotEventID)
+	}
+	data, _ := json.Marshal(p)
 	return data
 }
 

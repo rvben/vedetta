@@ -139,6 +139,33 @@ func TestBuildActivityPayload(t *testing.T) {
 	}
 }
 
+func TestBuildTestPayloadUsesSignedSnapshotWhenAvailable(t *testing.T) {
+	at := time.Date(2026, 8, 24, 18, 42, 0, 0, time.UTC)
+	data := BuildTestPayload("front_door", "front-latest", at, newTestSigner(t))
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["title"] != "Vedetta notification test" || got["url"] != "/settings.html" {
+		t.Fatalf("test payload = %s", data)
+	}
+	if body, _ := got["body"].(string); body != "Notifications are working · Front Door" {
+		t.Errorf("body = %q", body)
+	}
+	if image, _ := got["image"].(string); !strings.HasPrefix(image, "/api/push/snapshot/front-latest?") {
+		t.Errorf("image = %q", image)
+	}
+}
+
+func TestBuildTestPayloadFallsBackWhenSnapshotUnavailable(t *testing.T) {
+	data := BuildTestPayload("front_door", "", time.Now(), newTestSigner(t))
+	var got map[string]interface{}
+	_ = json.Unmarshal(data, &got)
+	if _, exists := got["image"]; exists {
+		t.Fatalf("image should be omitted without a snapshot event: %s", data)
+	}
+}
+
 func TestTitleCase(t *testing.T) {
 	if titleCase("person") != "Person" {
 		t.Fatalf("expected 'Person', got %q", titleCase("person"))

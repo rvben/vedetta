@@ -245,10 +245,9 @@ func (s *Server) PutPushPrefs(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// TestPush sends a synthetic notification event through the normal dispatch
-// pipeline. The dispatcher's EnqueueTest currently fans out to all users
-// with subscriptions — acceptable for v1 because the test button is an
-// admin-ish action triggered explicitly by an operator.
+// TestPush sends a delivery check to every subscription owned by the caller.
+// The latest retained snapshot from the first configured camera is included
+// when available; otherwise clients use the normal Vedetta icon fallback.
 func (s *Server) TestPush(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.requireInteractiveUser(w, r)
 	if !ok {
@@ -263,7 +262,16 @@ func (s *Server) TestPush(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusPreconditionFailed, map[string]string{"error": "no cameras configured"})
 		return
 	}
-	s.notifier.EnqueueTest(p.Username, cams[0])
+	snapshotEventID := ""
+	latest, err := s.db.LatestSnapshotEvent(cams[0])
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if latest != nil {
+		snapshotEventID = latest.ID
+	}
+	s.notifier.EnqueueTest(p.Username, cams[0], snapshotEventID)
 	w.WriteHeader(http.StatusAccepted)
 }
 

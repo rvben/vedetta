@@ -19,11 +19,12 @@ Run this once before merging PWA-related changes, and once after any change to
    (no Safari chrome, full-screen status bar).
 6. Navigate to Settings → Notifications → **Enable notifications on this device**.
 7. Grant the permission prompt.
-8. Tap **Send test notification**. A notification should arrive within 5
-   seconds. Expand it: the title should be a camera name, body should be
-   `"Person detected · HH:MM UTC"`. The thumbnail is absent for the test
-   button because `SnapshotAvailable=false` on synthetic events — that's
-   expected degradation.
+8. Tap **Send test notification**. A notification should arrive on every
+   subscribed device belonging to the current operator within 5 seconds.
+   Expand it: the title should be **Vedetta notification test**. When the first
+   configured camera has a retained event snapshot, every device should show
+   that image; otherwise the notification should fall back cleanly to the
+   Vedetta icon.
 9. Walk in front of a camera with object detection enabled. After 90 seconds
    without new evidence on that camera, one Activity notification should
    arrive with the strongest available camera snapshot in the expanded view.

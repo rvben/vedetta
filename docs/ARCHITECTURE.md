@@ -143,7 +143,11 @@ pressure controls, and graceful shutdown make failures detectable and limit
 their blast radius.
 
 External integrations are asynchronous. A slow MQTT broker, push relay, or OTLP
-collector must degrade its own feature rather than stop recording.
+collector must degrade its own feature rather than stop recording. Web Push
+payloads reuse one short-lived, HMAC-signed snapshot URL across every eligible
+subscription in a delivery fan-out. Notification renderers can fetch that
+evidence without a browser session; missing snapshots degrade to the PWA icon
+instead of exposing an authenticated media endpoint.
 
 ## Package responsibilities
 

@@ -250,6 +250,32 @@ func (d *DB) QueryEventsFiltered(f EventFilters, limit, offset int) ([]camera.Ev
 	return scanEvents(rows)
 }
 
+// LatestSnapshotEvent returns the newest event for a camera whose snapshot is
+// both marked available and backed by a non-empty path. Push test notifications
+// use it to show real evidence without exposing an authenticated media URL.
+func (d *DB) LatestSnapshotEvent(cameraName string) (*camera.Event, error) {
+	rows, err := d.db.Query(`
+		SELECT `+eventSelectCols+`
+		FROM events
+		WHERE camera = ?
+		  AND snapshot_available = 1
+		  AND TRIM(COALESCE(snapshot_path, '')) != ''
+		ORDER BY timestamp DESC, id DESC
+		LIMIT 1`, cameraName)
+	if err != nil {
+		return nil, err
+	}
+	events, err := scanEvents(rows)
+	_ = rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if len(events) == 0 {
+		return nil, nil
+	}
+	return &events[0], nil
+}
+
 // CountEventsFiltered returns the total count of events matching the given filters.
 func (d *DB) CountEventsFiltered(f EventFilters) (int, error) {
 	where, args := eventFilterClause(f)

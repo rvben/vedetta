@@ -281,6 +281,37 @@ func TestQueryEvents_OrderByTimestampDesc(t *testing.T) {
 	}
 }
 
+func TestLatestSnapshotEventSelectsNewestUsableCameraEvidence(t *testing.T) {
+	db := newTestDB(t)
+	start := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	older := makeEvent("older", "front_door", "person", 0.8, start)
+	older.SnapshotAvailable = true
+	older.SnapshotPath = "/snapshots/older.jpg"
+	newer := makeEvent("newer", "front_door", "car", 0.9, start.Add(time.Minute))
+	newer.SnapshotAvailable = true
+	newer.SnapshotPath = "/snapshots/newer.jpg"
+	unusable := makeEvent("unusable", "front_door", "dog", 0.9, start.Add(2*time.Minute))
+	unusable.SnapshotAvailable = true
+	otherCamera := makeEvent("other", "garden", "cat", 0.9, start.Add(3*time.Minute))
+	otherCamera.SnapshotAvailable = true
+	otherCamera.SnapshotPath = "/snapshots/other.jpg"
+	for _, event := range []camera.Event{older, newer, unusable, otherCamera} {
+		mustSaveEvent(t, db, event)
+	}
+
+	got, err := db.LatestSnapshotEvent("front_door")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ID != "newer" {
+		t.Fatalf("latest snapshot = %+v, want newer", got)
+	}
+	missing, err := db.LatestSnapshotEvent("garage")
+	if err != nil || missing != nil {
+		t.Fatalf("missing camera snapshot = %+v, err=%v", missing, err)
+	}
+}
+
 func TestCountEventsToday(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now().UTC()

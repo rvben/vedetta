@@ -44,11 +44,53 @@ test('muted live autoplay only asks for a tap after a real policy rejection', as
 
   await page.evaluate(async () => {
     const video = document.querySelector('#live-video');
+    Object.defineProperty(video, 'readyState', { configurable: true, value: 4 });
     video.play = () => Promise.reject({ name: 'NotAllowedError' });
     window.requestMutedAutoplay(video);
-    await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 250));
   });
   await expect(overlay).toBeVisible();
+});
+
+test('a transient WebKit policy rejection is retried without showing a tap prompt', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const video = document.querySelector('#live-video');
+    let readyState = 0;
+    let playCalls = 0;
+    Object.defineProperty(video, 'readyState', {
+      configurable: true,
+      get: () => readyState,
+    });
+    video.play = () => {
+      playCalls++;
+      if (playCalls === 1) return Promise.reject({ name: 'NotAllowedError' });
+      return Promise.resolve();
+    };
+
+    window.requestMutedAutoplay(video);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const promptBeforeMedia = !document.querySelector('#video-tap-to-start').classList.contains('hidden');
+    readyState = 2;
+    video.dispatchEvent(new Event('loadeddata'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    return {
+      playCalls,
+      promptBeforeMedia,
+      promptAfterRetry: !document.querySelector('#video-tap-to-start').classList.contains('hidden'),
+      defaultMuted: video.defaultMuted,
+      muted: video.muted,
+    };
+  });
+
+  expect(result).toEqual({
+    playCalls: 2,
+    promptBeforeMedia: false,
+    promptAfterRetry: false,
+    defaultMuted: true,
+    muted: true,
+  });
 });
 
 test('a stopped transport cannot surface a stale autoplay prompt', async ({ page }) => {

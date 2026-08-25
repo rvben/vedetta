@@ -1612,6 +1612,8 @@ async function startWebRTC() {
   stopStream();
   showStreamConnecting('WebRTC');
   showSnapshotBackdrop(name);
+  const liveVideo = el('live-video');
+  prepareVideoForMutedAutoplay(liveVideo);
   var attemptedPeer = null;
 
   function fallbackToNextVideo(message) {
@@ -1635,6 +1637,7 @@ async function startWebRTC() {
     attemptedPeer = pc;
     peerConnection = pc;
     var firstVideoFrame = false;
+    var remoteStream = null;
 
     function markWebRTCVideoLive() {
       if (firstVideoFrame || peerConnection !== pc || currentStream !== 'webrtc') return;
@@ -1658,15 +1661,25 @@ async function startWebRTC() {
     pc.ontrack = function(event) {
       const video = el('live-video');
       if (!video || peerConnection !== pc) return;
-      video.srcObject = event.streams[0];
+      // Pion may deliver video and audio in separate ontrack callbacks. Keep
+      // one stable MediaStream and only start playback for the video track;
+      // replacing srcObject or calling play() again for a later audio track
+      // can make WebKit turn a successful muted autoplay into a policy prompt.
+      if (!remoteStream) {
+        remoteStream = event.streams[0] || new MediaStream();
+        video.srcObject = remoteStream;
+      }
+      if (event.track && !remoteStream.getTracks().some(function(track) {
+        return track.id === event.track.id;
+      })) {
+        remoteStream.addTrack(event.track);
+      }
+      if (event.track && event.track.kind !== 'video') return;
+
       video.classList.remove('hidden');
       hide('live-snapshot');
       hide('live-mjpeg');
-      video.playsInline = true;
-      video.setAttribute('playsinline', '');
-      video.setAttribute('webkit-playsinline', '');
-      video.muted = true;
-      video.autoplay = true;
+      prepareVideoForMutedAutoplay(video);
 
       // Signaling and ICE success do not prove that the decoder produced a
       // picture. Keep the connecting state and snapshot backdrop until the
@@ -1868,6 +1881,10 @@ function hideAutoplayBlockedPrompt() {
 // permits that without a gesture; users can opt into camera audio afterward.
 function prepareVideoForMutedAutoplay(video) {
   if (!video) return;
+  // defaultMuted mirrors the content attribute. Setting both is important on
+  // iOS: a newly attached MediaStream must be silent before WebKit evaluates
+  // its autoplay eligibility, not only by the time play() is called.
+  video.defaultMuted = true;
   video.muted = true;
   video.autoplay = true;
   video.playsInline = true;
@@ -1884,14 +1901,69 @@ function showAutoplayBlockedPrompt(video) {
 function requestMutedAutoplay(video) {
   prepareVideoForMutedAutoplay(video);
   var attempt = ++autoplayAttemptSeq;
-  var playPromise = video.play();
-  if (playPromise && typeof playPromise.catch === 'function') {
-    playPromise.catch(function(error) {
-      if (attempt === autoplayAttemptSeq && autoplayNeedsUserGesture(error)) {
-        showAutoplayBlockedPrompt(video);
-      }
-    });
+  var retriesRemaining = 2;
+  var retryTimer = null;
+  var retryScheduled = false;
+
+  function isCurrent() {
+    return attempt === autoplayAttemptSeq;
   }
+
+  function retryWhenMediaIsReady() {
+    if (!isCurrent() || retryScheduled) return;
+    retryScheduled = true;
+
+    function retry() {
+      if (!retryScheduled) return;
+      retryScheduled = false;
+      video.removeEventListener('loadedmetadata', retry);
+      video.removeEventListener('loadeddata', retry);
+      video.removeEventListener('canplay', retry);
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      if (!isCurrent()) return;
+      tryPlay();
+    }
+
+    // WebKit can reject the first muted play() in the short interval between
+    // ontrack and usable media. Retry as soon as metadata/data arrives, with a
+    // small timer as a backstop for WebRTC implementations that omit events.
+    video.addEventListener('loadedmetadata', retry, { once: true });
+    video.addEventListener('loadeddata', retry, { once: true });
+    video.addEventListener('canplay', retry, { once: true });
+    retryTimer = setTimeout(retry, video.readyState >= 2 ? 80 : 250);
+  }
+
+  function rejected(error) {
+    if (!isCurrent() || !autoplayNeedsUserGesture(error)) return;
+    if (retriesRemaining > 0) {
+      retriesRemaining--;
+      retryWhenMediaIsReady();
+      return;
+    }
+    showAutoplayBlockedPrompt(video);
+  }
+
+  function tryPlay() {
+    if (!isCurrent()) return;
+    prepareVideoForMutedAutoplay(video);
+    var playPromise;
+    try {
+      playPromise = video.play();
+    } catch (error) {
+      rejected(error);
+      return;
+    }
+    if (playPromise && typeof playPromise.then === 'function') {
+      playPromise.then(function() {
+        if (isCurrent()) hideAutoplayBlockedPrompt();
+      }).catch(rejected);
+    }
+  }
+
+  tryPlay();
 }
 
 // A transport handoff also pauses the shared <video>. That is not evidence of
@@ -1902,8 +1974,8 @@ function attachAutoplayBlockedDetector(video) {
   video._autoplayDetectorAttached = true;
   var overlay = el('video-tap-to-start');
   if (!overlay) return;
-  video.addEventListener('play', function() { overlay.classList.add('hidden'); });
-  video.addEventListener('playing', function() { overlay.classList.add('hidden'); });
+  video.addEventListener('play', hideAutoplayBlockedPrompt);
+  video.addEventListener('playing', hideAutoplayBlockedPrompt);
 }
 
 function startBlockedVideo() {

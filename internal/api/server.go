@@ -609,6 +609,12 @@ func (s *Server) SetSubsystems(cameras *camera.Manager, recorder *recording.Reco
 func (s *Server) readyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.ready.Load() && !isHealthProbePath(r) && (strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/partials/")) {
+			// This 503 is the gate working, not a fault, and it says so: the
+			// response carries Retry-After and a "starting" body. Without the
+			// mark, every restart writes one error line per API request for the
+			// whole startup window, which is precisely the misgraded noise the
+			// access log grading exists to remove.
+			markExpectedStatus(w)
 			// Return JSON for API, HTML for partials
 			if strings.HasPrefix(r.URL.Path, "/api/") {
 				w.Header().Set("Content-Type", "application/json")
@@ -636,6 +642,25 @@ type statusLoggingResponseWriter struct {
 	http.ResponseWriter
 	status  int
 	written bool
+	// expected marks a status the server chose deliberately as a temporary
+	// answer. It travels outward on the writer rather than the request context
+	// because the access log sits outside every handler that can set it, and a
+	// context value set on the way in cannot be read on the way out.
+	expected bool
+}
+
+// markExpectedStatus records that the response about to be written is a
+// deliberate, temporary answer rather than a fault, so the access log grades it
+// as the ordinary request it is.
+//
+// The assertion holds because requestLogMiddleware installs the writer directly
+// outside the handlers that call this. TestReadinessGate503IsNotAnError drives
+// the real chain, so inserting a wrapper that breaks the assertion fails a test
+// rather than quietly restoring the noise.
+func markExpectedStatus(w http.ResponseWriter) {
+	if lw, ok := w.(*statusLoggingResponseWriter); ok {
+		lw.expected = true
+	}
 }
 
 func (w *statusLoggingResponseWriter) WriteHeader(code int) {
@@ -717,7 +742,7 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 			metrics.HTTPRequestDuration.Observe(class, elapsed)
 		}
 
-		level := requestLogLevel(r, status, elapsed)
+		level := requestLogLevel(r, status, elapsed, lw.expected)
 		logger := slog.Default()
 		// Most requests on a running install are probes graded at Debug, which
 		// the default Info threshold discards. Asking first means those never
@@ -753,12 +778,19 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 // a health probe that returns 500 is still an Error rather than being demoted
 // to Debug for being a probe; server faults outrank client errors, so a slow
 // 500 reports as a fault rather than as slowness.
-func requestLogLevel(r *http.Request, status int, elapsed time.Duration) slog.Level {
-	switch {
-	case status >= http.StatusInternalServerError:
-		return slog.LevelError
-	case status >= http.StatusBadRequest:
-		return slog.LevelWarn
+//
+// expected is set when the server chose the status deliberately as a temporary
+// answer (see markExpectedStatus). Such a response is graded as the ordinary
+// request it is: a status code alone cannot tell a fault from an intended one,
+// and only the handler that produced it knows which this was.
+func requestLogLevel(r *http.Request, status int, elapsed time.Duration, expected bool) slog.Level {
+	if !expected {
+		switch {
+		case status >= http.StatusInternalServerError:
+			return slog.LevelError
+		case status >= http.StatusBadRequest:
+			return slog.LevelWarn
+		}
 	}
 
 	class := classifyRequest(r)

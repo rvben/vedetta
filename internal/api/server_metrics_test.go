@@ -34,8 +34,13 @@ func TestRequestLogMiddlewareRecordsHTTPMetrics(t *testing.T) {
 
 // Endpoints excluded from tracing (per shouldTraceRequest) must also be
 // excluded from RED metrics: /metrics scrapes, health polls, and long-lived
-// SSE/WS streams would otherwise dominate the histogram with self-referential
-// or unbounded observations.
+// SSE/WS/MJPEG streams would otherwise dominate the histogram with
+// self-referential or unbounded observations.
+//
+// Every live transport is listed individually rather than by a representative
+// sample. A stream missing from this list contributes one observation the
+// length of a viewing session, which does not look like corruption on a
+// dashboard - it looks like a latency regression.
 func TestRequestLogMiddlewareSkipsExcludedPaths(t *testing.T) {
 	metrics.ResetForTest()
 	t.Cleanup(metrics.ResetForTest)
@@ -43,7 +48,17 @@ func TestRequestLogMiddlewareSkipsExcludedPaths(t *testing.T) {
 	h := requestLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	for _, path := range []string{"/metrics", "/api/health", "/api/cameras/front/detections"} {
+	excluded := []string{
+		"/metrics",
+		"/api/health",
+		"/api/health/live",
+		"/api/health/ready",
+		"/api/events/stream",
+		"/api/cameras/front/detections",
+		"/api/cameras/front/mjpeg",
+		"/api/cameras/front/mse/ws",
+	}
+	for _, path := range excluded {
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
 	}
 
@@ -51,6 +66,29 @@ func TestRequestLogMiddlewareSkipsExcludedPaths(t *testing.T) {
 	metrics.WriteProm(&b)
 	if strings.Contains(b.String(), "vedetta_http_requests_total{") {
 		t.Errorf("excluded paths must not be counted:\n%s", b.String())
+	}
+}
+
+// The counterpart to the exclusion list: an ordinary request must still be
+// counted. Without this, deleting the metrics call entirely would satisfy the
+// exclusion test and leave the RED dashboard silently empty.
+func TestRequestLogMiddlewareCountsOrdinaryPaths(t *testing.T) {
+	metrics.ResetForTest()
+	t.Cleanup(metrics.ResetForTest)
+
+	h := requestLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	// Signalling POSTs sit next to the stream endpoints in the URL space but are
+	// ordinary requests, so they must stay in the histogram.
+	for _, path := range []string{"/api/cameras", "/api/cameras/front/webrtc/offer"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+	}
+
+	var b strings.Builder
+	metrics.WriteProm(&b)
+	if !strings.Contains(b.String(), `vedetta_http_requests_total{status="2xx"} 2`) {
+		t.Errorf("ordinary requests must be counted:\n%s", b.String())
 	}
 }
 

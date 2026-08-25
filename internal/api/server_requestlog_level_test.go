@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -44,9 +45,20 @@ func TestRequestLogLevelGrading(t *testing.T) {
 		{"long-lived sse", "/api/events/stream", http.StatusOK, time.Hour, slog.LevelDebug},
 		{"long-lived detections sse", "/api/cameras/front_door/detections", http.StatusOK, time.Hour, slog.LevelDebug},
 		{"long-lived mse websocket", "/api/cameras/front_door/mse/ws", http.StatusOK, time.Hour, slog.LevelDebug},
-		{"long-lived webrtc", "/api/cameras/front_door/webrtc", http.StatusOK, time.Hour, slog.LevelDebug},
+		{"long-lived mjpeg", "/api/cameras/front_door/mjpeg", http.StatusOK, time.Hour, slog.LevelDebug},
 		// ...but a stream that failed to open is still a fault.
 		{"failed stream", "/api/events/stream", http.StatusInternalServerError, time.Hour, slog.LevelError},
+
+		// WebRTC and talkback media never cross the HTTP server; only the short
+		// signalling POST does, so it is graded as the ordinary request it is.
+		// An earlier suffix rule claimed to cover "/webrtc", which matches no
+		// registered route and therefore covered nothing.
+		{"webrtc signalling is ordinary", "/api/cameras/front_door/webrtc/offer", http.StatusOK, fast, slog.LevelInfo},
+		{"talkback signalling is ordinary", "/api/cameras/front_door/talkback/offer", http.StatusOK, fast, slog.LevelInfo},
+
+		// A probe is boring only while it is fast; a slow one is the server
+		// telling you it is struggling.
+		{"slow health probe is not demoted", "/api/health/live", http.StatusOK, slowRequestThreshold, slog.LevelWarn},
 	}
 
 	for _, tt := range tests {
@@ -81,6 +93,50 @@ func TestRequestLogMiddlewareSuppressesProbeNoiseAtInfo(t *testing.T) {
 	serve(atDebug)
 	if !bytes.Contains(atDebug.snapshot(), []byte("http request")) {
 		t.Errorf("health probe missing from the debug log, want it recorded:\n%s", atDebug)
+	}
+}
+
+// Probe traffic was 95% of a real production access log, so the cost of the
+// line that is never written is the cost that dominates. The middleware asks
+// the logger whether the graded level is enabled before assembling anything;
+// this benchmark is what keeps that guard honest.
+//
+// Run as: go test ./internal/api/ -bench RequestLogMiddleware -benchmem
+func BenchmarkRequestLogMiddlewareSuppressedProbe(b *testing.B) {
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	b.Cleanup(func() { slog.SetDefault(orig) })
+
+	h := requestLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/health/live", nil)
+	req.Header.Set("User-Agent", "Prometheus/2.51.0")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+}
+
+// The counterpart at the other threshold: with debug output requested, the same
+// probe writes a full line. Comparing the two shows what the guard is avoiding.
+func BenchmarkRequestLogMiddlewareEmittedProbe(b *testing.B) {
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	b.Cleanup(func() { slog.SetDefault(orig) })
+
+	h := requestLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/health/live", nil)
+	req.Header.Set("User-Agent", "Prometheus/2.51.0")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.ServeHTTP(httptest.NewRecorder(), req)
 	}
 }
 

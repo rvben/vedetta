@@ -718,6 +718,15 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 		}
 
 		level := requestLogLevel(r, status, elapsed)
+		logger := slog.Default()
+		// Most requests on a running install are probes graded at Debug, which
+		// the default Info threshold discards. Asking first means those never
+		// pay for the attribute slice and the boxing behind it; slog would drop
+		// the record anyway, just after the work was done.
+		if !logger.Enabled(r.Context(), level) {
+			return
+		}
+
 		attrs := []any{
 			"method", r.Method,
 			"uri", r.URL.RequestURI(),
@@ -728,7 +737,7 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 		// Client detail rides along only where it earns its size: on a request
 		// that went wrong, and whenever the operator has asked for debug output
 		// and therefore wants the full per-request record back.
-		verbose := slog.Default().Enabled(r.Context(), slog.LevelDebug)
+		verbose := logger.Enabled(r.Context(), slog.LevelDebug)
 		if verbose || level != slog.LevelInfo {
 			attrs = append(attrs,
 				"ua", r.UserAgent(),
@@ -736,7 +745,7 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 				"cache_control", r.Header.Get("Cache-Control"),
 			)
 		}
-		slog.Log(r.Context(), level, "http request", attrs...)
+		logger.Log(r.Context(), level, "http request", attrs...)
 	})
 }
 
@@ -751,35 +760,24 @@ func requestLogLevel(r *http.Request, status int, elapsed time.Duration) slog.Le
 	case status >= http.StatusBadRequest:
 		return slog.LevelWarn
 	}
+
+	class := classifyRequest(r)
 	// A stream is meant to stay open, so its duration measures how well it is
 	// working, not how slow it is. Grading these by elapsed time would report
 	// every healthy live view as a stalled request.
-	if isLongLivedRequest(r) {
+	if class == classStream {
 		return slog.LevelDebug
 	}
+	// A probe is boring only while it is fast. One that takes a second is
+	// reporting that the server is struggling, which is the whole point of
+	// having it, so the slow rule is applied before the probe demotion.
 	if elapsed >= slowRequestThreshold {
 		return slog.LevelWarn
 	}
-	if !shouldTraceRequest(r) {
+	if class == classProbe {
 		return slog.LevelDebug
 	}
 	return slog.LevelInfo
-}
-
-// isLongLivedRequest reports whether a request is expected to stay open for as
-// long as it is healthy: server-sent event streams and the WebSocket/WebRTC
-// live transports.
-func isLongLivedRequest(r *http.Request) bool {
-	p := r.URL.Path
-	switch {
-	case p == "/api/events/stream":
-		return true
-	case strings.HasSuffix(p, "/detections"):
-		return true
-	case strings.HasSuffix(p, "/mse/ws"), strings.HasSuffix(p, "/webrtc"):
-		return true
-	}
-	return false
 }
 
 // statusClass maps an HTTP status code to its class label (e.g. 404 -> "4xx").

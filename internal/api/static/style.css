@@ -1502,6 +1502,41 @@ body.activity-surface input[type="search"] {
   filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
 }
 
+.play-overlay.is-error > svg {
+  display: none;
+}
+
+.play-overlay-error {
+  display: flex;
+  max-width: min(26rem, calc(100% - 2rem));
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  text-align: center;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.32);
+}
+
+.play-overlay-error strong {
+  font-size: var(--text-base);
+}
+
+.play-overlay-error > span:not(.play-overlay-retry) {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.play-overlay-retry {
+  margin-top: 0.3rem;
+  color: var(--cyan);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
 .event-sidebar {
   display: flex;
   flex-direction: column;

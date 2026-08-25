@@ -6733,46 +6733,135 @@ function attachPlaybackSpeed(video, media) {
   media.appendChild(picker);
 }
 
+function resetEventPlaybackOverlay(overlay, mediaName) {
+  overlay.setAttribute('aria-label', 'Play ' + mediaName);
+  overlay.removeAttribute('aria-live');
+  overlay.classList.remove('is-error');
+  var message = overlay.querySelector('.play-overlay-error');
+  if (message) message.remove();
+}
+
+function removeEventVideo(video) {
+  if (video._vedettaHls) {
+    video._vedettaHls.destroy();
+    video._vedettaHls = null;
+  }
+  video.onerror = null;
+  video.removeAttribute('src');
+  video.load();
+  video.remove();
+}
+
+function showEventPlaybackError(media, overlay, wrap, video, mediaName) {
+  if (!video.parentElement) return;
+
+  removeEventVideo(video);
+
+  var picker = media.querySelector('.playback-speed');
+  if (picker) picker.remove();
+  if (wrap) wrap.style.display = '';
+
+  overlay.setAttribute('aria-label', 'Try ' + mediaName + ' playback again');
+  overlay.setAttribute('aria-live', 'assertive');
+  overlay.classList.add('is-error');
+  overlay.style.display = '';
+
+  var message = document.createElement('span');
+  message.className = 'play-overlay-error';
+
+  var title = document.createElement('strong');
+  title.textContent = 'Could not play this ' + mediaName;
+  message.appendChild(title);
+
+  var detail = document.createElement('span');
+  detail.textContent = 'Check the connection, then try again.';
+  message.appendChild(detail);
+
+  var action = document.createElement('span');
+  action.className = 'play-overlay-retry';
+  action.textContent = 'Try again';
+  message.appendChild(action);
+
+  overlay.appendChild(message);
+  overlay.focus();
+}
+
+function startEventVideo(video, mediaName, fail, options) {
+  var playback = EventClipPlayback.start(video, options);
+  video.focus();
+  playback.catch(function(error) {
+    var kind = EventClipPlayback.failureKind(error);
+    if (kind === 'manual') {
+      if (typeof toast === 'function') toast(mediaName.charAt(0).toUpperCase() + mediaName.slice(1) + ' ready — press play to start');
+      return;
+    }
+    if (kind !== 'interrupted') fail();
+  });
+}
+
 function playEventClip(overlay, eventId) {
   var media = overlay.parentElement;
   var wrap = media.querySelector('#detection-wrap');
+  resetEventPlaybackOverlay(overlay, 'clip');
+
+  var previousVideo = media.querySelector('video');
+  if (previousVideo) removeEventVideo(previousVideo);
+  var previousPicker = media.querySelector('.playback-speed');
+  if (previousPicker) previousPicker.remove();
+
   if (wrap) wrap.style.display = 'none';
   overlay.style.display = 'none';
 
   var video = document.createElement('video');
-  video.controls = true;
-  video.autoplay = true;
-  video.muted = true;
-  video.playsInline = true;
-  video.poster = '/api/events/' + encodeURIComponent(eventId) + '/snapshot';
-  video.src = '/api/events/' + encodeURIComponent(eventId) + '/clip';
+  video.setAttribute('aria-label', 'Event video clip');
+  var eventURL = '/api/events/' + encodeURIComponent(eventId);
+  EventClipPlayback.configure(video, {
+    poster: eventURL + '/snapshot',
+    src: eventURL + '/clip'
+  });
+
+  var failed = false;
+  var fail = function() {
+    if (failed) return;
+    failed = true;
+    showEventPlaybackError(media, overlay, wrap, video, 'clip');
+  };
   video.onerror = function () {
-    video.remove();
-    var picker = media.querySelector('.playback-speed');
-    if (picker) picker.remove();
-    var err = document.createElement('div');
-    err.className = 'empty-state';
-    err.textContent = 'Clip unavailable — the recording may still be processing or has been removed.';
-    media.appendChild(err);
-    if (wrap) wrap.style.display = '';
-    if (typeof toast === 'function') toast('Clip unavailable', 'error');
+    fail();
   };
   media.appendChild(video);
   attachPlaybackSpeed(video, media);
+
+  startEventVideo(video, 'clip', fail);
 }
 
 function playEventRecording(overlay, cameraName, timestamp) {
   var media = overlay.parentElement;
   var wrap = media.querySelector('#detection-wrap');
+  resetEventPlaybackOverlay(overlay, 'recording');
+
+  var previousVideo = media.querySelector('video');
+  if (previousVideo) removeEventVideo(previousVideo);
+  var previousPicker = media.querySelector('.playback-speed');
+  if (previousPicker) previousPicker.remove();
+
   if (wrap) wrap.style.display = 'none';
   overlay.style.display = 'none';
 
   var video = document.createElement('video');
-  video.controls = true;
-  video.autoplay = true;
-  video.muted = true;
-  video.playsInline = true;
+  video.setAttribute('aria-label', 'Event recording');
+  EventClipPlayback.configure(video);
   media.appendChild(video);
+
+  var failed = false;
+  var fail = function() {
+    if (failed) return;
+    failed = true;
+    showEventPlaybackError(media, overlay, wrap, video, 'recording');
+  };
+  video.onerror = function() {
+    fail();
+  };
 
   // The playback endpoint returns an HLS m3u8 playlist. Safari/iOS plays
   // HLS natively from a <video src>; other browsers need hls.js to wrap
@@ -6780,17 +6869,19 @@ function playEventRecording(overlay, cameraName, timestamp) {
   var url = '/api/cameras/' + encodeURIComponent(cameraName) + '/playback.m3u8?start=' + encodeURIComponent(timestamp);
   if (typeof Hls !== 'undefined' && Hls.isSupported()) {
     var hls = new Hls({ maxBufferLength: 60 });
+    video._vedettaHls = hls;
     hls.loadSource(url);
     hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, function () { video.play().catch(function () {}); });
     hls.on(Hls.Events.ERROR, function (event, data) {
       if (data.fatal) {
         console.error('event recording HLS error', data.type, data.details);
-        hls.destroy();
+        fail();
       }
     });
+    startEventVideo(video, 'recording', fail, { load: false });
   } else {
     video.src = url;
+    startEventVideo(video, 'recording', fail);
   }
   attachPlaybackSpeed(video, media);
 }

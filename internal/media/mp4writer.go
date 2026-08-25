@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
@@ -41,7 +40,7 @@ type SegmentWriter struct {
 	audioTrackID int
 
 	h264Format  *format.H264
-	h264Decoder *rtph264.Decoder
+	h264Decoder *rtsp.H264AccessUnitDecoder
 	videoSPS    []byte
 	videoPPS    []byte
 
@@ -55,11 +54,14 @@ type SegmentWriter struct {
 	audioDTS        uint64
 	startTime       time.Time
 	firstSampleTime time.Time // wall time of the keyframe that opened the file
-	lastVideoRTP    uint32
-	hasFirstVideo   bool
 	hasAudio        bool
 	videoTimeScale  uint32
 	audioTimeScale  uint32
+
+	pendingVideoTimestamp uint32
+	pendingVideoTime      time.Time
+	hasPendingVideoTime   bool
+	skipDecoderFlush      bool
 
 	// GOP buffering: accumulate samples until next keyframe
 	pendingVideoSamples []*fmp4.Sample
@@ -100,7 +102,7 @@ func NewSegmentWriter(path string, video, audio *rtsp.TrackInfo) (*SegmentWriter
 			f.Close()
 			return nil, fmt.Errorf("create H264 decoder: %w", err)
 		}
-		sw.h264Decoder = dec
+		sw.h264Decoder = rtsp.NewH264AccessUnitDecoder(dec)
 	}
 
 	if audio != nil && audio.Codec == "AAC" {
@@ -149,14 +151,58 @@ func (sw *SegmentWriter) WriteVideo(pkt *rtp.Packet) error {
 	if sw.h264Decoder == nil {
 		return nil
 	}
+	// Preserve the recording consumer's per-packet panic containment contract
+	// without taking sw.mu first; a panic while holding the mutex would poison
+	// the writer and deadlock its recovery-time Close.
+	if pkt == nil {
+		panic("nil H264 RTP packet")
+	}
 
-	au, err := sw.h264Decoder.Decode(pkt)
+	now := time.Now()
+	sw.mu.Lock()
+	accessUnitTime := sw.pendingVideoTime
+	if !sw.hasPendingVideoTime {
+		sw.pendingVideoTimestamp = pkt.Timestamp
+		sw.pendingVideoTime = now
+		sw.hasPendingVideoTime = true
+		accessUnitTime = now
+	} else if pkt.Timestamp != sw.pendingVideoTimestamp {
+		accessUnitTime = sw.pendingVideoTime
+		sw.pendingVideoTimestamp = pkt.Timestamp
+		sw.pendingVideoTime = now
+	}
+	sw.mu.Unlock()
+
+	au, rtpTimestamp, err := sw.h264Decoder.Decode(pkt)
 	if err != nil {
 		return nil
+	}
+	if len(au) == 0 {
+		return nil
+	}
+
+	sampleDuration := pkt.Timestamp - rtpTimestamp
+	if sampleDuration == 0 {
+		sampleDuration = sw.videoTimeScale / 30
+	} else if sampleDuration >= sw.videoTimeScale*2 {
+		// The decoder has already buffered pkt as the first access unit after
+		// the discontinuity. The recording consumer re-feeds it to a fresh
+		// writer, so this writer must neither append the pre-gap unit with a
+		// fabricated duration nor flush the post-gap unit during Close.
+		sw.mu.Lock()
+		sw.skipDecoderFlush = true
+		sw.mu.Unlock()
+		return ErrTimestampGap
 	}
 
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
+	return sw.writeVideoAccessUnit(au, sampleDuration, accessUnitTime)
+}
+
+// writeVideoAccessUnit writes one timestamp-coalesced H.264 frame. sw.mu must
+// be held by the caller.
+func (sw *SegmentWriter) writeVideoAccessUnit(au [][]byte, sampleDuration uint32, sampleTime time.Time) error {
 
 	// Update SPS/PPS from in-band parameters
 	for _, nalu := range au {
@@ -184,33 +230,12 @@ func (sw *SegmentWriter) WriteVideo(pkt *rtp.Packet) error {
 			return err
 		}
 		sw.initWritten = true
-		sw.lastVideoRTP = pkt.Timestamp
-		sw.hasFirstVideo = true
-		sw.firstSampleTime = time.Now()
+		sw.firstSampleTime = sampleTime
 	}
 
-	// Compute sample duration from RTP timestamp delta
-	var sampleDuration uint32
-	if sw.hasFirstVideo {
-		rtpDelta := pkt.Timestamp - sw.lastVideoRTP
-		switch {
-		case rtpDelta > 0 && rtpDelta < sw.videoTimeScale*2:
-			sampleDuration = rtpDelta
-		case rtpDelta == 0:
-			// Duplicate timestamp: assume one frame interval.
-			sampleDuration = sw.videoTimeScale / 30
-		default:
-			// Forward jump of 2s+ (stream stalled), or a backwards jump
-			// wrapped to a huge uint32 (camera clock reset). uint32
-			// arithmetic already absorbs the legitimate 32-bit RTP
-			// wrap-around, so anything here is a real discontinuity.
-			return ErrTimestampGap
-		}
-	} else {
+	if sampleDuration == 0 {
 		sampleDuration = sw.videoTimeScale / 30
-		sw.hasFirstVideo = true
 	}
-	sw.lastVideoRTP = pkt.Timestamp
 
 	sample := &fmp4.Sample{
 		Duration: sampleDuration,
@@ -281,6 +306,9 @@ func (sw *SegmentWriter) StartTime() time.Time {
 	if !sw.firstSampleTime.IsZero() {
 		return sw.firstSampleTime
 	}
+	if sw.hasPendingVideoTime {
+		return sw.pendingVideoTime
+	}
 	return sw.startTime
 }
 
@@ -288,6 +316,17 @@ func (sw *SegmentWriter) StartTime() time.Time {
 // to the video track when samples exist (wall-clock age would overstate it
 // whenever the stream stalled), else wall time since creation.
 func (sw *SegmentWriter) Close() (time.Duration, error) {
+	var flushErr error
+	if sw.h264Decoder != nil && !sw.skipDecoderFlush {
+		if au, _, err := sw.h264Decoder.Flush(); err != nil {
+			flushErr = err
+		} else if len(au) > 0 {
+			sw.mu.Lock()
+			flushErr = sw.writeVideoAccessUnit(au, sw.videoTimeScale/30, sw.pendingVideoTime)
+			sw.mu.Unlock()
+		}
+	}
+
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
@@ -303,6 +342,9 @@ func (sw *SegmentWriter) Close() (time.Duration, error) {
 
 	if err := sw.f.Close(); err != nil {
 		return duration, fmt.Errorf("close segment: %w", err)
+	}
+	if flushErr != nil {
+		return duration, fmt.Errorf("flush final video access unit: %w", flushErr)
 	}
 
 	return duration, nil

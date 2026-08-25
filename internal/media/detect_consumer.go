@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/pion/rtp"
 
@@ -34,7 +33,7 @@ type DetectConsumer struct {
 	// inside the C library that corrupts the Go heap. Holds whether h264Dec is a
 	// software (OpenH264) or hardware (VideoToolbox) backend.
 	decMu       sync.Mutex
-	h264Decoder *rtph264.Decoder
+	h264Decoder *rtsp.H264AccessUnitDecoder
 	h264Dec     FrameDecoder
 	sps         []byte
 	pps         []byte
@@ -89,7 +88,7 @@ func NewDetectConsumer(camera string, width, height, fps int, track *rtsp.TrackI
 		slog.Warn("failed to create H264 RTP decoder for detection", "error", err)
 		return dc
 	}
-	dc.h264Decoder = dec
+	dc.h264Decoder = rtsp.NewH264AccessUnitDecoder(dec)
 
 	dc.h264Dec = NewDefaultFrameDecoder(dc.sps, dc.pps)
 	if dc.h264Dec == nil {
@@ -156,7 +155,7 @@ func (dc *DetectConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	dc.rtpCount++
 	dc.mu.Unlock()
 
-	au, err := dc.h264Decoder.Decode(pkt)
+	au, _, err := dc.h264Decoder.Decode(pkt)
 	if err != nil {
 		return
 	}

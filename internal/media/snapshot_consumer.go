@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/pion/rtp"
 
@@ -20,7 +19,7 @@ import (
 type SnapshotConsumer struct {
 	camera string
 
-	h264Decoder *rtph264.Decoder
+	h264Decoder *rtsp.H264AccessUnitDecoder
 	frameDec    FrameDecoder
 	sps         []byte
 	pps         []byte
@@ -67,7 +66,7 @@ func NewSnapshotConsumer(camera string, track *rtsp.TrackInfo) *SnapshotConsumer
 
 	sc := &SnapshotConsumer{
 		camera:      camera,
-		h264Decoder: dec,
+		h264Decoder: rtsp.NewH264AccessUnitDecoder(dec),
 		frameDec:    frameDec,
 		sps:         track.SPS,
 		pps:         track.PPS,
@@ -128,7 +127,7 @@ func (sc *SnapshotConsumer) OnVideoRTP(pkt *rtp.Packet) {
 		return
 	}
 
-	au, err := sc.h264Decoder.Decode(pkt)
+	au, _, err := sc.h264Decoder.Decode(pkt)
 	if err != nil {
 		return
 	}

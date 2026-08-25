@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
@@ -35,14 +34,18 @@ type aacSetup struct {
 // parameter sets. SPS/PPS may be empty when the camera only signals them
 // in-band; the decoder still works and the consumer learns them from the
 // stream.
-func newH264Decoder(sps, pps []byte) (*rtph264.Decoder, error) {
+func newH264Decoder(sps, pps []byte) (*rtsp.H264AccessUnitDecoder, error) {
 	h264Format := &format.H264{
 		PayloadTyp:        96,
 		PacketizationMode: 1,
 		SPS:               sps,
 		PPS:               pps,
 	}
-	return h264Format.CreateDecoder()
+	decoder, err := h264Format.CreateDecoder()
+	if err != nil {
+		return nil, err
+	}
+	return rtsp.NewH264AccessUnitDecoder(decoder), nil
 }
 
 // newAACSetup builds the AAC depacketizer and the matching AudioSpecificConfig

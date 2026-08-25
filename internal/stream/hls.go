@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
@@ -66,7 +65,7 @@ type hlsConsumer struct {
 
 	videoSPS    []byte
 	videoPPS    []byte
-	h264Decoder *rtph264.Decoder
+	h264Decoder *rtsp.H264AccessUnitDecoder
 
 	hasAudio       bool
 	aacDecoder     *rtpmpeg4audio.Decoder
@@ -250,7 +249,7 @@ func (c *hlsConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	if c.h264Decoder == nil {
 		return
 	}
-	au, err := c.h264Decoder.Decode(pkt)
+	au, rtpTimestamp, err := c.h264Decoder.Decode(pkt)
 	if err != nil {
 		return
 	}
@@ -340,7 +339,7 @@ func (c *hlsConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	}
 	// The timer holds the newest AU in flight and hands back the previous
 	// one finalized with its decode-order duration and PTS-DTS offset.
-	finalized, durTicks, haveFinalized := c.vtimer.push(au, pkt.Timestamp)
+	finalized, durTicks, haveFinalized := c.vtimer.push(au, rtpTimestamp)
 	isKeyframe := h264.IsRandomAccess(au)
 
 	if haveFinalized {

@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
@@ -183,7 +182,7 @@ type mseConsumer struct {
 	aacConfig      *mpeg4audio.AudioSpecificConfig
 	audioTimeScale uint32
 
-	h264Decoder *rtph264.Decoder
+	h264Decoder *rtsp.H264AccessUnitDecoder
 	aacDecoder  *rtpmpeg4audio.Decoder
 
 	// Cached init segment — regenerated when SPS/PPS changes.
@@ -270,7 +269,7 @@ func (mc *mseConsumer) OnVideoRTP(pkt *rtp.Packet) {
 		return
 	}
 
-	au, err := mc.h264Decoder.Decode(pkt)
+	au, rtpTimestamp, err := mc.h264Decoder.Decode(pkt)
 	if err != nil {
 		return
 	}
@@ -351,7 +350,7 @@ func (mc *mseConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	// one finalized with its decode-order duration and PTS-DTS offset, so
 	// B-frame (High profile) streams reorder correctly instead of
 	// rendering only keyframes.
-	finalized, durTicks, haveFinalized := mc.vtimer.push(au, pkt.Timestamp)
+	finalized, durTicks, haveFinalized := mc.vtimer.push(au, rtpTimestamp)
 	if haveFinalized {
 		mc.pendingVideo = append(mc.pendingVideo, finalized)
 		mc.pendingVideoTicks += durTicks

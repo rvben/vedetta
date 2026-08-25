@@ -44,7 +44,7 @@ type rtspServerConsumer struct {
 
 	// H264 RTP decode/re-encode pipeline.
 	h264Format *format.H264
-	rtpDecoder *rtph264.Decoder
+	rtpDecoder *rtsp.H264AccessUnitDecoder
 	rtpEncoder *rtph264.Encoder
 }
 
@@ -79,7 +79,7 @@ func (c *rtspServerConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	}
 
 	// Depacketize H264 RTP into access units.
-	au, err := c.rtpDecoder.Decode(pkt)
+	au, _, err := c.rtpDecoder.Decode(pkt)
 	if err != nil {
 		return
 	}
@@ -237,7 +237,7 @@ func (rs *RTSPServer) initCameraStream(cs *cameraStream, desc *description.Sessi
 			if err == nil {
 				enc, err := h264Fmt.CreateEncoder()
 				if err == nil {
-					consumer.rtpDecoder = dec
+					consumer.rtpDecoder = rtsp.NewH264AccessUnitDecoder(dec)
 					consumer.rtpEncoder = enc
 				}
 			}

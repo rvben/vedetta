@@ -7,6 +7,8 @@ import (
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/pion/rtp"
+
+	"github.com/rvben/vedetta/internal/rtsp"
 )
 
 // TestDetectConsumerCloseDoesNotRaceOnVideoRTP asserts that tearing a detect
@@ -40,7 +42,7 @@ func TestDetectConsumerCloseDoesNotRaceOnVideoRTP(t *testing.T) {
 		frameDelay:   time.Hour,
 		fpsWindowDur: 5 * time.Second,
 		lastLog:      time.Now(),
-		h264Decoder:  rtpDec,
+		h264Decoder:  rtsp.NewH264AccessUnitDecoder(rtpDec),
 		h264Dec:      &H264Decoder{}, // non-nil sentinel; Decode/Close are nil-safe
 		available:    true,
 	}

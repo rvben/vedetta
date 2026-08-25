@@ -165,6 +165,81 @@ func TestSourceFanOutVideo(t *testing.T) {
 	}
 }
 
+func TestSourceLatestVideoGOPStartsAtRandomAccessAndReplacesAtomically(t *testing.T) {
+	s := NewSource("rtsp://test:554/stream")
+	packet := func(seq uint16, ts uint32, nal byte) *rtp.Packet {
+		return &rtp.Packet{Header: rtp.Header{SequenceNumber: seq, Timestamp: ts}, Payload: []byte{nal, 0xaa}}
+	}
+
+	s.fanOutVideo(packet(1, 100, 0x41)) // P-frame before any random-access point.
+	if got := s.LatestVideoGOP(); got != nil {
+		t.Fatalf("pre-IDR cache = %d packets, want nil", len(got))
+	}
+
+	s.fanOutVideo(packet(2, 200, 0x67)) // SPS
+	s.fanOutVideo(packet(3, 200, 0x68)) // PPS
+	s.fanOutVideo(packet(4, 200, 0x65)) // IDR, same access-unit timestamp
+	s.fanOutVideo(packet(5, 300, 0x41)) // P-frame
+	got := s.LatestVideoGOP()
+	if len(got) != 4 {
+		t.Fatalf("first GOP = %d packets, want 4", len(got))
+	}
+	if got[0].SequenceNumber != 2 || got[3].SequenceNumber != 5 {
+		t.Fatalf("first GOP sequence range = %d..%d, want 2..5", got[0].SequenceNumber, got[3].SequenceNumber)
+	}
+
+	s.fanOutVideo(packet(6, 400, 0x65))
+	s.fanOutVideo(packet(7, 500, 0x41))
+	got = s.LatestVideoGOP()
+	if len(got) != 2 || got[0].SequenceNumber != 6 || got[1].SequenceNumber != 7 {
+		t.Fatalf("replacement GOP sequences = %v, want [6 7]", []uint16{got[0].SequenceNumber, got[1].SequenceNumber})
+	}
+}
+
+func TestSourceLatestVideoGOPReturnsDeepCopies(t *testing.T) {
+	s := NewSource("rtsp://test:554/stream")
+	s.fanOutVideo(&rtp.Packet{Header: rtp.Header{SequenceNumber: 9, Timestamp: 100}, Payload: []byte{0x65, 0xaa}})
+
+	first := s.LatestVideoGOP()
+	first[0].SequenceNumber = 999
+	first[0].Payload[0] = 0
+	second := s.LatestVideoGOP()
+	if second[0].SequenceNumber != 9 || second[0].Payload[0] != 0x65 {
+		t.Fatalf("caller mutation leaked into GOP cache: seq=%d payload=%x", second[0].SequenceNumber, second[0].Payload)
+	}
+}
+
+func TestSourceLatestVideoGOPClearsOnDisconnect(t *testing.T) {
+	s := NewSource("rtsp://test:554/stream")
+	s.fanOutVideo(&rtp.Packet{Header: rtp.Header{Timestamp: 100}, Payload: []byte{0x65, 0xaa}})
+	if got := s.LatestVideoGOP(); len(got) != 1 {
+		t.Fatalf("warm GOP = %d packets, want 1", len(got))
+	}
+	s.notifyDisconnect()
+	if got := s.LatestVideoGOP(); got != nil {
+		t.Fatalf("GOP survived source disconnect: %d packets", len(got))
+	}
+}
+
+func TestSourceLatestVideoGOPDropsOversizedPartialCache(t *testing.T) {
+	s := NewSource("rtsp://test:554/stream")
+	s.cacheVideoPacket(&rtp.Packet{Header: rtp.Header{Timestamp: 100}, Payload: []byte{0x65}})
+	for i := 1; i < maxCachedGOPPackets; i++ {
+		s.cacheVideoPacket(&rtp.Packet{Header: rtp.Header{Timestamp: uint32(100 + i)}, Payload: []byte{0x41}})
+	}
+	if got := s.LatestVideoGOP(); len(got) != maxCachedGOPPackets {
+		t.Fatalf("bounded GOP before overflow = %d packets, want %d", len(got), maxCachedGOPPackets)
+	}
+	s.cacheVideoPacket(&rtp.Packet{Header: rtp.Header{Timestamp: 9000}, Payload: []byte{0x41}})
+	if got := s.LatestVideoGOP(); got != nil {
+		t.Fatalf("overflow exposed a partial GOP of %d packets", len(got))
+	}
+	s.cacheVideoPacket(&rtp.Packet{Header: rtp.Header{Timestamp: 10000}, Payload: []byte{0x65}})
+	if got := s.LatestVideoGOP(); len(got) != 1 {
+		t.Fatalf("cache did not recover at next IDR: %d packets", len(got))
+	}
+}
+
 // TestFanOutVideo_IsolatesPacketFromGortsplibBufferReuse proves the fan-out
 // hands each consumer a packet that is independent of the gortsplib-owned
 // buffer. gortsplib reuses the *rtp.Packet and its Payload backing array for

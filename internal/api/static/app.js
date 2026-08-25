@@ -10,6 +10,7 @@ let mseMediaSource = null;
 let mseBlobURL = null;
 let mseWatchdogTimer = null; // detects a silently-black MSE stream (iPhone Safari)
 let webrtcWatchdogTimer = null; // detects WebRTC that signals OK but never delivers frames
+let webRTCIceServersPromise = null; // one page-scoped ICE config request, prewarmed during camera status lookup
 let mjpegWatchdogTimer = null; // polls for the first decoded MJPEG frame (load event is unreliable)
 let currentStream = null; // 'mse' | 'webrtc' | 'mjpeg' | 'hls' | null
 let cameraAvailabilityTimer = null; // status-only polling while live video cannot start
@@ -1587,6 +1588,24 @@ function startMSEStats() {
 }
 
 // ─── WebRTC ───
+function loadWebRTCIceServers() {
+  if (webRTCIceServersPromise) return webRTCIceServersPromise;
+  webRTCIceServersPromise = fetch('/api/streaming/ice-servers')
+    .then(function(response) {
+      if (!response.ok) return [];
+      return response.json().then(iceServersFromResponse);
+    })
+    .catch(function() { return []; });
+  return webRTCIceServersPromise;
+}
+
+// Camera pages call this alongside their initial status request. WebRTC still
+// owns and awaits the promise, but no longer pays a serial configuration round
+// trip after the camera has already been confirmed online.
+function prewarmWebRTCConfig() {
+  loadWebRTCIceServers();
+}
+
 async function startWebRTC() {
   const name = getCameraName();
   if (!name) return;
@@ -1610,15 +1629,7 @@ async function startWebRTC() {
     // server's answer cannot signal it. Fetch the operator-configured STUN/
     // TURN list; the privacy-first default is empty (host candidates only, no
     // IP leak to a third-party STUN). A fetch failure also degrades to [].
-    let iceServers = [];
-    try {
-      const iceResp = await fetch('/api/streaming/ice-servers');
-      if (iceResp.ok) {
-        iceServers = iceServersFromResponse(await iceResp.json());
-      }
-    } catch (e) {
-      iceServers = [];
-    }
+    const iceServers = await loadWebRTCIceServers();
 
     const pc = new RTCPeerConnection({ iceServers });
     attemptedPeer = pc;

@@ -623,6 +623,11 @@
       document.getElementById('cam-breadcrumb').textContent = displayName;
       document.title = displayName + ' - Vedetta';
 
+      // Start the small, page-scoped ICE configuration request in parallel
+      // with camera status. If the camera is online, WebRTC can create its
+      // peer immediately instead of waiting for a second serial round trip.
+      prewarmWebRTCConfig();
+
       // Verify the camera and read its current availability before starting any
       // live transport. Sleeping and offline cameras get an immediate useful
       // state instead of entering the iPhone HLS fallback cascade.
@@ -696,6 +701,10 @@
         if (!playbackDate && initialState !== 'live') {
           showCameraIdleState(camName, initialState, cameraStatus);
           startCameraAvailabilityWatch(camName);
+        } else if (!playbackDate) {
+          // Signaling is the latency-critical path. Start it before timeline,
+          // zone, PTZ, and detection setup issue their own requests/work.
+          startLiveStream();
         }
 
         // Load events (embed=1 disables auto-pagination so the per-camera
@@ -731,9 +740,6 @@
 
         if (playbackDate) {
           setTimeout(function() { startPlayback(playbackDate); }, 500);
-        } else if (initialState === 'live') {
-          // Auto-start live stream (platform picks the best transport)
-          startLiveStream();
         }
       }
     })();

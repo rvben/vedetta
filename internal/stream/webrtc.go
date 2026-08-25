@@ -86,6 +86,14 @@ type peerState struct {
 	mu           sync.Mutex
 	keyframeSeen bool
 
+	// deliveryMu makes the cached-GOP replay and the transition to live RTP a
+	// single ordered operation for this viewer. Packets received before ICE is
+	// ready are intentionally skipped; a packet arriving during activation
+	// waits and is delivered immediately after the cached GOP, so there is no
+	// decode-corrupting hole at the handoff boundary.
+	deliveryMu     sync.Mutex
+	transportReady bool
+
 	// Forwarding diagnostics. WriteRTP can fail silently deep in the pion
 	// stack (e.g. a buffer pool with a fixed-size slot rejects payloads
 	// larger than its cap with io.ErrShortBuffer). Without counters we
@@ -119,6 +127,52 @@ type peerState struct {
 	audioErr      atomic.Uint64
 	loggedErr     atomic.Bool
 	statsCancel   context.CancelFunc
+}
+
+func (p *peerState) deliverVideo(pkt *rtp.Packet) error {
+	p.deliveryMu.Lock()
+	defer p.deliveryMu.Unlock()
+	if !p.transportReady {
+		return nil
+	}
+	return p.writeVideo(pkt)
+}
+
+func (p *peerState) deliverAudio(pkt *rtp.Packet) error {
+	p.deliveryMu.Lock()
+	defer p.deliveryMu.Unlock()
+	if !p.transportReady {
+		return nil
+	}
+	return p.writeAudio(pkt)
+}
+
+// activateTransport primes a newly connected viewer with the source's latest
+// independently decodable GOP, then opens the live packet path without a race.
+// The source cache is read while deliveryMu is held: any packet skipped before
+// this lock is already in the cache, and any packet arriving afterward waits
+// behind the replay.
+func (p *peerState) activateTransport(source *rtsp.Source) {
+	p.deliveryMu.Lock()
+	defer p.deliveryMu.Unlock()
+	if p.transportReady {
+		return
+	}
+
+	primed := 0
+	for _, pkt := range source.LatestVideoGOP() {
+		if err := p.writeVideo(pkt); err != nil {
+			// A fresh keyframe on the live path can recover from a failed replay.
+			p.mu.Lock()
+			p.keyframeSeen = false
+			p.mu.Unlock()
+			slog.Warn("failed to prime WebRTC peer from cached GOP", "camera", p.cameraName, "error", err)
+			break
+		}
+		primed++
+	}
+	p.transportReady = true
+	slog.Info("WebRTC transport ready", "camera", p.cameraName, "primedPackets", primed)
 }
 
 // classifyInbound bumps the NAL-type counter for pkt. The classification
@@ -563,12 +617,23 @@ func isKeyframe(pkt *rtp.Packet) bool {
 		// Single NAL unit: type 5 = IDR, type 7 = SPS
 		return nalType == 5 || nalType == 7
 	case nalType == 24:
-		// STAP-A: check first NAL inside
-		if len(pkt.Payload) < 4 {
-			return false
+		// STAP-A: parameter sets can precede the IDR, and some encoders place
+		// an AUD first. Scan the complete aggregate instead of assuming the
+		// first inner NAL is the random-access unit.
+		offset := 1
+		for offset+2 <= len(pkt.Payload) {
+			size := int(pkt.Payload[offset])<<8 | int(pkt.Payload[offset+1])
+			offset += 2
+			if size < 1 || offset+size > len(pkt.Payload) {
+				return false
+			}
+			innerNALType := pkt.Payload[offset] & 0x1f
+			if innerNALType == 5 || innerNALType == 7 {
+				return true
+			}
+			offset += size
 		}
-		innerNALType := pkt.Payload[3] & 0x1f
-		return innerNALType == 5 || innerNALType == 7
+		return false
 	case nalType == 28:
 		// FU-A: check start bit and NAL type
 		startBit := pkt.Payload[1] & 0x80
@@ -589,7 +654,7 @@ type webrtcConsumer struct {
 
 func (wc *webrtcConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	for _, p := range wc.snapshotPeers() {
-		if err := p.writeVideo(pkt); err != nil {
+		if err := p.deliverVideo(pkt); err != nil {
 			slog.Debug("failed to write video RTP to peer", "error", err)
 		}
 	}
@@ -597,7 +662,7 @@ func (wc *webrtcConsumer) OnVideoRTP(pkt *rtp.Packet) {
 
 func (wc *webrtcConsumer) OnAudioRTP(pkt *rtp.Packet) {
 	for _, p := range wc.snapshotPeers() {
-		if err := p.writeAudio(pkt); err != nil {
+		if err := p.deliverAudio(pkt); err != nil {
 			slog.Debug("failed to write audio RTP to peer", "error", err)
 		}
 	}
@@ -961,6 +1026,7 @@ func (sm *StreamManager) HandleOffer(cameraName, rtspURL string, offer webrtc.Se
 	// Get or create the consumer for this RTSP URL
 	consumer := sm.getOrCreateConsumer(cameraName, rtspURL)
 	consumer.addPeer(peer)
+	var activateOnce sync.Once
 	removePeer := func() {
 		consumer.removePeer(peer)
 		sm.removeConsumerIfEmpty(rtspURL, consumer)
@@ -968,6 +1034,9 @@ func (sm *StreamManager) HandleOffer(cameraName, rtspURL string, offer webrtc.Se
 
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		slog.Info("WebRTC ICE state changed", "camera", cameraName, "state", state.String())
+		if state == webrtc.ICEConnectionStateConnected || state == webrtc.ICEConnectionStateCompleted {
+			activateOnce.Do(func() { peer.activateTransport(source) })
+		}
 		if state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateDisconnected || state == webrtc.ICEConnectionStateClosed {
 			if peer.statsCancel != nil {
 				peer.statsCancel()

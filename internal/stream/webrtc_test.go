@@ -166,6 +166,15 @@ func TestContainsParameterSets(t *testing.T) {
 	}
 }
 
+func TestIsKeyframeScansEverySTAPANAL(t *testing.T) {
+	// AUD first, then IDR: a legal aggregate that the old first-NAL-only
+	// check misclassified, leaving a joining browser black until another GOP.
+	pkt := stapAPacket(1, 100, []byte{0x09, 0xf0}, []byte{0x65, 0x88})
+	if !isKeyframe(pkt) {
+		t.Fatal("STAP-A with a later IDR was not recognized as a keyframe")
+	}
+}
+
 func TestBuildNALPacketCopiesHeaderAndPayload(t *testing.T) {
 	template := idrPacket(1000, 90000)
 	nal := []byte{0x67, 0x42, 0xe0, 0x1f}
@@ -1306,7 +1315,7 @@ func (b *blockingWriter) WriteRTP(*rtp.Packet) error {
 // and writes outside the lock.
 func TestWebrtcConsumer_PeerWriteDoesNotBlockMembershipChanges(t *testing.T) {
 	bw := &blockingWriter{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	slow := &peerState{video: &trackState{track: bw}, keyframeSeen: true}
+	slow := &peerState{video: &trackState{track: bw}, keyframeSeen: true, transportReady: true}
 	wc := &webrtcConsumer{peers: []*peerState{slow}}
 
 	// Single small NAL (type 1, no fragmentation) → exactly one peer write.
@@ -1332,6 +1341,32 @@ func TestWebrtcConsumer_PeerWriteDoesNotBlockMembershipChanges(t *testing.T) {
 		t.Fatal("addPeer blocked while OnVideoRTP held the lock during a slow peer write")
 	}
 	close(bw.release)
+}
+
+func TestPeerActivateTransportPrimesCachedGOPBeforeLivePackets(t *testing.T) {
+	source := rtsp.NewSource("rtsp://test:554/stream")
+	source.SimulateVideoRTPForTest(idrPacket(10, 1000))
+	source.SimulateVideoRTPForTest(pPacket(11, 4000))
+
+	peer, writer := newTestPeer(nil, nil)
+	peer.activateTransport(source)
+	if !peer.transportReady {
+		t.Fatal("peer did not become transport-ready")
+	}
+	if err := peer.deliverVideo(pPacket(12, 7000)); err != nil {
+		t.Fatalf("deliver live packet: %v", err)
+	}
+
+	got := writer.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("output = %d packets, want cached IDR + cached P + live P", len(got))
+	}
+	if got[0].Payload[0]&0x1f != 5 || got[1].Payload[0]&0x1f != 1 || got[2].Payload[0]&0x1f != 1 {
+		t.Fatalf("unexpected replay/live order: %x, %x, %x", got[0].Payload, got[1].Payload, got[2].Payload)
+	}
+	if got[0].SequenceNumber != 0 || got[1].SequenceNumber != 1 || got[2].SequenceNumber != 2 {
+		t.Fatalf("outbound sequence numbers = %d,%d,%d, want 0,1,2", got[0].SequenceNumber, got[1].SequenceNumber, got[2].SequenceNumber)
+	}
 }
 
 func TestStreamManagerClientCounts(t *testing.T) {

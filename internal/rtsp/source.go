@@ -74,7 +74,27 @@ type Source struct {
 	// logged, so a permanently broken source announces itself without filling
 	// the log at the retry interval.
 	lastWarn time.Time
+
+	// latestGOP holds the most recent independently decodable H.264 group of
+	// pictures. The source is already warm for recording/detection, so a new
+	// WebRTC viewer can start from this cache immediately instead of waiting up
+	// to a full camera keyframe interval. Guarded independently from mu because
+	// consumers may request a snapshot while the RTSP callback fans out.
+	gopMu      sync.RWMutex
+	latestGOP  []*rtp.Packet
+	gopBytes   int
+	gopHasIDR  bool
+	gopStartTS uint32
 }
+
+const (
+	// A valid GOP must be retained whole: trimming packets from its front would
+	// leave a viewer with an undecodable or visibly corrupted stream. These
+	// bounds comfortably cover multi-megapixel camera sub-streams while keeping
+	// a pathological encoder from growing memory without limit.
+	maxCachedGOPBytes   = 8 << 20
+	maxCachedGOPPackets = 8192
+)
 
 // Health returns a snapshot of this source's connection attempts.
 func (s *Source) Health() SourceHealth {
@@ -466,6 +486,7 @@ func (s *Source) notifyDisconnect() {
 		copy(sinks, s.reconnectSinks)
 	}
 	s.mu.Unlock()
+	s.clearLatestVideoGOP()
 
 	if wasConnected {
 		s.reconnects.Add(1)
@@ -611,6 +632,7 @@ func (s *Source) fanOutVideo(pkt *rtp.Packet) {
 	// the library-owned buffer. Hand them one immutable deep copy; consumers
 	// only read it, so a single shared clone is safe.
 	pkt = pkt.Clone()
+	s.cacheVideoPacket(pkt)
 	start := time.Now()
 	// Snapshot the consumer set and dispatch without holding s.mu: a consumer
 	// that marshals a segment or writes to a stuck peer must not block
@@ -622,6 +644,111 @@ func (s *Source) fanOutVideo(pkt *rtp.Packet) {
 	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
 		slog.Warn("slow fanOutVideo", "url", SanitizeURL(s.url), "elapsed", elapsed, "consumers", len(consumers))
 	}
+}
+
+// SimulateVideoRTPForTest drives the real clone/cache/fan-out path without a
+// live RTSP server. It is the packet equivalent of SimulateReconnectForTest.
+func (s *Source) SimulateVideoRTPForTest(pkt *rtp.Packet) {
+	s.fanOutVideo(pkt)
+}
+
+// LatestVideoGOP returns an isolated copy of the newest complete-start H.264
+// GOP. It returns nil until an IDR has been observed. Callers may safely
+// rewrite the returned packet headers without affecting the source cache.
+func (s *Source) LatestVideoGOP() []*rtp.Packet {
+	s.gopMu.RLock()
+	defer s.gopMu.RUnlock()
+	if !s.gopHasIDR || len(s.latestGOP) == 0 {
+		return nil
+	}
+	out := make([]*rtp.Packet, len(s.latestGOP))
+	for i, pkt := range s.latestGOP {
+		out[i] = pkt.Clone()
+	}
+	return out
+}
+
+func (s *Source) clearLatestVideoGOP() {
+	s.gopMu.Lock()
+	s.latestGOP = nil
+	s.gopBytes = 0
+	s.gopHasIDR = false
+	s.gopStartTS = 0
+	s.gopMu.Unlock()
+}
+
+// h264RandomAccessFlags identifies parameter-set and IDR starts in the RTP
+// packetization modes cameras commonly use (single NAL, STAP-A, and FU-A).
+func h264RandomAccessFlags(pkt *rtp.Packet) (hasSPS, hasIDR bool) {
+	if pkt == nil || len(pkt.Payload) == 0 {
+		return false, false
+	}
+	switch pkt.Payload[0] & 0x1f {
+	case 5:
+		return false, true
+	case 7:
+		return true, false
+	case 24: // STAP-A: inspect every aggregated NAL, not just the first.
+		offset := 1
+		for offset+2 <= len(pkt.Payload) {
+			size := int(pkt.Payload[offset])<<8 | int(pkt.Payload[offset+1])
+			offset += 2
+			if size < 1 || offset+size > len(pkt.Payload) {
+				return hasSPS, hasIDR
+			}
+			switch pkt.Payload[offset] & 0x1f {
+			case 5:
+				hasIDR = true
+			case 7:
+				hasSPS = true
+			}
+			offset += size
+		}
+		return hasSPS, hasIDR
+	case 28: // FU-A: only the first fragment starts a random-access NAL.
+		if len(pkt.Payload) < 2 || pkt.Payload[1]&0x80 == 0 {
+			return false, false
+		}
+		switch pkt.Payload[1] & 0x1f {
+		case 5:
+			return false, true
+		case 7:
+			return true, false
+		}
+	}
+	return false, false
+}
+
+func (s *Source) cacheVideoPacket(pkt *rtp.Packet) {
+	hasSPS, hasIDR := h264RandomAccessFlags(pkt)
+	s.gopMu.Lock()
+	defer s.gopMu.Unlock()
+
+	// SPS normally precedes the IDR and is the best GOP boundary. A bare IDR
+	// is also valid; preserve same-timestamp SPS/PPS that arrived immediately
+	// before it, otherwise replace the old GOP.
+	if hasSPS || (hasIDR && (len(s.latestGOP) == 0 || s.gopStartTS != pkt.Timestamp)) {
+		s.latestGOP = nil
+		s.gopBytes = 0
+		s.gopHasIDR = false
+		s.gopStartTS = pkt.Timestamp
+	}
+	if len(s.latestGOP) == 0 && !hasSPS && !hasIDR {
+		return
+	}
+
+	packetBytes := len(pkt.Payload) + 64 // include a conservative RTP/header allowance
+	if len(s.latestGOP)+1 > maxCachedGOPPackets || s.gopBytes+packetBytes > maxCachedGOPBytes {
+		// Never expose a partial GOP. Wait for the next random-access boundary.
+		s.latestGOP = nil
+		s.gopBytes = 0
+		s.gopHasIDR = false
+		s.gopStartTS = 0
+		return
+	}
+	s.latestGOP = append(s.latestGOP, pkt)
+	s.gopBytes += packetBytes
+	s.gopHasIDR = s.gopHasIDR || hasIDR
 }
 
 // snapshotConsumers returns a copy of the current consumer set so the per-packet

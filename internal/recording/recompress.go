@@ -285,6 +285,40 @@ func (r *Recompressor) processOne() bool {
 		}
 	}
 
+	// A fixed repair cutoff is deliberately independent of after_days: it makes
+	// a historical repair set stable while new clips continue to arrive. Give
+	// that set strict priority and select clips only, so the scheduled worker
+	// cannot spend the repair window transcoding continuous-recording segments.
+	// Once the set is drained, ordinary tiered-storage selection resumes.
+	if !r.cfg.RepairClipsBefore.IsZero() {
+		for camName := range r.eligibleCameras() {
+			var clips []storage.ClipRecord
+			var err error
+			if priority == "largest" {
+				clips, err = r.db.GetClipRecompressionCandidatesBySize(camName, r.cfg.RepairClipsBefore, 1)
+			} else {
+				clips, err = r.db.GetClipsForRecompression(camName, r.cfg.RepairClipsBefore)
+			}
+			if err != nil {
+				slog.Warn("recompression: historical clip repair query failed", "camera", camName, "error", err)
+				continue
+			}
+			if len(clips) == 0 {
+				continue
+			}
+			c := clips[0]
+			consider(recompressTarget{
+				kind: kindClip, eventID: c.EventID, camera: c.Camera,
+				path: c.ClipPath, sizeBytes: c.ClipSizeBytes, endTime: c.EndTime,
+				failures: c.RecompressFailures,
+			})
+		}
+	}
+
+	if best != nil {
+		return r.processTarget(best)
+	}
+
 	for camName, eff := range r.eligibleCameras() {
 		cutoff := now.Add(-time.Duration(eff.AfterDays) * 24 * time.Hour)
 
@@ -336,7 +370,14 @@ func (r *Recompressor) processOne() bool {
 	if best == nil {
 		return false
 	}
+	return r.processTarget(best)
+}
 
+// processTarget revalidates and transcodes a selected artifact. Keeping the
+// mutation path shared ensures historical repair receives the same locking,
+// retry, validation, atomic-commit, and accounting guarantees as normal
+// tiered-storage recompression.
+func (r *Recompressor) processTarget(best *recompressTarget) bool {
 	// Acquire the shared segment-operation lock. TryLock is intentional: the
 	// recompressor is a background optimization and it is preferable to skip a
 	// cycle than to block a user-initiated delete or urgent cleanup.

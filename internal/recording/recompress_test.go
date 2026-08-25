@@ -508,6 +508,61 @@ func TestRecompressor_PicksLargestClipOverSmallerSegment(t *testing.T) {
 	}
 }
 
+func TestRecompressor_HistoricalClipRepairTakesPriorityOverSegments(t *testing.T) {
+	_, db := newTestRecompressor(t)
+	dir := t.TempDir()
+	now := time.Now()
+
+	segPath := filepath.Join(dir, "large-segment.mp4")
+	if err := os.WriteFile(segPath, make([]byte, 1000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSegment(storage.SegmentRecord{
+		Camera: "cam1", Path: segPath,
+		StartTime: now.Add(-48 * time.Hour), EndTime: now.Add(-47 * time.Hour),
+		SizeBytes: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	historicalClip := seedClip(t, db, dir, "historical", "cam1", 2*time.Hour, 100)
+	seedClip(t, db, dir, "post-fix", "cam1", 30*time.Minute, 800)
+
+	cfg := config.TieredStorageConfig{
+		Enabled: true, AfterDays: 1, Schedule: "00:00-23:59",
+		Interval: time.Second, Priority: "largest", TargetWidth: 640, TargetHeight: 360,
+		RepairClipsBefore: now.Add(-time.Hour),
+	}
+	r := NewRecompressor(cfg, []config.CameraConfig{{Name: "cam1"}}, db, &sync.Mutex{})
+
+	var transcoded []string
+	r.transcodeFn = func(path string, w, h int) (media.TranscodeResult, error) {
+		transcoded = append(transcoded, path)
+		return media.TranscodeResult{OriginalSize: 100, NewSize: 50}, nil
+	}
+
+	if !r.processOne() {
+		t.Fatal("processOne returned false, want historical clip repair")
+	}
+	if len(transcoded) != 1 || transcoded[0] != historicalClip {
+		t.Fatalf("first transcode = %v, want only historical clip %s", transcoded, historicalClip)
+	}
+
+	// Once the fixed repair set is drained, normal tiered-storage work resumes.
+	if !r.processOne() {
+		t.Fatal("second processOne returned false, want normal segment work")
+	}
+	if len(transcoded) != 2 || transcoded[1] != segPath {
+		t.Fatalf("second transcode = %v, want segment %s", transcoded, segPath)
+	}
+	postFix, _, err := db.GetClipRecompressState("post-fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postFix.Recompressed {
+		t.Error("clip ending after repair cutoff must not be included in historical repair")
+	}
+}
+
 func TestRecompressor_ClipTranscodeFailureIncrementsClipFailures(t *testing.T) {
 	_, db := newTestRecompressor(t)
 	dir := t.TempDir()

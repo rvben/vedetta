@@ -107,6 +107,10 @@ recording:
     schedule: "22:00-06:00" # local time; may span midnight
     interval: 30s           # how often the worker processes one segment in-window
     priority: largest       # "largest" reclaims disk fastest; "oldest" processes FIFO
+    # One-time historical repair: while eligible clips ending before this
+    # RFC3339 timestamp remain, they get strict priority over all segments.
+    # Remove after the backlog reaches zero. Example:
+    # repair_clips_before: 2026-08-25T18:44:50Z
 
 events:
   cooldown_seconds: 30

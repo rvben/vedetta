@@ -287,15 +287,17 @@ type UrgentCleanupConfig struct {
 	BatchSize int `yaml:"batch_size"`
 }
 
-// TieredStorageConfig controls scheduled overnight recompression of old segments.
+// TieredStorageConfig controls scheduled overnight recompression of old segments
+// and event clips.
 type TieredStorageConfig struct {
-	Enabled      bool          `yaml:"enabled"`
-	AfterDays    int           `yaml:"after_days"`
-	TargetWidth  int           `yaml:"target_width"`
-	TargetHeight int           `yaml:"target_height"`
-	Schedule     string        `yaml:"schedule"` // "HH:MM-HH:MM", local time, may span midnight
-	Interval     time.Duration `yaml:"interval"` // How often the recompress worker ticks inside the schedule window
-	Priority     string        `yaml:"priority"` // "largest" | "oldest" — which eligible segment to recompress first
+	Enabled           bool          `yaml:"enabled"`
+	AfterDays         int           `yaml:"after_days"`
+	TargetWidth       int           `yaml:"target_width"`
+	TargetHeight      int           `yaml:"target_height"`
+	Schedule          string        `yaml:"schedule"`                      // "HH:MM-HH:MM", local time, may span midnight
+	Interval          time.Duration `yaml:"interval"`                      // How often the recompress worker ticks inside the schedule window
+	Priority          string        `yaml:"priority"`                      // "largest" | "oldest" — which eligible artifact to recompress first
+	RepairClipsBefore time.Time     `yaml:"repair_clips_before,omitempty"` // Prioritize only event clips ending before this fixed RFC3339 cutoff.
 }
 
 // CameraTieredStorageConfig holds per-camera overrides for tiered storage.

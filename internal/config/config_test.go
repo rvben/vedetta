@@ -665,6 +665,29 @@ cameras:
 	if ts.Schedule != "22:00-06:00" {
 		t.Errorf("schedule = %q, want \"22:00-06:00\"", ts.Schedule)
 	}
+	if !ts.RepairClipsBefore.IsZero() {
+		t.Errorf("repair_clips_before = %v, want disabled zero value", ts.RepairClipsBefore)
+	}
+}
+
+func TestTieredStorageHistoricalClipRepairCutoff(t *testing.T) {
+	path := writeConfig(t, `
+cameras:
+  - name: cam1
+    url: rtsp://localhost/stream
+recording:
+  tiered_storage:
+    enabled: true
+    repair_clips_before: 2026-08-25T18:44:50Z
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := time.Date(2026, 8, 25, 18, 44, 50, 0, time.UTC)
+	if got := cfg.Recording.TieredStorage.RepairClipsBefore; !got.Equal(want) {
+		t.Fatalf("RepairClipsBefore = %v, want %v", got, want)
+	}
 }
 
 func TestTieredStoragePerCameraInheritance(t *testing.T) {

@@ -31,7 +31,7 @@ api:
 
 	mqtt := MQTTConfig{
 		Enabled:  true,
-		Host:     "10.10.30.5",
+		Host:     "198.51.100.5",
 		Port:     1883,
 		Username: "vedetta",
 		Password: "secret",
@@ -49,8 +49,8 @@ api:
 	if !cfg.MQTT.Enabled {
 		t.Error("expected MQTT enabled")
 	}
-	if cfg.MQTT.Host != "10.10.30.5" {
-		t.Errorf("expected host 10.10.30.5, got %s", cfg.MQTT.Host)
+	if cfg.MQTT.Host != "198.51.100.5" {
+		t.Errorf("expected host 198.51.100.5, got %s", cfg.MQTT.Host)
 	}
 	if cfg.MQTT.Username != "vedetta" {
 		t.Errorf("expected username vedetta, got %s", cfg.MQTT.Username)

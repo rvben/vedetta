@@ -15,7 +15,7 @@ func TestCheckHost_IPLiterals(t *testing.T) {
 		host    string
 		blocked bool
 	}{
-		{"private 192.168 allowed", "192.168.1.215", false},
+		{"private 192.168 allowed", "192.168.1.1", false},
 		{"private 10.x allowed", "10.0.0.5", false},
 		{"loopback v4 allowed", "127.0.0.1", false},
 		{"loopback v6 allowed", "::1", false},

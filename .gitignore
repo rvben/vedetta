@@ -41,8 +41,11 @@ node_modules/
 test-results/
 playwright-report/
 
-# Superpowers docs (local specs/plans)
+# Superpowers docs (local specs/plans) and working state. These hold session
+# notes that quote real host addresses and credentials, so they must never be
+# published from this repo.
 docs/superpowers/
+.superpowers/
 
 # Git worktrees
 .worktrees/

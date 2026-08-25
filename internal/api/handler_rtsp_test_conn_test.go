@@ -67,7 +67,7 @@ func TestHandleTestRTSP_BlocksLinkLocal(t *testing.T) {
 func TestTestRTSPConnection_AllowsPrivateHost(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	body := `{"url":"rtsp://192.168.1.215:554/stream","timeout_seconds":1}`
+	body := `{"url":"rtsp://192.168.1.1:554/stream","timeout_seconds":1}`
 	req := httptest.NewRequest(http.MethodPost, "/api/cameras/test-rtsp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

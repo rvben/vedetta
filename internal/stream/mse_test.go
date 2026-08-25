@@ -44,11 +44,11 @@ func TestOriginAllowed_TrustedProxyHTTPS(t *testing.T) {
 	// Without trusted-proxy awareness, vedetta would treat the scheme as http and reject.
 	req := httptest.NewRequest("GET", "http://vedetta.am8.nl/api/cameras/front/mse/ws", nil)
 	req.Host = "vedetta.am8.nl"
-	req.RemoteAddr = "10.10.30.10:43210"
+	req.RemoteAddr = "203.0.113.10:43210"
 	req.Header.Set("Origin", "https://vedetta.am8.nl")
 	req.Header.Set("X-Forwarded-Proto", "https")
 
-	trusted := parseTrustedProxies([]string{"10.10.30.10/32"})
+	trusted := parseTrustedProxies([]string{"203.0.113.10/32"})
 	if !originAllowed(req, nil, trusted) {
 		t.Fatal("expected origin from trusted proxy with X-Forwarded-Proto=https to be allowed")
 	}
@@ -62,7 +62,7 @@ func TestOriginAllowed_UntrustedProxyCannotForgeScheme(t *testing.T) {
 	req.Header.Set("Origin", "https://vedetta.am8.nl")
 	req.Header.Set("X-Forwarded-Proto", "https")
 
-	trusted := parseTrustedProxies([]string{"10.10.30.10/32"})
+	trusted := parseTrustedProxies([]string{"203.0.113.10/32"})
 	if originAllowed(req, nil, trusted) {
 		t.Fatal("untrusted client must not be able to spoof X-Forwarded-Proto")
 	}

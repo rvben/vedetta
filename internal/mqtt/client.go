@@ -51,6 +51,16 @@ type Publisher interface {
 // NVR. Long enough for a healthy broker round-trip, short enough to fail fast.
 const defaultPublishTimeout = 5 * time.Second
 
+// defaultWriteTimeout bounds a single write to the broker socket. paho
+// serialises every outbound packet, the keepalive PINGREQ included, onto one
+// goroutine and one connection, so a write that blocks stops keepalive too and
+// the broker drops the session on timeout. paho applies no write deadline by
+// default, which leaves that block unbounded: waitPublish gives up after
+// defaultPublishTimeout but the writer stays stuck, so the session dies anyway.
+// Failing the write surfaces the stall and lets auto-reconnect recover. Well
+// above a healthy write, well below the broker's keepalive grace period.
+const defaultWriteTimeout = 10 * time.Second
+
 // Client wraps an MQTT connection for publishing detection events
 // and Home Assistant MQTT discovery messages.
 type Client struct {
@@ -70,19 +80,18 @@ func (c *Client) waitPublish(token pahomqtt.Token) error {
 	return token.Error()
 }
 
-func New(cfg config.MQTTConfig) (*Client, error) {
-	topic := cfg.Topic
-	if topic == "" {
-		topic = "vedetta"
-	}
-
-	availabilityTopic := topic + "/availability"
-
+// brokerOptions builds the paho client options for cfg. Split out from New so
+// the connection-level guarantees (write deadline, last will, auto-reconnect)
+// are assertable without a live broker.
+func brokerOptions(cfg config.MQTTConfig, availabilityTopic string) *pahomqtt.ClientOptions {
 	opts := pahomqtt.NewClientOptions().
 		AddBroker(fmt.Sprintf("tcp://%s:%d", cfg.Host, cfg.Port)).
 		SetClientID("vedetta").
 		SetAutoReconnect(true).
 		SetWill(availabilityTopic, "offline", 1, true).
+		// Bound every socket write so a broker that stops reading cannot wedge
+		// paho's writer goroutine and take keepalive down with it.
+		SetWriteTimeout(defaultWriteTimeout).
 		// Open the broker connection ourselves so the SSRF policy is enforced
 		// at connect time against the resolved broker address. A custom opener
 		// also bypasses paho's proxy.FromEnvironment path, which would
@@ -94,6 +103,19 @@ func New(cfg config.MQTTConfig) (*Client, error) {
 		opts.SetUsername(cfg.Username)
 		opts.SetPassword(cfg.Password)
 	}
+
+	return opts
+}
+
+func New(cfg config.MQTTConfig) (*Client, error) {
+	topic := cfg.Topic
+	if topic == "" {
+		topic = "vedetta"
+	}
+
+	availabilityTopic := topic + "/availability"
+
+	opts := brokerOptions(cfg, availabilityTopic)
 
 	c := &Client{topic: topic, publishTimeout: defaultPublishTimeout}
 

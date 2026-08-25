@@ -6656,10 +6656,10 @@ function addObjectReference(objectId, objectName, eventId) {
     });
     var liveBtn = document.createElement('button');
     liveBtn.className = 'doorbell-btn doorbell-btn-live';
-    liveBtn.textContent = 'View live';
+    liveBtn.textContent = 'Answer';
     liveBtn.addEventListener('click', function(e) {
       e.stopPropagation();
-      window.location.href = '/camera.html?name=' + encodeURIComponent(data.camera || '');
+      window.location.href = '/doorbell-answer.html?camera=' + encodeURIComponent(data.camera || '') + '&event=' + encodeURIComponent(data.event_id || '');
     });
     actions.appendChild(ackBtn);
     actions.appendChild(liveBtn);

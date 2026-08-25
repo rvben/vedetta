@@ -56,6 +56,7 @@ type Server struct {
 	recorder             *recording.Recorder
 	hub                  *rtsp.Hub
 	streams              *stream.StreamManager
+	talkback             *stream.TalkbackManager
 	mse                  *stream.MSEManager
 	hls                  *stream.HLSManager
 	faceRecognizer       *detect.FaceRecognizer
@@ -580,6 +581,7 @@ func (s *Server) SetSubsystems(cameras *camera.Manager, recorder *recording.Reco
 	s.hub = hub
 	s.webrtcConfig = webrtcCfg
 	s.streams = stream.NewStreamManager(hub, webrtcCfg.ICEServers)
+	s.talkback = stream.NewTalkbackManager(webrtcCfg.ICEServers)
 	s.mse = stream.NewMSEManager(hub, s.config.AllowedOrigins, s.config.TrustedProxies)
 	s.hls = stream.NewHLSManager(hub)
 	s.faceRecognizer = faceRecognizer

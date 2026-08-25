@@ -378,6 +378,16 @@ func (p *Processor) enqueuePendingActivityNotifications(now time.Time) {
 		return
 	}
 	for _, activity := range pending {
+		// The immediate ring push already opened the answer surface. Once a
+		// household member acknowledges every ring in this Activity, a delayed
+		// finalized notification would only re-alert them after the fact.
+		if activity.HasDoorbell && !activity.MissedDoorbell {
+			if _, err := p.options.DB.MarkActivityNotificationQueued(activity.ID, now); err != nil {
+				slog.Error("failed to suppress answered doorbell notification", "activity", activity.ID, "error", err)
+				return
+			}
+			continue
+		}
 		if !enqueuer.EnqueueActivity(activity) {
 			return
 		}

@@ -43,7 +43,15 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
 		HasMotion   bool
 		Stopped     bool
 		Sleeping    bool
+		Doorbell    bool
 		LastSeen    string // RFC3339, empty when no frame has ever been seen
+	}
+
+	doorbellCameras := make(map[string]bool, len(s.cameraConfigs))
+	for _, cfg := range s.cameraConfigs {
+		if cfg.Doorbell.Enabled {
+			doorbellCameras[cfg.Name] = true
+		}
 	}
 
 	cards := make([]cameraCard, 0, len(statuses))
@@ -59,6 +67,7 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
 			HasMotion:   st.HasMotion,
 			Stopped:     st.Stopped,
 			Sleeping:    st.Sleeping,
+			Doorbell:    doorbellCameras[st.Name],
 			LastSeen:    lastSeen,
 		})
 	}
@@ -76,6 +85,13 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
   </div>
   <div class="cam-footer">
     <span class="cam-name">{{.DisplayName}}</span>
+    {{if .Doorbell}}{{if .Stopped}}<span class="cam-doorbell-action is-disabled" aria-disabled="true" title="Start camera to open doorbell">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+      <span>Open doorbell</span>
+    </span>{{else}}<a class="cam-doorbell-action" href="/doorbell-answer.html?camera={{.Name}}" data-action-click="event.stopPropagation()" aria-label="Open doorbell for {{.DisplayName}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+      <span>Open doorbell</span>
+    </a>{{end}}{{end}}
   </div>
 </div>{{end}}`))
 

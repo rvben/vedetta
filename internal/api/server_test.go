@@ -1873,6 +1873,7 @@ func TestExtensionlessRedirect_KnownPages(t *testing.T) {
 	}{
 		{"/events", "/events.html"},
 		{"/activity", "/activity.html"},
+		{"/doorbell-answer", "/doorbell-answer.html"},
 		{"/recordings", "/recordings.html"},
 		{"/people", "/people.html"},
 		{"/objects", "/objects.html"},

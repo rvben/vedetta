@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/storage"
 )
 
 func TestBuildPayload_Doorbell(t *testing.T) {
@@ -16,6 +17,24 @@ func TestBuildPayload_Doorbell(t *testing.T) {
 	}
 	if p["title"] != "Someone's at the door" {
 		t.Errorf("title = %v, want \"Someone's at the door\"", p["title"])
+	}
+	if p["url"] != "/doorbell-answer.html?camera=front_door&event=r1" {
+		t.Errorf("url = %v, want doorbell answer deep link", p["url"])
+	}
+	if p["tag"] != "front_door:doorbell" {
+		t.Errorf("tag = %v, want replacement tag", p["tag"])
+	}
+}
+
+func TestBuildActivityPayload_DoorbellReplacesImmediateRing(t *testing.T) {
+	ev := camera.Event{ID: "r3", CameraName: "front_door", Label: "doorbell", Kind: camera.EventKindDoorbell, Timestamp: time.Now()}
+	activity := storage.Activity{ID: "act-1", CameraName: ev.CameraName, StartTime: ev.Timestamp, EventCount: 1, HasDoorbell: true, PrimaryEvent: ev}
+	var p map[string]any
+	if err := json.Unmarshal(BuildActivityPayload(activity, nil), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p["tag"] != "front_door:doorbell" {
+		t.Errorf("tag = %v, want immediate ring replacement tag", p["tag"])
 	}
 }
 

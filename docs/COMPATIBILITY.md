@@ -26,8 +26,9 @@ updates.
 | TCP, UDP, and automatic RTSP transport | Supported | Configurable per camera. |
 | ONVIF WS-Discovery | Supported | Multicast reachability is required. |
 | ONVIF PTZ controls | Supported | Manual controls only; no autotracking. |
+| ONVIF Profile T audio backchannel | Experimental | The doorbell answer view supports push-to-talk when the camera advertises a mono 8 kHz G.711 PCMA or PCMU backchannel. Firmware behavior still requires model-specific verification. |
 | Sleeping battery cameras | Supported | Use the on-demand camera mode. Exact wake behavior remains vendor-specific. |
-| Doorbell press events | Supported | Per-camera webhook and clip behavior are available. |
+| Doorbell press events | Supported | Per-camera webhook and clip behavior, immediate image-rich web push, a dedicated live answer view, and manual entry from configured doorbell camera cards are available. |
 
 ## Live and playback outputs
 
@@ -83,7 +84,8 @@ A model becomes **verified** only when a compatibility report includes:
 3. stable recording and at least two successful reconnects;
 4. live results for WebRTC, MSE/HLS, and snapshot fallback;
 5. ONVIF discovery and PTZ results where applicable; and
-6. logs and configuration with all personal data and credentials redacted.
+6. doorbell talkback codec and two-way audio results where applicable; and
+7. logs and configuration with all personal data and credentials redacted.
 
 Use the repository's **Camera compatibility report** issue form to contribute a
 result. Reports should state partial failures instead of reducing a camera to a

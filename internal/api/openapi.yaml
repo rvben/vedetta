@@ -1935,6 +1935,100 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/cameras/{name}/talkback/capabilities:
+    get:
+      operationId: getTalkbackCapabilities
+      summary: Probe the camera's ONVIF audio return channel
+      description: Requires an interactive browser session; API bearer tokens cannot probe or control speaker audio.
+      tags: [streaming]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current talkback support and negotiated G.711 codec
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TalkbackCapabilities"
+        "403":
+          description: Interactive authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Camera not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/cameras/{name}/talkback/offer:
+    post:
+      operationId: postTalkbackOffer
+      summary: Start microphone-only WebRTC talkback to an ONVIF backchannel
+      description: Requires an interactive browser session and allows one active speaker per camera.
+      tags: [streaming]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SDPOffer"
+      responses:
+        "200":
+          description: Microphone-only SDP answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SDPAnswer"
+        "400":
+          description: Invalid SDP offer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Interactive authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Camera not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another talkback session owns this camera
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Camera has no supported G.711 audio return channel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Camera talkback is temporarily unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/cameras/{name}/mse/ws:
     get:
       operationId: getMSEWebSocket
@@ -2815,6 +2909,18 @@ components:
         type:
           type: string
         sdp:
+          type: string
+
+    TalkbackCapabilities:
+      type: object
+      required: [supported]
+      properties:
+        supported:
+          type: boolean
+        codec:
+          type: string
+          enum: [PCMU, PCMA]
+        reason:
           type: string
 
     Person:

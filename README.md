@@ -19,8 +19,9 @@ before choosing cameras or hardware for a production installation.
 - **Live video:** WebRTC, Media Source Extensions (MSE), HLS, MJPEG, snapshots,
   and an optional RTSP republish server for downstream consumers.
 - **Camera support:** separate low-resolution detection and high-resolution
-  recording streams, ONVIF discovery and PTZ, doorbell events, and on-demand
-  handling for sleeping battery cameras.
+  recording streams, ONVIF discovery and PTZ, immediate image-rich doorbell
+  alerts, manual doorbell entry from the camera grid, a dedicated answer view,
+  ONVIF Profile T talkback, and on-demand handling for sleeping battery cameras.
 - **Local intelligence:** motion-gated YOLOv8 detection, Hungarian object
   tracking, zones and presence, face recognition, and object re-identification.
 - **Operations:** guided setup, an installable web app, Prometheus metrics,

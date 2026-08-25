@@ -44,6 +44,7 @@ func BuildPayload(ev camera.Event, signer *SnapshotSigner) []byte {
 			p.Title = ev.SubLabel + " is at the door"
 		}
 		p.Tag = ev.CameraName + ":doorbell"
+		p.URL = doorbellAnswerURL(ev.CameraName, ev.ID)
 	}
 	if ev.SnapshotAvailable && signer != nil {
 		p.Image = signer.Sign(ev.ID)
@@ -90,6 +91,9 @@ func BuildActivityPayload(activity storage.Activity, signer *SnapshotSigner) []b
 		if len(activity.RecognizedNames) > 0 {
 			p.Title = activity.RecognizedNames[0] + " is at the door"
 		}
+		// Replace the immediate ring notification instead of stacking a second
+		// card once the Activity quiet period completes.
+		p.Tag = activity.CameraName + ":doorbell"
 	}
 	if ev.SnapshotAvailable && signer != nil {
 		p.Image = signer.Sign(ev.ID)
@@ -103,6 +107,10 @@ func BuildActivityPayload(activity storage.Activity, signer *SnapshotSigner) []b
 		data, _ = json.Marshal(p)
 	}
 	return data
+}
+
+func doorbellAnswerURL(cameraName, eventID string) string {
+	return "/doorbell-answer.html?camera=" + url.QueryEscape(cameraName) + "&event=" + url.QueryEscape(eventID)
 }
 
 // BuildTestPayload produces the operator-requested delivery check. When a

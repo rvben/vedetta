@@ -17,7 +17,7 @@ func (s *Server) AnswerDoorbell(w http.ResponseWriter, r *http.Request, name str
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ring not found"})
 		return
 	}
-	if ev.Kind != camera.EventKindDoorbell {
+	if ev.Kind != camera.EventKindDoorbell || ev.CameraName != name {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ring not found"})
 		return
 	}

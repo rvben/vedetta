@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/config"
 )
 
 // listCameraState fetches GET /api/cameras and returns the named camera's entry.
@@ -32,6 +33,41 @@ func listCameraState(t *testing.T, srv *Server, name string) map[string]any {
 	}
 	t.Fatalf("camera %q missing from /api/cameras response", name)
 	return nil
+}
+
+func TestCameraGridOffersManualDoorbellOnlyForConfiguredDoorbells(t *testing.T) {
+	srv, _ := newTestServer(t)
+	for _, name := range []string{"front-door", "side-door", "garage"} {
+		cam := camera.NewTestCamera(name)
+		cam.SetTestOnline(true)
+		srv.cameras.RegisterForTest(cam)
+	}
+	if err := srv.cameras.StopCamera("side-door"); err != nil {
+		t.Fatalf("StopCamera: %v", err)
+	}
+	srv.cameraConfigs = []config.CameraConfig{
+		{Name: "front-door", Doorbell: config.DoorbellConfig{Enabled: true}},
+		{Name: "side-door", Doorbell: config.DoorbellConfig{Enabled: true}},
+		{Name: "garage"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/partials/camera-grid", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `href="/doorbell-answer.html?camera=front-door"`) {
+		t.Fatalf("configured doorbell is missing manual entry action: %s", body)
+	}
+	if strings.Contains(body, `href="/doorbell-answer.html?camera=garage"`) {
+		t.Fatal("ordinary camera must not expose the doorbell console")
+	}
+	if strings.Contains(body, `href="/doorbell-answer.html?camera=side-door"`) ||
+		!strings.Contains(body, `title="Start camera to open doorbell"`) {
+		t.Fatal("stopped doorbell camera must show a disabled action with a recovery hint")
+	}
 }
 
 // Camera.Status cannot know whether a camera is administratively stopped -

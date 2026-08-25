@@ -59,6 +59,7 @@ type NotificationDispatcher struct {
 type notificationJob struct {
 	event           camera.Event
 	activity        *storage.Activity
+	immediate       bool
 	test            bool
 	targetUser      string
 	snapshotEventID string
@@ -140,6 +141,13 @@ func (d *NotificationDispatcher) VAPIDPublicKey() string {
 // on notification fan-out.
 func (d *NotificationDispatcher) Enqueue(ev camera.Event) {
 	d.enqueue(notificationJob{event: ev})
+}
+
+// EnqueueDoorbell queues a time-sensitive ring notification. It bypasses the
+// per-camera notification cooldown, while still respecting mute, preferences,
+// subscription state, and push-service backoff.
+func (d *NotificationDispatcher) EnqueueDoorbell(ev camera.Event) bool {
+	return d.enqueue(notificationJob{event: ev, immediate: true})
 }
 
 // EnqueueActivity is non-blocking and returns whether the incident was
@@ -281,7 +289,7 @@ func (d *NotificationDispatcher) handleJob(ctx context.Context, job notification
 	}
 
 	for _, user := range users {
-		d.dispatchToUser(ctx, user, ev, identity, payload)
+		d.dispatchToUser(ctx, user, ev, identity, payload, job.immediate)
 	}
 }
 
@@ -343,7 +351,7 @@ func indexOfImageKey(s string) int {
 	return -1
 }
 
-func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string, ev camera.Event, identity string, payload []byte) {
+func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string, ev camera.Event, identity string, payload []byte, bypassCooldown bool) {
 	// 1. Mute check.
 	if muted, _, _ := d.store.GetKV("notify:" + user + ":muted"); muted == "1" {
 		d.metrics.EventsMuted.Add(1)
@@ -361,7 +369,7 @@ func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string
 	}
 	// 3. Cooldown check.
 	key := user + ":" + identity
-	if d.cooldown.Check(key) {
+	if !bypassCooldown && d.cooldown.Check(key) {
 		d.metrics.EventsCooldown.Add(1)
 		return
 	}
@@ -407,7 +415,9 @@ func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string
 		}
 	}
 	if anySuccess {
-		d.cooldown.Mark(key)
+		if !bypassCooldown {
+			d.cooldown.Mark(key)
+		}
 		d.metrics.EventsSent.Add(1)
 	}
 }

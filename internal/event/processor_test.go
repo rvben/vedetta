@@ -128,6 +128,61 @@ func TestProcessorFinalizesAndQueuesActivityOnStartup(t *testing.T) {
 	<-done
 }
 
+func TestProcessorDoesNotReNotifyAnsweredDoorbellActivity(t *testing.T) {
+	db := newEventTestDB(t)
+	ring := camera.Event{
+		ID: "answered-ring", CameraName: "front_door", Label: "doorbell",
+		Kind: camera.EventKindDoorbell, Score: 1, Timestamp: time.Now().Add(-5 * time.Minute), Category: camera.CategoryAlert,
+	}
+	if err := db.SaveEvent(ring); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateEventAnswered(ring.ID, time.Now().Add(-4*time.Minute), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	inputs := eventprocessor.Inputs{
+		Events: make(chan camera.Event), EventEnds: make(chan camera.EventEnd),
+		PresenceEvents: make(chan camera.PresenceEvent), FaceEvents: make(chan camera.FaceEvent),
+		MotionActivity: make(chan camera.MotionActivity), Detections: make(chan camera.DetectionFrame),
+	}
+	notifier := &recordingActivityNotifier{events: make(chan camera.Event, 1), activities: make(chan storage.Activity, 1)}
+	processor, err := eventprocessor.NewProcessor(eventprocessor.Options{
+		Config: &config.Config{}, DB: db, Inputs: inputs, Notifier: notifier, Tracer: otel.Tracer("test"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { processor.Run(ctx); close(done) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		activity, activityErr := db.GetActivityByID("act_answered-ring")
+		if activityErr != nil {
+			t.Fatal(activityErr)
+		}
+		pending, pendingErr := db.PendingActivityNotifications(10)
+		if pendingErr != nil {
+			t.Fatal(pendingErr)
+		}
+		if activity != nil && activity.State == storage.ActivityStateFinalized && len(pending) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("answered ring Activity remained pending")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case got := <-notifier.activities:
+		t.Fatalf("answered ring produced delayed notification: %+v", got)
+	default:
+	}
+	cancel()
+	<-done
+}
+
 func TestProcessorPersistsSubmittedEvent(t *testing.T) {
 	db := newEventTestDB(t)
 

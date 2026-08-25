@@ -753,11 +753,57 @@ input, select { font-family: inherit; }
 }
 
 .cam-name {
+  min-width: 0;
+  flex: 1;
   font-size: var(--text-sm);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.cam-doorbell-action {
+  flex: none;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: -0.25rem -0.25rem -0.25rem 0.625rem;
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-sm);
+  color: var(--cyan);
+  background: var(--cyan-ghost);
+  font-size: var(--text-xs);
+  font-weight: 650;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+}
+
+.cam-doorbell-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.cam-doorbell-action:not(.is-disabled):hover {
+  color: var(--text-inverse);
+  background: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.cam-doorbell-action:not(.is-disabled):active { transform: scale(.97); }
+
+.cam-doorbell-action.is-disabled {
+  color: var(--text-tertiary);
+  background: var(--surface-2);
+  border-color: var(--border-subtle);
+  cursor: not-allowed;
+  opacity: .72;
 }
 
 .cam-meta {

@@ -103,6 +103,25 @@ VideoToolbox, VA-API, and NVDEC are decode backends, not detector providers.
 - MJPEG and snapshots as broad fallbacks; and
 - an optional RTSP server with main and `_sub` paths.
 
+Doorbell presses take a time-sensitive path: after the ring snapshot is
+persisted, web push is queued immediately instead of waiting for the 90-second
+Activity quiet period. The notification opens a dedicated answer surface that
+uses WebRTC first and native HLS as the iPhone fallback. Push-to-talk uses a
+separate microphone-only WebRTC peer bridged to an ONVIF Profile T mono 8 kHz
+G.711 backchannel. The bridge allows one active speaker per camera and reports
+unsupported hardware explicitly; it does not transcode arbitrary audio codecs.
+Doorbell-enabled camera cards can open the same surface without an event; this
+manual mode starts media only and neither synthesizes nor acknowledges a ring.
+Incoming camera audio is preferred once the live view connects, with an
+explicit tap-to-hear fallback for browser autoplay policy. Push-to-talk pauses
+incoming audio and restores the operator's prior listening choice on release.
+A decoded-frame watchdog separately verifies that the picture is still
+advancing; an open WebRTC or HLS transport is not treated as proof of liveness.
+After eight visible seconds without a new frame, the answer surface removes its
+LIVE claim, disables audio controls, shows a reconnecting state, and attempts
+the HLS fallback. If that path also stalls, it preserves snapshot evidence and
+offers an explicit retry.
+
 Consumers have bounded queues and protocol-specific drop/recovery behavior so a
 slow browser or downstream client cannot stall camera ingest. Native AAC is
 remuxed where possible; G.711-to-AAC conversion is limited to the HLS

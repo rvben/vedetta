@@ -292,6 +292,32 @@ func TestDispatcher_CooldownSuppression(t *testing.T) {
 	}
 }
 
+func TestDispatcher_DoorbellBypassesCooldown(t *testing.T) {
+	store := newFakeStore()
+	seedAlice(store, "https://push.example/a")
+	sender := &fakeSender{}
+	d := newTestDispatcher(t, store, sender)
+	ctx, cancel := context.WithCancel(context.Background())
+	d.Start(ctx)
+	ring := sampleEvent()
+	ring.Kind = camera.EventKindDoorbell
+	ring.Label = "doorbell"
+	if !d.EnqueueDoorbell(ring) {
+		t.Fatal("first ring was not accepted")
+	}
+	waitForCalls(t, sender, 1)
+	ring.ID = "e2"
+	if !d.EnqueueDoorbell(ring) {
+		t.Fatal("second ring was not accepted")
+	}
+	waitForCalls(t, sender, 2)
+	cancel()
+	d.Wait()
+	if d.metrics.EventsCooldown.Load() != 0 {
+		t.Fatalf("doorbell rings must bypass cooldown, got %d suppressions", d.metrics.EventsCooldown.Load())
+	}
+}
+
 func TestDispatcher_SeparateActivitiesBypassEventCooldown(t *testing.T) {
 	store := newFakeStore()
 	seedAlice(store, "https://push.example/a")

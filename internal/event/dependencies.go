@@ -47,6 +47,12 @@ type Enqueuer interface {
 	Enqueue(event camera.Event)
 }
 
+// DoorbellEnqueuer accepts a ring for immediate delivery. Doorbell presses
+// are time-sensitive and must not wait for the Activity quiet period.
+type DoorbellEnqueuer interface {
+	EnqueueDoorbell(event camera.Event) bool
+}
+
 // ActivityEnqueuer accepts a finalized incident and reports whether the
 // non-blocking queue accepted it.
 type ActivityEnqueuer interface {

@@ -86,3 +86,16 @@ func TestAnswerDoorbell_RejectsNonDoorbell(t *testing.T) {
 		t.Fatalf("status = %d, want 404 for non-doorbell event; body: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestAnswerDoorbell_RejectsMismatchedCamera(t *testing.T) {
+	s, db := newTestServer(t)
+	if err := db.SaveEvent(camera.Event{ID: "r2", CameraName: "front_door", Label: "doorbell", Kind: camera.EventKindDoorbell, Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/cameras/back_door/doorbell/r2/answer", nil)
+	s.AnswerDoorbell(rec, req, "back_door", "r2")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}

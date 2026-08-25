@@ -89,6 +89,16 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 	}
 
 	if notifier != nil && submitted.Category != camera.CategoryDetection {
+		// A doorbell press is actionable now, not after the incident quiet
+		// period. Enqueue it only after snapshot persistence so the push can
+		// carry a valid image. The finalized Activity notification later uses
+		// the same replacement tag and therefore does not create a second card.
+		if submitted.Kind == camera.EventKindDoorbell {
+			if immediate, ok := notifier.(DoorbellEnqueuer); ok {
+				immediate.EnqueueDoorbell(submitted)
+				return
+			}
+		}
 		// Activity-aware dispatchers notify once after the incident quiet period.
 		// Keep event enqueueing for lightweight/custom Enqueuer implementations.
 		if _, activityAware := notifier.(ActivityEnqueuer); !activityAware {

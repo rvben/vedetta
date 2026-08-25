@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050810">
+  <title>Doorbell - Vedetta</title>
+  <link rel="stylesheet" href="/doorbell-answer.css">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-title" content="Vedetta">
+</head>
+<body>
+  <main class="doorstep" id="doorstep" data-state="connecting">
+    <section class="doorstep-camera" aria-label="Live doorbell camera">
+      <img id="doorstep-snapshot" src="/icon-512.png" alt="">
+      <video id="doorstep-video" autoplay playsinline muted></video>
+
+      <header class="doorstep-topbar">
+        <div class="doorstep-brand">
+          <span class="doorstep-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          </span>
+          <span id="doorstep-camera-name">Front Door</span>
+        </div>
+        <a class="doorstep-close" href="/" aria-label="Close doorbell answer view">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </a>
+      </header>
+
+      <div class="doorstep-live"><span></span><strong id="doorstep-live-label">CONNECTING</strong></div>
+      <div class="doorstep-connecting" id="doorstep-connecting" role="status" aria-live="polite">
+        <span class="doorstep-spinner" aria-hidden="true"></span>
+        <span id="doorstep-connecting-copy">Opening secure live view…</span>
+      </div>
+    </section>
+
+    <section class="doorstep-dock" aria-labelledby="doorstep-title">
+      <div class="doorstep-identity-row">
+        <div class="doorstep-identity">
+          <h1 id="doorstep-title">Someone’s at the door</h1>
+          <p><span id="doorstep-camera-meta">Front Door</span> · <span id="doorstep-time">just now</span></p>
+        </div>
+		<span class="doorstep-manual" id="doorstep-manual" hidden>
+		  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+		  <span>Manual</span>
+		</span>
+		<span class="doorstep-answered" id="doorstep-answered" role="status" aria-live="polite" aria-atomic="true" hidden>
+		  <svg class="doorstep-answer-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+		  <svg class="doorstep-answer-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" hidden><path d="M12 8v5M12 17h.01"/><path d="M10.3 3.7 2.4 18a2 2 0 0 0 1.8 3h15.6a2 2 0 0 0 1.8-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/></svg>
+          <span id="doorstep-answered-copy">Answered by you</span>
+        </span>
+      </div>
+
+      <div class="doorstep-connection" id="doorstep-connection" role="status" aria-live="polite" data-tone="pending">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4.93 4.93a10 10 0 0 1 14.14 0M7.76 7.76a6 6 0 0 1 8.48 0M10.59 10.59a2 2 0 0 1 2.82 0M12 15h.01"/></svg>
+        <span><strong id="doorstep-connection-state">Connecting</strong><span id="doorstep-audio-state"> · camera audio off</span></span>
+        <span class="doorstep-privacy">local</span>
+      </div>
+
+      <div class="doorstep-error" id="doorstep-error" role="alert" hidden>
+        <strong>Live view unavailable</strong>
+        <span id="doorstep-error-copy">The saved doorbell image is still available.</span>
+        <button type="button" id="doorstep-retry">Try again</button>
+      </div>
+
+      <div class="doorstep-controls">
+        <button class="doorstep-control" id="doorstep-listen" type="button" aria-pressed="false" disabled>
+          <span class="doorstep-control-disc">
+            <svg class="speaker-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+            <svg class="speaker-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" hidden><path d="M11 5 6 9H2v6h4l5 4V5ZM22 9l-6 6M16 9l6 6"/></svg>
+          </span>
+          <span id="doorstep-listen-label">Listen</span>
+        </button>
+
+        <button class="doorstep-control doorstep-talk" id="doorstep-talk" type="button" aria-pressed="false" disabled>
+          <span class="doorstep-talk-disc">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
+          </span>
+          <span class="doorstep-talk-label">Checking talkback</span>
+          <span class="doorstep-talk-hint">Microphone stays off</span>
+        </button>
+
+        <button class="doorstep-control doorstep-end" id="doorstep-end" type="button">
+          <span class="doorstep-control-disc">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4.5 15.5c4.8-4.2 10.2-4.2 15 0l-2.3 3.2-3.1-1.4v-2.4a11.5 11.5 0 0 0-4.2 0v2.4l-3.1 1.4-2.3-3.2Z"/></svg>
+          </span>
+          <span>End</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="doorstep-ended" id="doorstep-ended" aria-live="polite" hidden>
+      <div>
+        <span class="doorstep-ended-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 4 4L19 6"/></svg>
+        </span>
+        <h2>Conversation ended</h2>
+        <p id="doorstep-ended-copy">The live session ended.</p>
+        <a id="doorstep-ended-action" href="/doorbell.html">Review doorbell activity</a>
+      </div>
+    </section>
+  </main>
+  <script src="/doorbell-answer-state.js"></script>
+  <script src="/doorbell-answer.js"></script>
+</body>
+</html>

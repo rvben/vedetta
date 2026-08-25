@@ -4,6 +4,7 @@ import (
 	"context"
 	"image"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,52 @@ import (
 	eventprocessor "github.com/rvben/vedetta/internal/event"
 	"github.com/rvben/vedetta/internal/storage"
 )
+
+type blockingPublisher struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingPublisher() *blockingPublisher {
+	return &blockingPublisher{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (p *blockingPublisher) block() {
+	p.once.Do(func() { close(p.started) })
+	<-p.release
+}
+
+func (p *blockingPublisher) PublishEvent(camera.Event, []string) error {
+	p.block()
+	return nil
+}
+
+func (p *blockingPublisher) PublishSnapshot(string, string, []byte) { p.block() }
+func (p *blockingPublisher) PublishDoorbell(string, string, []byte) { p.block() }
+func (p *blockingPublisher) PublishObjectCount(string, string, int) error {
+	p.block()
+	return nil
+}
+func (p *blockingPublisher) PublishPresence(camera.PresenceEvent, string) error {
+	p.block()
+	return nil
+}
+func (p *blockingPublisher) PublishObjectSighting(string, camera.Event) { p.block() }
+
+type recordingDoorbellNotifier struct {
+	doorbells chan camera.Event
+}
+
+func (*recordingDoorbellNotifier) Enqueue(camera.Event) {}
+func (n *recordingDoorbellNotifier) EnqueueDoorbell(event camera.Event) bool {
+	select {
+	case n.doorbells <- event:
+		return true
+	default:
+		return false
+	}
+}
 
 func TestProcessorStopsWhenContextIsCancelled(t *testing.T) {
 	db := newEventTestDB(t)
@@ -235,6 +282,49 @@ func TestProcessorPersistsSubmittedEvent(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("submitted event was not persisted")
+}
+
+func TestProcessorMQTTStallDoesNotDelayEventPersistenceOrFinalization(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Recording.MaxEventDuration = time.Hour
+	publisher := newBlockingPublisher()
+	notifier := &recordingDoorbellNotifier{doorbells: make(chan camera.Event, 1)}
+	defer close(publisher.release)
+	fixture := newRunningProcessor(t, cfg, func(options *eventprocessor.Options) {
+		options.Publisher = func() eventprocessor.Publisher { return publisher }
+		options.Notifier = notifier
+	})
+
+	started := time.Now().Add(-time.Second).UTC().Truncate(time.Millisecond)
+	fixture.events <- camera.Event{
+		ID: "mqtt-blocker", CameraName: "front", Label: "person", Timestamp: started,
+	}
+	waitForStoredEvent(t, fixture.db, "mqtt-blocker", func(got *camera.Event) bool { return true })
+	select {
+	case <-publisher.started:
+	case <-time.After(time.Second):
+		t.Fatal("publisher did not enter blocking call")
+	}
+
+	fixture.events <- camera.Event{
+		ID: "doorbell-behind-mqtt", CameraName: "front", Label: "doorbell",
+		Kind: camera.EventKindDoorbell, Category: camera.CategoryAlert, Timestamp: time.Now(),
+	}
+	waitForStoredEvent(t, fixture.db, "doorbell-behind-mqtt", func(got *camera.Event) bool { return true })
+	select {
+	case got := <-notifier.doorbells:
+		if got.ID != "doorbell-behind-mqtt" {
+			t.Fatalf("notified doorbell = %q", got.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("doorbell notification was delayed by blocked MQTT delivery")
+	}
+
+	ended := started.Add(2 * time.Second)
+	fixture.ends <- camera.EventEnd{EventID: "mqtt-blocker", CameraName: "front", EndTime: ended}
+	waitForStoredEvent(t, fixture.db, "mqtt-blocker", func(got *camera.Event) bool {
+		return got.EndTime.Equal(ended)
+	})
 }
 
 func TestProcessorPersistsEventEnd(t *testing.T) {

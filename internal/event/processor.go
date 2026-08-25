@@ -51,9 +51,10 @@ type Options struct {
 
 // Processor coordinates event lifecycle state on one goroutine.
 type Processor struct {
-	options Options
-	active  map[string]*activeEvent
-	timeout chan string
+	options        Options
+	active         map[string]*activeEvent
+	timeout        chan string
+	mqttDispatcher *mqttPublishDispatcher
 
 	objectCounts map[string]map[string]int
 	cooldowns    map[string]time.Time
@@ -84,18 +85,25 @@ func NewProcessor(options Options) (*Processor, error) {
 		options.Inputs.MotionActivity == nil || options.Inputs.Detections == nil {
 		return nil, fmt.Errorf("event processor: all input channels are required")
 	}
-	return &Processor{
+	processor := &Processor{
 		options:      options,
 		active:       make(map[string]*activeEvent),
 		timeout:      make(chan string, 100),
 		objectCounts: make(map[string]map[string]int),
 		cooldowns:    make(map[string]time.Time),
-	}, nil
+	}
+	if options.Publisher != nil {
+		processor.mqttDispatcher = newMQTTPublishDispatcher(options.Publisher, options.Tracer)
+	}
+	return processor, nil
 }
 
 // Run processes events until ctx is cancelled. It blocks for the lifetime of
 // the processor so callers can wait for a clean shutdown.
 func (p *Processor) Run(ctx context.Context) {
+	if p.mqttDispatcher != nil {
+		go p.mqttDispatcher.run(ctx)
+	}
 	activityTicker := time.NewTicker(activitySweepInterval)
 	defer activityTicker.Stop()
 	p.finalizeActivities(time.Now())
@@ -180,7 +188,7 @@ func (p *Processor) acceptEvent(ctx context.Context, submitted camera.Event) {
 		p.options.Server.BroadcastDoorbellSSE(submitted.CameraName, submitted.ID, submitted.SubLabel)
 	}
 
-	publisher := p.publisher()
+	publisher := p.publisher(eventCtx)
 	if publisher != nil && submitted.Kind != camera.EventKindDoorbell {
 		if p.objectCounts[submitted.CameraName] == nil {
 			p.objectCounts[submitted.CameraName] = make(map[string]int)
@@ -294,7 +302,7 @@ func (p *Processor) finalizeEvent(ctx context.Context, active *activeEvent, endT
 	}
 
 	WaitForEmit(ctx, active.emitDone, emitWaitTimeout)
-	if publisher := p.publisher(); publisher != nil {
+	if publisher := p.publisher(endCtx); publisher != nil {
 		SpanPublish(endCtx, p.options.Tracer, "mqtt.publish_event_end", func() error {
 			if err := publisher.PublishEvent(event, nil); err != nil {
 				slog.Error("failed to publish event end", "event", event.ID, "error", err)
@@ -411,11 +419,11 @@ func (p *Processor) stopActiveTimers() {
 	}
 }
 
-func (p *Processor) publisher() Publisher {
-	if p.options.Publisher == nil {
+func (p *Processor) publisher(ctx context.Context) Publisher {
+	if p.mqttDispatcher == nil || p.options.Publisher() == nil {
 		return nil
 	}
-	return p.options.Publisher()
+	return &queuedPublisher{ctx: ctx, dispatcher: p.mqttDispatcher}
 }
 
 func (p *Processor) recognizeObject(ctx context.Context, submitted camera.Event) {
@@ -428,7 +436,7 @@ func (p *Processor) recognizeObject(ctx context.Context, submitted camera.Event)
 			liveCamera.SetTrackName(submitted.TrackID, matched[0])
 		}
 	}
-	if publisher := p.publisher(); publisher != nil {
+	if publisher := p.publisher(ctx); publisher != nil {
 		for _, name := range matched {
 			publisher.PublishObjectSighting(name, submitted)
 		}
@@ -468,7 +476,7 @@ func (p *Processor) handlePresence(ctx context.Context, presence camera.Presence
 		slog.Error("failed to persist presence event", "zone", presence.ZoneName,
 			"label", presence.Label, "error", err)
 	}
-	if publisher := p.publisher(); publisher != nil {
+	if publisher := p.publisher(ctx); publisher != nil {
 		var objectName string
 		if presence.Type == "zone_enter" {
 			var err error

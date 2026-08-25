@@ -211,16 +211,17 @@ func (m *Manager) IsStopped(name string) bool {
 }
 
 // SubmitDoorbellPress synthesizes a doorbell event for the named camera and
-// injects it into the event pipeline. It uses the camera's latest decoded
-// frame as the snapshot image. Returns the event ID and true on success, or
-// an empty string and false when the camera is unknown or has no frame yet.
+// injects it into the event pipeline. It prefers the camera's full-resolution
+// main-stream frame and falls back to the detection frame when the main stream
+// has not produced a snapshot yet. Returns the event ID and true on success,
+// or an empty string and false when the camera is unknown or has no frame yet.
 func (m *Manager) SubmitDoorbellPress(cameraName string) (string, bool) {
 	cam := m.GetCamera(cameraName)
 	if cam == nil {
 		return "", false
 	}
 
-	rgba := cam.LastSnapshot()
+	rgba := cam.LiveFrame()
 	if rgba == nil {
 		return "", false
 	}

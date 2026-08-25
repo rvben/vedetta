@@ -3,7 +3,10 @@ package camera
 import (
 	"context"
 	"image"
+	"image/color"
 	"testing"
+
+	"github.com/rvben/vedetta/internal/media"
 )
 
 func TestSubmitDoorbellPress(t *testing.T) {
@@ -56,6 +59,35 @@ func TestSubmitDoorbellPress(t *testing.T) {
 	}
 }
 
+func TestSubmitDoorbellPressPrefersMainStreamFrame(t *testing.T) {
+	events := make(chan Event, 1)
+	m := &Manager{
+		cameras:     make(map[string]*Camera),
+		cancelFuncs: make(map[string]context.CancelFunc),
+		events:      events,
+	}
+
+	cam := NewTestCamera("front_door")
+	lowRes := image.NewRGBA(image.Rect(0, 0, 640, 480))
+	lowRes.Set(0, 0, color.RGBA{R: 0xff, A: 0xff})
+	cam.SetTestFrame(lowRes)
+	highRes := image.NewRGBA(image.Rect(0, 0, 2560, 1920))
+	highRes.Set(0, 0, color.RGBA{B: 0xff, A: 0xff})
+	cam.snapConsumer = media.NewTestSnapshotConsumer(highRes)
+	m.RegisterForTest(cam)
+
+	if _, ok := m.SubmitDoorbellPress("front_door"); !ok {
+		t.Fatal("SubmitDoorbellPress: got ok=false")
+	}
+	ev := <-events
+	if got := ev.SnapshotImage.Bounds(); got.Dx() != 2560 || got.Dy() != 1920 {
+		t.Fatalf("doorbell snapshot = %dx%d, want main-stream 2560x1920", got.Dx(), got.Dy())
+	}
+	if got := color.RGBAModel.Convert(ev.SnapshotImage.At(0, 0)).(color.RGBA); got.B != 0xff || got.R != 0 {
+		t.Fatalf("doorbell snapshot pixel = %#v, want main-stream blue pixel", got)
+	}
+}
+
 func TestSubmitDoorbellPressUnknownCamera(t *testing.T) {
 	events := make(chan Event, 4)
 
@@ -82,7 +114,7 @@ func TestSubmitDoorbellPressNoFrame(t *testing.T) {
 	}
 
 	cam := NewTestCamera("back_door")
-	// Do NOT set a frame - LastSnapshot() returns nil.
+	// Do NOT set a frame - LiveFrame() returns nil.
 	m.RegisterForTest(cam)
 
 	id, ok := m.SubmitDoorbellPress("back_door")

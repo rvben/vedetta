@@ -39,17 +39,17 @@ type DetectConsumer struct {
 	sps         []byte
 	pps         []byte
 
-	mu         sync.Mutex
-	frameCh    chan RawFrame
-	lastFrame  time.Time
-	frameDelay time.Duration
-	frameCount uint64
-	lastLog    time.Time
-	rtpCount   uint64
-	auCount    uint64
-	idrCount   uint64
-	haveSync   bool
-	available  bool
+	mu           sync.Mutex
+	frameCh      chan RawFrame
+	lastDispatch time.Time
+	frameDelay   time.Duration
+	frameCount   uint64
+	lastLog      time.Time
+	rtpCount     uint64
+	auCount      uint64
+	idrCount     uint64
+	haveSync     bool
+	available    bool
 
 	// fpsWindow holds the timestamps of the most recent access units for
 	// rolling FPS computation. Trimmed to the last fpsWindowDur on read.
@@ -187,13 +187,17 @@ func (dc *DetectConsumer) OnVideoRTP(pkt *rtp.Packet) {
 		dc.idrCount = 0
 		dc.lastLog = time.Now()
 	}
-	// Rate limit
-	if time.Since(dc.lastFrame) < dc.frameDelay {
-		dc.mu.Unlock()
-		return
-	}
 	dc.mu.Unlock()
 
+	dc.processAccessUnit(au, now)
+}
+
+// processAccessUnit feeds every decodable access unit into the stateful H.264
+// decoder, then rate-limits only the expensive RGB conversion and downstream
+// detection dispatch. Predictive H.264 frames reference earlier access units;
+// dropping compressed frames before Decode corrupts the reference picture and
+// makes the decoder conceal moving regions with stale macroblocks.
+func (dc *DetectConsumer) processAccessUnit(au [][]byte, now time.Time) {
 	isRandomAccess := h264.IsRandomAccess(au)
 
 	dc.mu.Lock()
@@ -260,18 +264,22 @@ func (dc *DetectConsumer) OnVideoRTP(pkt *rtp.Packet) {
 
 	decodeStart := time.Now()
 	ycbcr := dc.h264Dec.Decode(nalStream)
+	metrics.FrameDecodeDuration.Observe(dc.camera, time.Since(decodeStart))
 	if ycbcr == nil {
 		return
 	}
-	rgb24 := ycbcrToRGB24Scaled(ycbcr, dc.width, dc.height)
-	metrics.FrameDecodeDuration.Observe(dc.camera, time.Since(decodeStart))
 	metrics.FramesDecoded.Inc(dc.camera)
 
 	dc.mu.Lock()
-	dc.lastFrame = time.Now()
 	dc.frameCount++
+	if !dc.lastDispatch.IsZero() && now.Sub(dc.lastDispatch) < dc.frameDelay {
+		dc.mu.Unlock()
+		return
+	}
+	dc.lastDispatch = now
 	dc.mu.Unlock()
 
+	rgb24 := ycbcrToRGB24Scaled(ycbcr, dc.width, dc.height)
 	dc.dispatchFrame(RawFrame{Data: rgb24, Width: dc.width, Height: dc.height})
 }
 

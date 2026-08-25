@@ -42,9 +42,16 @@ func (b *safeBuffer) String() string { return string(b.snapshot()) }
 // logger for the duration of the test, restoring the original afterwards.
 func captureLogs(t *testing.T) *safeBuffer {
 	t.Helper()
+	return captureLogsAt(t, slog.LevelInfo)
+}
+
+// captureLogsAt is captureLogs at an explicit threshold, for tests that assert
+// what the access log does once the operator raises verbosity to debug.
+func captureLogsAt(t *testing.T, level slog.Level) *safeBuffer {
+	t.Helper()
 	buf := &safeBuffer{}
 	orig := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: level})))
 	t.Cleanup(func() { slog.SetDefault(orig) })
 	return buf
 }
@@ -78,13 +85,14 @@ func findRequestLog(t *testing.T, buf *safeBuffer) map[string]any {
 	}
 }
 
-// The instrumentation we need to settle the iPhone investigation: every
-// request that reaches vedetta must emit a structured "http request" line
-// carrying enough to identify the device and whether it was a conditional
-// (cache-revalidation) fetch - method, full request URI, response status,
-// User-Agent, and the If-None-Match / Cache-Control request headers.
-func TestRequestLogMiddlewareLogsRequestDetails(t *testing.T) {
-	buf := captureLogs(t)
+// Raising logging.level to debug must restore the full per-request record that
+// client-side diagnosis needs: enough to identify the device and to tell whether
+// a fetch was conditional - method, full request URI, response status,
+// User-Agent, and the If-None-Match / Cache-Control request headers. This is the
+// instrument that settled the iPhone caching investigation; it stays available
+// on demand rather than running permanently.
+func TestRequestLogMiddlewareLogsRequestDetailsAtDebug(t *testing.T) {
+	buf := captureLogsAt(t, slog.LevelDebug)
 
 	h := requestLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
@@ -193,8 +201,12 @@ func TestRequestLogMiddlewarePreservesHijacker(t *testing.T) {
 // logging middleware that wraps every production response. Fails today
 // (500, no upgrade); passes once Hijack() is forwarded. Also asserts
 // the access log reports a truthful 101 rather than a misleading 200.
+//
+// Captured at debug because a live-stream upgrade is a long-lived request and
+// logs there; the status assertion is about the hijacked ResponseWriter, which
+// is independent of the level the line is graded at.
 func TestRequestLogMiddlewareAllowsWebSocketUpgrade(t *testing.T) {
-	buf := captureLogs(t)
+	buf := captureLogsAt(t, slog.LevelDebug)
 
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(*http.Request) bool { return true },

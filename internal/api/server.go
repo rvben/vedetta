@@ -680,10 +680,24 @@ func (w *statusLoggingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, err
 	return conn, rw, err
 }
 
-// requestLogMiddleware emits one structured "http request" line per request
-// that reaches the application, including the User-Agent and the
-// cache-revalidation request headers. This is the ground-truth instrument
-// for diagnosing whether a client ever issues a fresh document fetch.
+// slowRequestThreshold is the duration above which an otherwise successful
+// request is still worth an operator's attention. Ordinary API work (dashboard
+// partials, snapshots, timeline queries) completes in single-digit
+// milliseconds, so a full second means something stalled rather than merely
+// took a while.
+const slowRequestThreshold = time.Second
+
+// requestLogMiddleware emits one structured "http request" line per request, at
+// a level reflecting what that request means.
+//
+// Health probes and the metrics scrape are the overwhelming majority of request
+// volume on a running install (they outnumbered every other line in the log
+// combined) and carry no information while they succeed, so they log at Debug.
+// A request that failed or stalled logs at Warn or Error, carrying the
+// User-Agent and cache-revalidation headers needed to identify the caller.
+// Everything else logs at Info without those fields, which are most of a line's
+// length and only matter while diagnosing one specific client. Set
+// logging.level to debug to restore the full per-request record.
 func requestLogMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lw := &statusLoggingResponseWriter{ResponseWriter: w}
@@ -702,17 +716,70 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 			metrics.HTTPRequestsTotal.Inc(class)
 			metrics.HTTPRequestDuration.Observe(class, elapsed)
 		}
-		slog.Info("http request",
+
+		level := requestLogLevel(r, status, elapsed)
+		attrs := []any{
 			"method", r.Method,
 			"uri", r.URL.RequestURI(),
 			"status", status,
-			"ua", r.UserAgent(),
-			"if_none_match", r.Header.Get("If-None-Match"),
-			"cache_control", r.Header.Get("Cache-Control"),
 			"remote", r.RemoteAddr,
 			"dur_ms", elapsed.Milliseconds(),
-		)
+		}
+		// Client detail rides along only where it earns its size: on a request
+		// that went wrong, and whenever the operator has asked for debug output
+		// and therefore wants the full per-request record back.
+		verbose := slog.Default().Enabled(r.Context(), slog.LevelDebug)
+		if verbose || level != slog.LevelInfo {
+			attrs = append(attrs,
+				"ua", r.UserAgent(),
+				"if_none_match", r.Header.Get("If-None-Match"),
+				"cache_control", r.Header.Get("Cache-Control"),
+			)
+		}
+		slog.Log(r.Context(), level, "http request", attrs...)
 	})
+}
+
+// requestLogLevel grades one completed request. Failure outranks everything, so
+// a health probe that returns 500 is still an Error rather than being demoted
+// to Debug for being a probe; server faults outrank client errors, so a slow
+// 500 reports as a fault rather than as slowness.
+func requestLogLevel(r *http.Request, status int, elapsed time.Duration) slog.Level {
+	switch {
+	case status >= http.StatusInternalServerError:
+		return slog.LevelError
+	case status >= http.StatusBadRequest:
+		return slog.LevelWarn
+	}
+	// A stream is meant to stay open, so its duration measures how well it is
+	// working, not how slow it is. Grading these by elapsed time would report
+	// every healthy live view as a stalled request.
+	if isLongLivedRequest(r) {
+		return slog.LevelDebug
+	}
+	if elapsed >= slowRequestThreshold {
+		return slog.LevelWarn
+	}
+	if !shouldTraceRequest(r) {
+		return slog.LevelDebug
+	}
+	return slog.LevelInfo
+}
+
+// isLongLivedRequest reports whether a request is expected to stay open for as
+// long as it is healthy: server-sent event streams and the WebSocket/WebRTC
+// live transports.
+func isLongLivedRequest(r *http.Request) bool {
+	p := r.URL.Path
+	switch {
+	case p == "/api/events/stream":
+		return true
+	case strings.HasSuffix(p, "/detections"):
+		return true
+	case strings.HasSuffix(p, "/mse/ws"), strings.HasSuffix(p, "/webrtc"):
+		return true
+	}
+	return false
 }
 
 // statusClass maps an HTTP status code to its class label (e.g. 404 -> "4xx").

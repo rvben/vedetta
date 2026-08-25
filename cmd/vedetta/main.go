@@ -477,16 +477,14 @@ func main() {
 	awaitShutdown(ctx, cancel, server, sub.recorder)
 }
 
-// wireLogging installs OTLP log export (when enabled) by wrapping the base
-// handler in a fan-out and setting it as the slog default, then returns the
-// provider so the caller can defer Shutdown. When logging is disabled it returns
-// a base-only provider whose Shutdown is a no-op. The Fallback* fields hand the
-// tracing transport (endpoint, protocol, insecure) to logging as one unit, so
-// that when logging configures no endpoint of its own it reuses tracing's whole
-// transport atomically rather than a mismatched mix.
-// applyLogLevel sets the process-wide level from config. An unrecognized name
-// leaves the level untouched and says so, rather than silently reverting to
-// Info and leaving the operator to wonder why debug output never appeared.
+// applyLogLevel sets the process-wide level from config.
+//
+// config.Load rejects an unrecognized level name outright, so by the time a
+// config reaches here the name always parses. The check is kept because the
+// alternative on a name that somehow does not parse is to silently run at Info,
+// which is the exact failure the config-level validation exists to prevent: an
+// operator who raised the level to chase a bug would see an ordinary log and no
+// reason why.
 func applyLogLevel(level *slog.LevelVar, cfg *config.Config) {
 	lvl, ok := logging.ParseLevel(cfg.Logging.Level)
 	if !ok {
@@ -497,6 +495,13 @@ func applyLogLevel(level *slog.LevelVar, cfg *config.Config) {
 	level.Set(lvl)
 }
 
+// wireLogging installs OTLP log export (when enabled) by wrapping the base
+// handler in a fan-out and setting it as the slog default, then returns the
+// provider so the caller can defer Shutdown. When logging is disabled it returns
+// a base-only provider whose Shutdown is a no-op. The Fallback* fields hand the
+// tracing transport (endpoint, protocol, insecure) to logging as one unit, so
+// that when logging configures no endpoint of its own it reuses tracing's whole
+// transport atomically rather than a mismatched mix.
 func wireLogging(ctx context.Context, cfg *config.Config, level slog.Leveler, base slog.Handler) *logging.Provider {
 	lp, _ := logging.Init(ctx, logging.Config{
 		Enabled:          cfg.Logging.Enabled,

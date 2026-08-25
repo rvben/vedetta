@@ -237,6 +237,10 @@ logging:
   # or stalls is reported at warn or error regardless. Set this to debug to get
   # the full per-request record back, including User-Agent and cache headers,
   # when diagnosing a specific client.
+  #
+  # An unrecognized name is a startup error rather than a fallback to info: a
+  # typo here would otherwise produce an ordinary-looking log and no hint that
+  # the setting did nothing.
   level: info
   # OTLP endpoint. A scheme-less host:port (paired with insecure below) or a full
   # URL. Empty reuses the tracing endpoint above; if that is also empty the

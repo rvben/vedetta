@@ -114,6 +114,24 @@ func validHWAccel(s string) bool {
 	}
 }
 
+// validLogLevel reports whether s is an accepted logging.level value. An empty
+// string is accepted and treated as "info" downstream.
+//
+// Kept in sync with logging.ParseLevel, and validated here for the same reason
+// as hwaccel above: the config layer depends on nothing but the standard
+// library. TestLogLevelNamesMatchLoggingPackage fails if the two drift apart.
+// Rejecting a typo rather than quietly falling back to info matters because the
+// fallback is indistinguishable from a working setting: an operator who wrote
+// "verbose" to chase a bug would get an ordinary log and no hint why.
+func validLogLevel(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "debug", "info", "warn", "warning", "error":
+		return true
+	default:
+		return false
+	}
+}
+
 // WebRTCConfig controls the ICE servers offered to WebRTC viewers.
 type WebRTCConfig struct {
 	// ICEServers is the explicit list of STUN/TURN servers advertised to
@@ -585,6 +603,10 @@ func Load(path string) (*Config, error) {
 
 	if !validHWAccel(cfg.Codecs.HWAccel) {
 		return nil, fmt.Errorf("codecs.hwaccel: invalid value %q (want auto, software, videotoolbox, vaapi, or nvdec)", cfg.Codecs.HWAccel)
+	}
+
+	if !validLogLevel(cfg.Logging.Level) {
+		return nil, fmt.Errorf("logging.level: invalid value %q (want debug, info, warn, or error)", cfg.Logging.Level)
 	}
 
 	if cfg.Recording.MaxStorage != "" {

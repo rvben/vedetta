@@ -1,4 +1,10 @@
+# The project type is pinned rather than detected. Auto-detection matches
+# package.json ahead of go.mod, and the root package.json is the private
+# Playwright harness with no version field, so a detected release reads the
+# version from the wrong file and fails. Nothing in CI exercises this, so the
+# breakage only surfaces at tag time.
 [project]
+type = "go"
 branch = "main"
 
 [changelog]

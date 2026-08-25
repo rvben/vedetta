@@ -49,11 +49,20 @@ function preferredLiveTransport(iosWebKit) {
   return iosWebKit ? 'webrtc' : 'mse';
 }
 
+// A play() failure only proves that the browser requires a user gesture when
+// it is the policy-specific NotAllowedError. AbortError and NotSupportedError
+// are transport/lifecycle failures; presenting "Tap to watch live" for those
+// would hide the real recovery path behind a button that cannot fix it.
+function autoplayNeedsUserGesture(error) {
+  return !!error && error.name === 'NotAllowedError';
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     nextWebrtcAction: nextWebrtcAction,
     liveOverlayState: liveOverlayState,
     initialLiveState: initialLiveState,
     preferredLiveTransport: preferredLiveTransport,
+    autoplayNeedsUserGesture: autoplayNeedsUserGesture,
   };
 }

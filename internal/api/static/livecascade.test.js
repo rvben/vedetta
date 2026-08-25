@@ -7,6 +7,7 @@ const {
   liveOverlayState,
   initialLiveState,
   preferredLiveTransport,
+  autoplayNeedsUserGesture,
 } = require('./livecascade.js');
 
 // nextWebrtcAction bounds the WebRTC reconnect loop. The cap must be a
@@ -96,4 +97,12 @@ test('iPhone starts low-latency WebRTC rather than a snapshot loop', () => {
 
 test('other platforms retain the high-frame-rate MSE cascade', () => {
   assert.equal(preferredLiveTransport(false), 'mse');
+});
+
+test('only an autoplay policy rejection asks the user to tap', () => {
+  assert.equal(autoplayNeedsUserGesture({ name: 'NotAllowedError' }), true);
+  assert.equal(autoplayNeedsUserGesture({ name: 'AbortError' }), false);
+  assert.equal(autoplayNeedsUserGesture({ name: 'NotSupportedError' }), false);
+  assert.equal(autoplayNeedsUserGesture(new Error('network failed')), false);
+  assert.equal(autoplayNeedsUserGesture(null), false);
 });

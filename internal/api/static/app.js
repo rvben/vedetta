@@ -1263,10 +1263,7 @@ function startNativeHLS() {
             if (seq !== hlsSeq) return;
             nativeHLSTargetDuration = liveHlsTargetDuration(playlist) || 1;
             video.src = url;
-            var p = video.play();
-            if (p && typeof p.catch === 'function') {
-              p.catch(function () { showAutoplayBlockedPrompt(video); });
-            }
+            requestMutedAutoplay(video);
             armStallWatchdog();
           });
         }
@@ -1331,6 +1328,7 @@ function startMSE() {
 
   var video = el('live-video');
   if (!video) return;
+  prepareVideoForMutedAutoplay(video);
 
   // Start offline watchdog: if no codec message arrives within the timeout,
   // the camera is likely offline or the stream endpoint is unavailable.
@@ -1435,6 +1433,7 @@ function startMSE() {
       updateMuteButton(codecStr.indexOf('mp4a') !== -1);
       startMSEStats();
       attachAutoplayBlockedDetector(video);
+      requestMutedAutoplay(video);
       toast('MSE stream connected');
 
       // Some browsers (notably iPhone Safari in desktop-website mode) accept
@@ -1655,6 +1654,7 @@ async function startWebRTC() {
       video.playsInline = true;
       video.setAttribute('playsinline', '');
       video.setAttribute('webkit-playsinline', '');
+      video.muted = true;
       video.autoplay = true;
 
       // Signaling and ICE success do not prove that the decoder produced a
@@ -1667,10 +1667,7 @@ async function startWebRTC() {
       } else {
         video.addEventListener('loadeddata', markWebRTCVideoLive, { once: true });
       }
-      var playPromise = video.play();
-      if (playPromise && typeof playPromise.catch === 'function') {
-        playPromise.catch(function() { showAutoplayBlockedPrompt(video); });
-      }
+      requestMutedAutoplay(video);
     };
 
     pc.oniceconnectionstatechange = function() {
@@ -1846,31 +1843,56 @@ function startMjpegMultipart() {
 var userPaused = false;
 var pausedAtTime = 0;
 var resumedFromPause = 0; // timestamp when user resumed, suppresses drift correction
+var autoplayAttemptSeq = 0;
 
-// Some browsers (Safari/iOS, Chrome on flaky tabs) silently block autoplay
-// even on a muted <video>. Show a tap-to-start overlay when we detect
-// a non-user-initiated pause and dismiss it as soon as the user interacts.
+function hideAutoplayBlockedPrompt() {
+  // Invalidate any pending play() rejection from a transport that is being
+  // stopped or replaced, so it cannot resurrect a stale prompt later.
+  autoplayAttemptSeq++;
+  var overlay = el('video-tap-to-start');
+  if (overlay) overlay.classList.add('hidden');
+}
+
+// Every automatic live start is deliberately silent and inline. WebKit
+// permits that without a gesture; users can opt into camera audio afterward.
+function prepareVideoForMutedAutoplay(video) {
+  if (!video) return;
+  video.muted = true;
+  video.autoplay = true;
+  video.playsInline = true;
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', '');
+}
+
 function showAutoplayBlockedPrompt(video) {
   var overlay = el('video-tap-to-start');
   if (!overlay || !video || userPaused || videoScrubbing || video.ended) return;
   overlay.classList.remove('hidden');
 }
 
+function requestMutedAutoplay(video) {
+  prepareVideoForMutedAutoplay(video);
+  var attempt = ++autoplayAttemptSeq;
+  var playPromise = video.play();
+  if (playPromise && typeof playPromise.catch === 'function') {
+    playPromise.catch(function(error) {
+      if (attempt === autoplayAttemptSeq && autoplayNeedsUserGesture(error)) {
+        showAutoplayBlockedPrompt(video);
+      }
+    });
+  }
+}
+
+// A transport handoff also pauses the shared <video>. That is not evidence of
+// autoplay blocking, so never infer policy state from pause/readyState. Only a
+// NotAllowedError from the current play() attempt may reveal the tap affordance.
 function attachAutoplayBlockedDetector(video) {
   if (!video || video._autoplayDetectorAttached) return;
   video._autoplayDetectorAttached = true;
   var overlay = el('video-tap-to-start');
   if (!overlay) return;
-  var check = function() {
-    if (video.paused && !userPaused && !videoScrubbing && video.readyState >= 2 && !video.ended) {
-      showAutoplayBlockedPrompt(video);
-    }
-  };
-  video.addEventListener('pause', check);
   video.addEventListener('play', function() { overlay.classList.add('hidden'); });
   video.addEventListener('playing', function() { overlay.classList.add('hidden'); });
-  // Initial probe in case autoplay was blocked before we attached.
-  setTimeout(check, 500);
 }
 
 function startBlockedVideo() {
@@ -2130,6 +2152,7 @@ function showSnapshotBackdrop(name) {
 }
 
 function showStreamConnecting(label) {
+  hideAutoplayBlockedPrompt();
   var ov = el('stream-connecting');
   if (!ov) return;
   var lbl = el('stream-connecting-label');
@@ -2153,6 +2176,7 @@ function stopStream() {
   }
 
   hideStreamConnecting();
+  hideAutoplayBlockedPrompt();
   hideLiveOffline();
   hideLiveReconnecting();
   cancelDegradedRetry();

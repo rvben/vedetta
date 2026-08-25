@@ -892,7 +892,6 @@ function checkCameraAvailability(manual) {
       if (state === 'live') {
         clearCameraAvailabilityWatch();
         hideLiveOffline();
-        prewarmLiveHLS(name);
         startLiveStream();
         return;
       }
@@ -1039,36 +1038,15 @@ function scheduleDegradedRetry(name) {
   }, delay);
 }
 
-// Picks the best live transport for this platform. iOS WebKit has no usable
-// MediaSource and WebRTC there silently fails over WAN without a TURN server,
-// but it plays HLS natively in a <video> with real H.264 + AAC audio. So iOS
-// goes to native HLS, falling back to the low-latency snapshot stream if the
-// playlist never produces a decoded video frame. Every other client starts
-// with MSE and cascades (MSE -> WebRTC -> MJPEG) guarded by the frame
-// watchdogs. Manual
-// transport buttons still let LAN users opt into WebRTC for higher quality.
-// Kick the server into muxing the live HLS substream the instant the camera
-// page knows it will show live video - before any player attaches. The
-// server's first segment can only close one keyframe interval after the
-// first keyframe (a valid fMP4 segment must span keyframe to keyframe), so a
-// camera with a ~2s GOP needs ~3-4s of head start. iOS AVPlayer abandons a
-// not-yet-ready playlist in ~2s and cascades to the snapshot loop, so the
-// muxing must already be running by the time playback requests the
-// playlist. Fire-and-forget against the SAME URL the player will request
-// first (liveHlsUrl(...,'high')) so it reuses the one server consumer; the
-// response body is irrelevant - the request alone starts the pipeline.
-function prewarmLiveHLS(name) {
-  if (!name) return;
-  try {
-    fetch(liveHlsUrl(name, 'high'), { cache: 'no-store' })
-      .catch(function () { /* warmup is best-effort */ });
-  } catch (e) { /* fetch unavailable - the normal warmup poll still runs */ }
-}
-
+// Picks the best live transport for this platform. iPhone WebKit has no
+// usable MSE, WebRTC fails over this WAN without TURN, and native HLS accepts
+// audio while rendering affected cameras black. Start its proven sequential
+// JPEG feed immediately; every other client retains the higher-frame-rate
+// MSE -> WebRTC -> MJPEG cascade.
 function startLiveStream() {
   clearCameraAvailabilityWatch();
-  if (isIOSWebKit()) {
-    startNativeHLS();
+  if (preferredLiveTransport(isIOSWebKit()) === 'snapshot') {
+    startSnapshotStream();
     return;
   }
   startMSE();

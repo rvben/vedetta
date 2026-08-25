@@ -1,5 +1,5 @@
 'use strict';
-// Pure decisions for the non-iOS live-video cascade. No DOM, no timers, no
+// Pure decisions for the live-video cascade. No DOM, no timers, no
 // globals - so app.js can call these and node --test can verify the exact
 // same code path (same pattern as hlsrecovery.js / livehls.js).
 
@@ -41,10 +41,20 @@ function initialLiveState(status) {
   return 'offline';
 }
 
+// iPhone WebKit accepts Vedetta's native HLS audio timeline on affected
+// cameras while rendering no video frames. The sequential JPEG transport is
+// the only consistently visual path there; choosing it up front avoids an
+// eight-second black-video probe on every page load. Other platforms retain
+// the higher-frame-rate MSE cascade.
+function preferredLiveTransport(iosWebKit) {
+  return iosWebKit ? 'snapshot' : 'mse';
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     nextWebrtcAction: nextWebrtcAction,
     liveOverlayState: liveOverlayState,
     initialLiveState: initialLiveState,
+    preferredLiveTransport: preferredLiveTransport,
   };
 }

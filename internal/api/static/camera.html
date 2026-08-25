@@ -671,17 +671,6 @@
           new URLSearchParams(location.search).get('t'));
         const initialState = initialLiveState(cameraStatus);
 
-        // Pre-warm live HLS immediately if this page will land on the live
-        // view (no recording deep-link). This runs in parallel with the
-        // snapshot/events/timeline/zones init below, giving the server a
-        // multi-second head start to mux the first segment before
-        // startLiveStream() attaches the player - so a slow-keyframe camera
-        // does not cascade to the 2s snapshot loop on a cold load. Crucially,
-        // only an online camera is warmed.
-        if (!playbackDate && initialState === 'live') {
-          prewarmLiveHLS(camName);
-        }
-
         // Snapshot refresh
         const snap = document.getElementById('live-snapshot');
         if (snap) {

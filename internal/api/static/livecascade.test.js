@@ -2,7 +2,12 @@
 // Run: node --test internal/api/static/livecascade.test.js
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { nextWebrtcAction, liveOverlayState, initialLiveState } = require('./livecascade.js');
+const {
+  nextWebrtcAction,
+  liveOverlayState,
+  initialLiveState,
+  preferredLiveTransport,
+} = require('./livecascade.js');
 
 // nextWebrtcAction bounds the WebRTC reconnect loop. The cap must be a
 // strict, SDP-independent limit: the attempt counter is reset only by a
@@ -83,4 +88,12 @@ test('missing or malformed status is not mislabeled as a camera outage', () => {
   assert.equal(initialLiveState(null), 'unavailable');
   assert.equal(initialLiveState({}), 'unavailable');
   assert.equal(initialLiveState({ online: false }), 'unavailable');
+});
+
+test('iPhone starts the reliable visual transport without probing black HLS first', () => {
+  assert.equal(preferredLiveTransport(true), 'snapshot');
+});
+
+test('other platforms retain the high-frame-rate MSE cascade', () => {
+  assert.equal(preferredLiveTransport(false), 'mse');
 });

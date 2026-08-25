@@ -11,9 +11,21 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/image/draw"
 
 	"github.com/rvben/vedetta/internal/camera"
 )
+
+// mqttSnapshotMaxWidth bounds the width of snapshots published over MQTT.
+// Camera frames are multi-megapixel (2560x1920 is typical) and encode to
+// roughly 1 MB of JPEG. PublishSnapshot sends that payload twice, retained, so
+// a full-resolution frame pushes ~2 MB into the broker socket for one event.
+// That overruns the TCP send buffer and blocks paho's single writer goroutine,
+// which also carries the keepalive PINGREQ, so the broker drops the session on
+// keepalive timeout and the last-will marks the NVR offline. Subscribers render
+// these as dashboard tiles and phone notifications; full resolution stays
+// available over the HTTP snapshot API.
+const mqttSnapshotMaxWidth = 640
 
 // EmitEventArtifacts persists an event snapshot, publishes the event and image
 // to MQTT, and enqueues alert notifications. Callers run it asynchronously
@@ -52,9 +64,13 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 		if mqttImage == nil {
 			mqttImage = submitted.SnapshotImage
 		}
+		// Encoded once and shared by both publishes below: the doorbell topic
+		// carries the same frame, and re-encoding a multi-megapixel image costs
+		// more than the publish itself.
+		var jpegData []byte
 		if mqttImage != nil {
 			_, encodeSpan := tracer.Start(mqttCtx, "snapshot.encode")
-			jpegData := encodeJPEG(mqttImage, snapshotQuality)
+			jpegData = encodeMQTTSnapshot(mqttImage, snapshotQuality)
 			encodeSpan.End()
 			if jpegData != nil {
 				_, snapshotSpan := tracer.Start(mqttCtx, "mqtt.publish_snapshot")
@@ -64,10 +80,6 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 		}
 
 		if submitted.Kind == camera.EventKindDoorbell {
-			var jpegData []byte
-			if mqttImage != nil {
-				jpegData = encodeJPEG(mqttImage, snapshotQuality)
-			}
 			_, doorbellSpan := tracer.Start(mqttCtx, "mqtt.publish_doorbell")
 			publisher.PublishDoorbell(submitted.CameraName, submitted.SubLabel, jpegData)
 			doorbellSpan.End()
@@ -141,4 +153,28 @@ func encodeJPEG(img *image.RGBA, quality int) []byte {
 		return nil
 	}
 	return buf.Bytes()
+}
+
+// encodeMQTTSnapshot encodes img for publication over MQTT, downscaling it to
+// mqttSnapshotMaxWidth first so a single event cannot overrun the broker
+// connection.
+func encodeMQTTSnapshot(img *image.RGBA, quality int) []byte {
+	return encodeJPEG(downscaleWidth(img, mqttSnapshotMaxWidth), quality)
+}
+
+// downscaleWidth returns img scaled down to maxWidth, preserving aspect ratio.
+// Images already at or below maxWidth are returned as-is, so this never
+// upscales a low-resolution camera's frame.
+func downscaleWidth(img *image.RGBA, maxWidth int) *image.RGBA {
+	bounds := img.Bounds()
+	if maxWidth < 1 || bounds.Dx() <= maxWidth {
+		return img
+	}
+	height := (bounds.Dy()*maxWidth + bounds.Dx()/2) / bounds.Dx()
+	if height < 1 {
+		height = 1
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, maxWidth, height))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Src, nil)
+	return dst
 }

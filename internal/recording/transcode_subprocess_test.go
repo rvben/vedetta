@@ -19,9 +19,23 @@ import (
 
 var (
 	sharedBinOnce sync.Once
+	sharedBinDir  string
 	sharedBin     string
 	sharedBinErr  error
 )
+
+// TestMain removes the shared binary's directory once the package's tests are
+// done. The build is lazy and shared by every subprocess test, so no single
+// test owns its lifetime and t.TempDir would delete it out from under the
+// others; without cleanup here each `go test` run leaves a copy of the whole
+// vedetta binary in the system temp directory permanently.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sharedBinDir != "" {
+		_ = os.RemoveAll(sharedBinDir)
+	}
+	os.Exit(code)
+}
 
 // sharedVedettaBinary builds the vedetta binary once for the subprocess tests.
 // os.Executable() inside `go test` is the test binary, which has no `transcode`
@@ -34,6 +48,7 @@ func sharedVedettaBinary(t *testing.T) string {
 			sharedBinErr = err
 			return
 		}
+		sharedBinDir = dir
 		bin := filepath.Join(dir, "vedetta")
 		if out, err := exec.Command("go", "build", "-o", bin, "github.com/rvben/vedetta/cmd/vedetta").CombinedOutput(); err != nil {
 			sharedBinErr = fmt.Errorf("build vedetta: %v\n%s", err, out)

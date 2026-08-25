@@ -2,7 +2,7 @@
 // Run: node --test internal/api/static/hlsrecovery.test.js
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { nextHlsErrorAction } = require('./hlsrecovery.js');
+const { nextHlsErrorAction, nativeHlsPlaybackStalled } = require('./hlsrecovery.js');
 
 // nextHlsErrorAction decides what startNativeHLS does when the <video>
 // element fires an `error`. The native iOS HLS player surfaces a recoverable
@@ -47,4 +47,15 @@ test('restart budget is a strict cap, not off-by-one', () => {
     nextHlsErrorAction({ started: true, warmupAttempts: 0, maxWarmupRetries: 15, restartsUsed: 2, maxRestarts: 1 }),
     'escalate'
   );
+});
+
+test('watchdog accepts an advancing native-HLS media clock', () => {
+  assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10.25 }), false);
+  assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10.01 }), true);
+});
+
+test('watchdog does not downgrade paused or backgrounded playback', () => {
+  assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10, paused: true }), false);
+  assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10, userPaused: true }), false);
+  assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10, hidden: true }), false);
 });

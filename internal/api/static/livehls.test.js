@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { liveHlsUrl } = require('./livehls.js');
+const { liveHlsUrl, liveHlsTargetDuration, liveHlsEdgeTolerance } = require('./livehls.js');
 
 // The page pre-warms the live stream by fetching this exact URL, and the
 // player's first real request must resolve to the SAME URL so the server
@@ -31,4 +31,17 @@ test('camera name is URL-encoded', () => {
     liveHlsUrl('back yard/1', 'high'),
     '/api/cameras/back%20yard%2F1/live.m3u8',
   );
+});
+
+test('target duration is parsed from a live playlist', () => {
+  assert.equal(liveHlsTargetDuration('#EXTM3U\n#EXT-X-TARGETDURATION:2\n'), 2);
+  assert.equal(liveHlsTargetDuration('#EXTM3U\n#EXT-X-TARGETDURATION:1.5\n'), 1.5);
+  assert.equal(liveHlsTargetDuration('#EXTM3U\n'), null);
+  assert.equal(liveHlsTargetDuration('#EXT-X-TARGETDURATION:0\n'), null);
+});
+
+test('native HLS live tolerance follows three target durations', () => {
+  assert.equal(liveHlsEdgeTolerance(2), 6.5);
+  assert.equal(liveHlsEdgeTolerance(1), 3.5);
+  assert.equal(liveHlsEdgeTolerance(null), 3.5);
 });

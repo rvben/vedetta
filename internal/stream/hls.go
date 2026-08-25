@@ -509,6 +509,18 @@ func (c *hlsConsumer) playlist() (string, bool) {
 	b.WriteString("#EXTM3U\n")
 	b.WriteString("#EXT-X-VERSION:7\n")
 	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", targetDuration)
+	// AVPlayer otherwise begins at the oldest segment in our deliberately
+	// generous suspend/resume window. Start three target durations from the
+	// live edge: far enough back to avoid underruns, but never half a minute
+	// behind while the page misleadingly looks frozen.
+	startOffset := float64(targetDuration * 3)
+	totalDuration := 0.0
+	for i := range c.ring {
+		totalDuration += c.ring[i].duration
+	}
+	if totalDuration > startOffset {
+		fmt.Fprintf(&b, "#EXT-X-START:TIME-OFFSET=-%.3f,PRECISE=YES\n", startOffset)
+	}
 	fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", c.ring[0].id)
 	if ver := c.initVersionLocked(); ver != "" {
 		fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"live/init.mp4?v=%s\"\n", ver)

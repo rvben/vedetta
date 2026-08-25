@@ -1088,6 +1088,7 @@ var HLS_MAX_RESTARTS = 1;
 var hlsWarmupTimer = null;
 var hlsStallTimer = null;
 var hlsSeq = 0;
+var nativeHLSTargetDuration = 1;
 
 function clearNativeHLS() {
   hlsSeq++;
@@ -1134,6 +1135,7 @@ function startNativeHLS() {
   // dropping to the snapshot loop. This keeps moving video on screen instead
   // of falling straight to static frames when only the main stream is sick.
   var qualityTier = 'high';
+  nativeHLSTargetDuration = 1;
 
   hide('live-snapshot');
   hide('live-mjpeg');
@@ -1182,10 +1184,24 @@ function startNativeHLS() {
 
   function armStallWatchdog() {
     if (hlsStallTimer) clearTimeout(hlsStallTimer);
+    var observedTime = video.currentTime;
     hlsStallTimer = setTimeout(function () {
       if (seq !== hlsSeq) return;
-      // Still connecting, or playing but frozen: step the quality cascade
-      // down before resorting to snapshots.
+      if (!nativeHlsPlaybackStalled({
+        observedTime: observedTime,
+        currentTime: video.currentTime,
+        paused: video.paused,
+        userPaused: userPaused,
+        hidden: document.hidden,
+      })) {
+        // iOS can emit timeupdate less often than this watchdog. The media
+        // clock is the reliable signal: if it advanced, keep the current
+        // rendition and observe the next interval.
+        armStallWatchdog();
+        return;
+      }
+      // The decoded media clock really froze: step the quality cascade down
+      // before resorting to snapshots.
       escalateOrFallback();
     }, HLS_STALL_TIMEOUT_MS);
   }
@@ -1254,13 +1270,16 @@ function startNativeHLS() {
       .then(function (r) {
         if (seq !== hlsSeq) return;
         if (r.ok) {
-          video.src = url;
-          var p = video.play();
-          if (p && typeof p.catch === 'function') {
-            p.catch(function () { /* autoplay overlay handles this */ });
-          }
-          armStallWatchdog();
-          return;
+          return r.text().then(function (playlist) {
+            if (seq !== hlsSeq) return;
+            nativeHLSTargetDuration = liveHlsTargetDuration(playlist) || 1;
+            video.src = url;
+            var p = video.play();
+            if (p && typeof p.catch === 'function') {
+              p.catch(function () { showAutoplayBlockedPrompt(video); });
+            }
+            armStallWatchdog();
+          });
         }
         if (r.status === 503 && warmupAttempts < HLS_MAX_WARMUP_RETRIES) {
           warmupAttempts++;
@@ -1923,8 +1942,14 @@ var pausedAtTime = 0;
 var resumedFromPause = 0; // timestamp when user resumed, suppresses drift correction
 
 // Some browsers (Safari/iOS, Chrome on flaky tabs) silently block autoplay
-// even on a muted <video>. Show a "Click to start" overlay when we detect
+// even on a muted <video>. Show a tap-to-start overlay when we detect
 // a non-user-initiated pause and dismiss it as soon as the user interacts.
+function showAutoplayBlockedPrompt(video) {
+  var overlay = el('video-tap-to-start');
+  if (!overlay || !video || userPaused || videoScrubbing || video.ended) return;
+  overlay.classList.remove('hidden');
+}
+
 function attachAutoplayBlockedDetector(video) {
   if (!video || video._autoplayDetectorAttached) return;
   video._autoplayDetectorAttached = true;
@@ -1932,7 +1957,7 @@ function attachAutoplayBlockedDetector(video) {
   if (!overlay) return;
   var check = function() {
     if (video.paused && !userPaused && !videoScrubbing && video.readyState >= 2 && !video.ended) {
-      overlay.classList.remove('hidden');
+      showAutoplayBlockedPrompt(video);
     }
   };
   video.addEventListener('pause', check);
@@ -1990,7 +2015,10 @@ function seekToLive() {
   var video = el('live-video');
   if (!video || video.classList.contains('hidden')) return;
   resumedFromPause = 0; // re-enable auto-seek
-  if (video.buffered.length > 0) {
+  var win = videoSeekWindow(video);
+  if (win) {
+    video.currentTime = win.end;
+  } else if (video.buffered.length > 0) {
     video.currentTime = video.buffered.end(video.buffered.length - 1);
   }
   video.playbackRate = 1.0;
@@ -2065,6 +2093,10 @@ function bufferedEndFor(video, currentTime) {
   return furthest;
 }
 
+function liveEdgeToleranceSeconds() {
+  return currentStream === 'hls' ? liveHlsEdgeTolerance(nativeHLSTargetDuration) : 2;
+}
+
 function updateVideoProgress() {
   var video = el('live-video');
   var input = el('vc-progress');
@@ -2102,7 +2134,7 @@ function updateVideoProgress() {
     input.setAttribute('aria-valuetext', wallLabel ? 'Recording at ' + wallLabel : 'Recording position');
   } else {
     var behind = Math.max(0, win.end - current);
-    var atLive = behind <= 2;
+    var atLive = behind <= liveEdgeToleranceSeconds();
     time.textContent = atLive ? 'Live' : '−' + (PBS ? PBS.formatMediaTime(behind) : Math.round(behind) + 's');
     input.setAttribute('aria-valuetext', atLive ? 'Live' : Math.round(behind) + ' seconds behind live');
   }
@@ -2152,9 +2184,10 @@ function initVideoScrubber() {
 
 function isBehindLive() {
   var video = el('live-video');
-  if (!video || video.classList.contains('hidden') || !video.buffered.length) return false;
-  var liveEdge = video.buffered.end(video.buffered.length - 1);
-  return (liveEdge - video.currentTime) > 2;
+  if (!video || video.classList.contains('hidden')) return false;
+  var win = videoSeekWindow(video);
+  if (!win) return false;
+  return (win.end - video.currentTime) > liveEdgeToleranceSeconds();
 }
 
 function initViewportPause() {

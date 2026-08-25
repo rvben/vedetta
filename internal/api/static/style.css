@@ -1686,7 +1686,7 @@ body.activity-surface input[type="search"] {
   filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5));
 }
 .video-pause-indicator.hidden { display: none; }
-/* Click-to-start overlay shown when browser blocks autoplay */
+/* Tap-to-start overlay shown when browser blocks autoplay */
 .video-tap-to-start {
   position: absolute;
   top: 50%;

@@ -156,6 +156,36 @@ func TestHLSPlaylistFormat(t *testing.T) {
 	}
 }
 
+func TestHLSPlaylistStartsNearLiveEdge(t *testing.T) {
+	c := newHLSConsumer(nil, nil)
+	c.initSegment = []byte("INIT")
+	for i := uint64(1); i <= 10; i++ {
+		c.ring = append(c.ring, hlsSegment{id: i, data: []byte("segment"), duration: 1.0})
+	}
+
+	pl, ok := c.playlist()
+	if !ok {
+		t.Fatal("playlist must be ready once the ring has segments")
+	}
+	if !strings.Contains(pl, "#EXT-X-START:TIME-OFFSET=-3.000,PRECISE=YES") {
+		t.Fatalf("playlist must start AVPlayer near the live edge\n---\n%s", pl)
+	}
+}
+
+func TestHLSPlaylistOmitsStartHintForShortColdWindow(t *testing.T) {
+	c := newHLSConsumer(nil, nil)
+	c.initSegment = []byte("INIT")
+	c.ring = []hlsSegment{{id: 1, data: []byte("segment"), duration: 1.0}}
+
+	pl, ok := c.playlist()
+	if !ok {
+		t.Fatal("playlist must be ready once the ring has segments")
+	}
+	if strings.Contains(pl, "#EXT-X-START") {
+		t.Fatalf("short cold playlist must not advertise an out-of-range start offset\n---\n%s", pl)
+	}
+}
+
 // iOS AVPlayer caches the EXT-X-MAP init segment by URL and reuses it
 // across playback sessions without a reliable refetch. When an idle HLS
 // consumer is reaped and rebuilt, the new init segment (fresh MP4

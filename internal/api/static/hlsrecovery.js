@@ -22,6 +22,20 @@ function nextHlsErrorAction(state) {
   return state.restartsUsed < state.maxRestarts ? 'restart' : 'escalate';
 }
 
+// Native-HLS timeupdate events can be sparse on iOS even while AVPlayer is
+// decoding normally. Decide a stall from the media clock itself, and never
+// punish an intentionally paused or background-throttled player.
+function nativeHlsPlaybackStalled(state) {
+  if (state.hidden || state.userPaused || state.paused) return false;
+  var before = Number(state.observedTime);
+  var now = Number(state.currentTime);
+  if (!isFinite(before) || !isFinite(now)) return false;
+  return now <= before + 0.05;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { nextHlsErrorAction: nextHlsErrorAction };
+  module.exports = {
+    nextHlsErrorAction: nextHlsErrorAction,
+    nativeHlsPlaybackStalled: nativeHlsPlaybackStalled,
+  };
 }

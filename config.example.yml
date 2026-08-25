@@ -263,11 +263,16 @@ logging:
   # unbounded. Leave empty (the default) to log to stdout, which the process
   # supervisor (launchd / container runtime) captures. When set under launchd,
   # point this at a path distinct from the plist's StandardOutPath so the two
-  # writers do not fight over the same file.
+  # writers do not fight over the same file. Parent directories are created if
+  # they do not exist.
   file: ""
   # Rotate when the active file reaches this size (megabytes). Default 50.
+  # Zero disables rotation entirely, which is only right when something else
+  # (a container runtime, an external logrotate) bounds the file instead.
   max_size_mb: 50
-  # Keep this many rotated files (file.1 .. file.N). Default 5.
+  # Keep this many rotated files (file.1 .. file.N). Default 5. Zero keeps none:
+  # rotation then empties the active file in place, so total on-disk size is
+  # max_size_mb rather than max_size_mb x (max_backups + 1).
   max_backups: 5
 
 # Global doorbell tuning (overridable per camera under cameras[].doorbell).

@@ -34,10 +34,17 @@ function liveHlsEdgeTolerance(targetDuration) {
   return Math.max(2, duration * 3 + 0.5);
 }
 
+function liveHlsPositionIsLive(behindSeconds, targetDuration, hasDecodedFrame) {
+  if (!hasDecodedFrame) return false;
+  var behind = Number(behindSeconds);
+  return isFinite(behind) && behind >= 0 && behind <= liveHlsEdgeTolerance(targetDuration);
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     liveHlsUrl: liveHlsUrl,
     liveHlsTargetDuration: liveHlsTargetDuration,
     liveHlsEdgeTolerance: liveHlsEdgeTolerance,
+    liveHlsPositionIsLive: liveHlsPositionIsLive,
   };
 }

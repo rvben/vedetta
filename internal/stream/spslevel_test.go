@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"bytes"
 	"encoding/hex"
 	"testing"
 
@@ -143,5 +144,36 @@ func TestClampSPSLevel_RequiresKnownFrameRate(t *testing.T) {
 	}
 	if spsFrameRate(&fd) <= 0 {
 		t.Fatal("front_door fixture must declare a frame rate for the clamp to apply")
+	}
+}
+
+// Regression: HLS used the clamped SPS in avcC but left the camera's raw
+// level-5.1 SPS inside every keyframe sample. VideoToolbox accepted the audio
+// track and advanced playback while rendering the contradictory video black.
+func TestReplaceAccessUnitSPSMatchesMuxInit(t *testing.T) {
+	raw := mustHex(t, frontDoorSPSHex)
+	mux := clampSPSLevel(raw)
+	pps := []byte{0x68, 0xee, 0x3c, 0x80}
+	idr := []byte{0x65, 0x88, 0x84}
+	au := [][]byte{raw, pps, idr}
+
+	got := replaceAccessUnitSPS(au, mux)
+	if !bytes.Equal(got[0], mux) {
+		t.Fatalf("keyframe SPS %x does not match mux SPS %x", got[0], mux)
+	}
+	if !bytes.Equal(au[0], raw) {
+		t.Fatal("input access unit was mutated")
+	}
+	if !bytes.Equal(got[1], pps) || !bytes.Equal(got[2], idr) {
+		t.Fatal("non-SPS NAL units changed")
+	}
+}
+
+func TestReplaceAccessUnitSPSIsNoOpWhenAlreadyConsistent(t *testing.T) {
+	mux := clampSPSLevel(mustHex(t, frontDoorSPSHex))
+	au := [][]byte{mux, {0x65, 0x88, 0x84}}
+	got := replaceAccessUnitSPS(au, mux)
+	if &got[0] != &au[0] {
+		t.Fatal("consistent access unit was unnecessarily copied")
 	}
 }

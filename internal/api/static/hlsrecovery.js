@@ -27,6 +27,14 @@ function nextHlsErrorAction(state) {
 // punish an intentionally paused or background-throttled player.
 function nativeHlsPlaybackStalled(state) {
   if (state.hidden || state.userPaused || state.paused) return false;
+  if (state.frameTrackingSupported) {
+    if (!state.hasDecodedFrame) return true;
+    var lastFrameAt = Number(state.lastDecodedFrameAt);
+    var now = Number(state.now);
+    var timeout = Number(state.timeout);
+    if (!isFinite(lastFrameAt) || !isFinite(now) || !isFinite(timeout) || timeout <= 0) return false;
+    return now - lastFrameAt >= timeout;
+  }
   var before = Number(state.observedTime);
   var now = Number(state.currentTime);
   if (!isFinite(before) || !isFinite(now)) return false;

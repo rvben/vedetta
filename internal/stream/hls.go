@@ -64,6 +64,7 @@ type hlsConsumer struct {
 	sourceAttachment
 
 	videoSPS    []byte
+	muxVideoSPS []byte // normalized SPS used by both init and media samples
 	videoPPS    []byte
 	h264Decoder *rtsp.H264AccessUnitDecoder
 
@@ -277,7 +278,8 @@ func (c *hlsConsumer) OnVideoRTP(pkt *rtp.Packet) {
 		firstInit := c.initSegment == nil
 		// Clamp an over-declared H.264 level so iOS native HLS does not size a
 		// huge decode buffer and stall for seconds before playback starts.
-		initSeg, err := buildFMP4Init(clampSPSLevel(c.videoSPS), c.videoPPS, c.aacConfigForInit(), c.audioTimeScale)
+		c.muxVideoSPS = clampSPSLevel(c.videoSPS)
+		initSeg, err := buildFMP4Init(c.muxVideoSPS, c.videoPPS, c.aacConfigForInit(), c.audioTimeScale)
 		if err != nil {
 			slog.Error("HLS init build failed", "stream", c.label, "error", err)
 			return
@@ -297,7 +299,7 @@ func (c *hlsConsumer) OnVideoRTP(pkt *rtp.Packet) {
 				c.vtimer.reset()
 				// videoSPS/videoPPS were just updated from the in-band
 				// change; keep the timer's out-of-band fallback in sync.
-				c.vtimer.setParameterSets(c.videoSPS, c.videoPPS)
+				c.vtimer.setParameterSets(c.muxVideoSPS, c.videoPPS)
 			}
 			c.segVideo = nil
 			c.segVideoTicks = 0
@@ -325,7 +327,7 @@ func (c *hlsConsumer) OnVideoRTP(pkt *rtp.Packet) {
 		c.vtimer = newH264SampleTimer(c.label)
 		// Seed the timer with the current parameter sets so DTS extraction
 		// works for cameras that advertise SPS/PPS only in the SDP.
-		c.vtimer.setParameterSets(c.videoSPS, c.videoPPS)
+		c.vtimer.setParameterSets(c.muxVideoSPS, c.videoPPS)
 	}
 	// Strip SEI before muxing: cameras inject proprietary user-data SEI (e.g.
 	// TP-Link's "TPLINKMARKERBOX") that strict iOS VideoToolbox rejects as bad
@@ -334,6 +336,11 @@ func (c *hlsConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	// it. SEI is supplemental and never required to decode, so dropping it is
 	// safe and fixes playback for any camera that emits junk SEI.
 	au = dropSEINALs(au)
+	// Keep in-band parameter sets byte-for-byte consistent with avcC in the
+	// init segment. Safari/VideoToolbox rejects the video track when the init
+	// advertises our safe normalized level but a keyframe reintroduces the
+	// camera's raw inflated level; audio then advances over a black picture.
+	au = replaceAccessUnitSPS(au, c.muxVideoSPS)
 	if len(au) == 0 {
 		return
 	}

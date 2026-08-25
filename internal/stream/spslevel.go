@@ -1,6 +1,10 @@
 package stream
 
-import "github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
+import (
+	"bytes"
+
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
+)
 
 // h264LevelLimit is one row of H.264 Table A-1: the per-level ceilings this
 // code needs to pick the lowest level a stream legitimately requires.
@@ -90,6 +94,31 @@ func clampSPSLevel(sps []byte) []byte {
 	copy(out, sps)
 	out[3] = minLevel
 	return out
+}
+
+// replaceAccessUnitSPS makes an emitted keyframe agree with the SPS embedded
+// in the fMP4 init segment. A normalized init paired with the camera's raw,
+// over-declared in-band SPS makes strict decoders (notably VideoToolbox)
+// reject the video track while continuing to advance the audio timeline.
+// The outer slice is copied lazily and NAL payloads are never mutated.
+func replaceAccessUnitSPS(au [][]byte, muxSPS []byte) [][]byte {
+	if len(muxSPS) == 0 {
+		return au
+	}
+	var out [][]byte
+	for i, nalu := range au {
+		if len(nalu) == 0 || h264.NALUType(nalu[0]&0x1F) != h264.NALUTypeSPS || bytes.Equal(nalu, muxSPS) {
+			continue
+		}
+		if out == nil {
+			out = append([][]byte(nil), au...)
+		}
+		out[i] = muxSPS
+	}
+	if out != nil {
+		return out
+	}
+	return au
 }
 
 // spsFrameRate returns the frame rate declared in the SPS VUI timing info, or

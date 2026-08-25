@@ -54,6 +54,32 @@ test('watchdog accepts an advancing native-HLS media clock', () => {
   assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10.01 }), true);
 });
 
+test('frame-aware watchdog rejects audio-only advancement over black video', () => {
+  assert.equal(nativeHlsPlaybackStalled({
+    frameTrackingSupported: true,
+    hasDecodedFrame: false,
+    observedTime: 10,
+    currentTime: 20,
+  }), true);
+});
+
+test('frame-aware watchdog follows decoded video frames', () => {
+  assert.equal(nativeHlsPlaybackStalled({
+    frameTrackingSupported: true,
+    hasDecodedFrame: true,
+    lastDecodedFrameAt: 95,
+    now: 100,
+    timeout: 12,
+  }), false);
+  assert.equal(nativeHlsPlaybackStalled({
+    frameTrackingSupported: true,
+    hasDecodedFrame: true,
+    lastDecodedFrameAt: 88,
+    now: 100,
+    timeout: 12,
+  }), true);
+});
+
 test('watchdog does not downgrade paused or backgrounded playback', () => {
   assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10, paused: true }), false);
   assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10, userPaused: true }), false);

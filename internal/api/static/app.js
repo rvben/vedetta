@@ -1089,11 +1089,22 @@ var hlsWarmupTimer = null;
 var hlsStallTimer = null;
 var hlsSeq = 0;
 var nativeHLSTargetDuration = 1;
+var nativeHLSHasDecodedFrame = false;
+var nativeHLSLastDecodedFrameAt = 0;
+var nativeHLSVideo = null;
 
 function clearNativeHLS() {
   hlsSeq++;
   if (hlsWarmupTimer) { clearTimeout(hlsWarmupTimer); hlsWarmupTimer = null; }
   if (hlsStallTimer) { clearTimeout(hlsStallTimer); hlsStallTimer = null; }
+  if (nativeHLSVideo && nativeHLSVideo._hlsFrameCallbackID != null &&
+      typeof nativeHLSVideo.cancelVideoFrameCallback === 'function') {
+    nativeHLSVideo.cancelVideoFrameCallback(nativeHLSVideo._hlsFrameCallbackID);
+    nativeHLSVideo._hlsFrameCallbackID = null;
+  }
+  nativeHLSVideo = null;
+  nativeHLSHasDecodedFrame = false;
+  nativeHLSLastDecodedFrameAt = 0;
 }
 
 // Native HLS playback for iOS WebKit. The <video> element plays the live
@@ -1136,6 +1147,9 @@ function startNativeHLS() {
   // of falling straight to static frames when only the main stream is sick.
   var qualityTier = 'high';
   nativeHLSTargetDuration = 1;
+  nativeHLSHasDecodedFrame = false;
+  nativeHLSLastDecodedFrameAt = 0;
+  nativeHLSVideo = video;
 
   hide('live-snapshot');
   hide('live-mjpeg');
@@ -1173,6 +1187,9 @@ function startNativeHLS() {
     }
     qualityTier = 'low';
     started = false;
+    nativeHLSHasDecodedFrame = false;
+    nativeHLSLastDecodedFrameAt = 0;
+    updatePauseUI();
     warmupAttempts = 0;
     if (hlsWarmupTimer) { clearTimeout(hlsWarmupTimer); hlsWarmupTimer = null; }
     if (hlsStallTimer) { clearTimeout(hlsStallTimer); hlsStallTimer = null; }
@@ -1193,6 +1210,11 @@ function startNativeHLS() {
         paused: video.paused,
         userPaused: userPaused,
         hidden: document.hidden,
+        frameTrackingSupported: typeof video.requestVideoFrameCallback === 'function',
+        hasDecodedFrame: nativeHLSHasDecodedFrame,
+        lastDecodedFrameAt: nativeHLSLastDecodedFrameAt,
+        now: Date.now(),
+        timeout: HLS_STALL_TIMEOUT_MS,
       })) {
         // iOS can emit timeupdate less often than this watchdog. The media
         // clock is the reliable signal: if it advanced, keep the current
@@ -1208,6 +1230,21 @@ function startNativeHLS() {
 
   function onPlaying() {
     if (seq !== hlsSeq) return;
+    // `playing` can mean AAC audio is advancing while VideoToolbox rejected
+    // the video track. Only a delivered video frame may clear Connecting or
+    // make the page claim Live.
+    if (typeof video.requestVideoFrameCallback !== 'function' &&
+        video.videoWidth > 0 && video.videoHeight > 0) {
+      onDecodedVideoFrame();
+    }
+    armStallWatchdog();
+  }
+
+  function onDecodedVideoFrame() {
+    if (seq !== hlsSeq) return;
+    var firstDecodedFrame = !nativeHLSHasDecodedFrame;
+    nativeHLSHasDecodedFrame = true;
+    nativeHLSLastDecodedFrameAt = Date.now();
     if (!started) {
       started = true;
       resetDegradedBackoff();
@@ -1218,6 +1255,23 @@ function startNativeHLS() {
     // Playback is healthy: refresh the restart budget so the next suspend
     // episode also gets a live-HLS resync instead of dropping to snapshots.
     hlsRestartsUsed = 0;
+    if (firstDecodedFrame) updatePauseUI();
+  }
+
+  function observeDecodedVideoFrames() {
+    if (seq !== hlsSeq || typeof video.requestVideoFrameCallback !== 'function') return;
+    video._hlsFrameCallbackID = video.requestVideoFrameCallback(function () {
+      video._hlsFrameCallbackID = null;
+      onDecodedVideoFrame();
+      observeDecodedVideoFrames();
+    });
+  }
+
+  function onTimeUpdate() {
+    if (typeof video.requestVideoFrameCallback !== 'function' &&
+        video.videoWidth > 0 && video.videoHeight > 0) {
+      onDecodedVideoFrame();
+    }
     armStallWatchdog();
   }
 
@@ -1228,6 +1282,10 @@ function startNativeHLS() {
   function restartHLS() {
     if (hlsStallTimer) { clearTimeout(hlsStallTimer); hlsStallTimer = null; }
     showStreamConnecting('Live');
+    started = false;
+    nativeHLSHasDecodedFrame = false;
+    nativeHLSLastDecodedFrameAt = 0;
+    updatePauseUI();
     try { video.removeAttribute('src'); video.load(); } catch (e) { /* best effort */ }
     hlsWarmupTimer = setTimeout(attempt, HLS_WARMUP_RETRY_MS);
   }
@@ -1254,10 +1312,11 @@ function startNativeHLS() {
     escalateOrFallback();
   }
 
-  video._hlsHandlers = { playing: onPlaying, timeupdate: armStallWatchdog, error: onError };
+  video._hlsHandlers = { playing: onPlaying, timeupdate: onTimeUpdate, error: onError };
   video.addEventListener('playing', onPlaying);
-  video.addEventListener('timeupdate', armStallWatchdog);
+  video.addEventListener('timeupdate', onTimeUpdate);
   video.addEventListener('error', onError);
+  observeDecodedVideoFrames();
 
   // The server returns 503 + Retry-After until the first segment exists.
   // Poll the playlist ourselves before handing the URL to the <video> so a
@@ -2134,7 +2193,14 @@ function updateVideoProgress() {
     input.setAttribute('aria-valuetext', wallLabel ? 'Recording at ' + wallLabel : 'Recording position');
   } else {
     var behind = Math.max(0, win.end - current);
-    var atLive = behind <= liveEdgeToleranceSeconds();
+    if (currentStream === 'hls' && !nativeHLSHasDecodedFrame) {
+      time.textContent = 'Loading…';
+      input.setAttribute('aria-valuetext', 'Waiting for live video');
+      return;
+    }
+    var atLive = currentStream === 'hls'
+      ? liveHlsPositionIsLive(behind, nativeHLSTargetDuration, nativeHLSHasDecodedFrame)
+      : behind <= liveEdgeToleranceSeconds();
     time.textContent = atLive ? 'Live' : '−' + (PBS ? PBS.formatMediaTime(behind) : Math.round(behind) + 's');
     input.setAttribute('aria-valuetext', atLive ? 'Live' : Math.round(behind) + ' seconds behind live');
   }
@@ -2185,6 +2251,7 @@ function initVideoScrubber() {
 function isBehindLive() {
   var video = el('live-video');
   if (!video || video.classList.contains('hidden')) return false;
+  if (currentStream === 'hls' && !nativeHLSHasDecodedFrame) return true;
   var win = videoSeekWindow(video);
   if (!win) return false;
   return (win.end - video.currentTime) > liveEdgeToleranceSeconds();

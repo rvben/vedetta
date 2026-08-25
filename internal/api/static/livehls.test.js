@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { liveHlsUrl, liveHlsTargetDuration, liveHlsEdgeTolerance } = require('./livehls.js');
+const { liveHlsUrl, liveHlsTargetDuration, liveHlsEdgeTolerance, liveHlsPositionIsLive } = require('./livehls.js');
 
 // The page pre-warms the live stream by fetching this exact URL, and the
 // player's first real request must resolve to the SAME URL so the server
@@ -44,4 +44,10 @@ test('native HLS live tolerance follows three target durations', () => {
   assert.equal(liveHlsEdgeTolerance(2), 6.5);
   assert.equal(liveHlsEdgeTolerance(1), 3.5);
   assert.equal(liveHlsEdgeTolerance(null), 3.5);
+});
+
+test('native HLS is never called live before a video frame decodes', () => {
+  assert.equal(liveHlsPositionIsLive(0, 2, false), false);
+  assert.equal(liveHlsPositionIsLive(6, 2, true), true);
+  assert.equal(liveHlsPositionIsLive(7, 2, true), false);
 });

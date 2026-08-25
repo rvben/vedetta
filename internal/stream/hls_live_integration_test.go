@@ -1,9 +1,12 @@
 package stream
 
 import (
+	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,24 +30,26 @@ import (
 func TestLiveHLSPipelineProducesVideo(t *testing.T) {
 	cfgPath := os.Getenv("VEDETTA_LIVE_CONFIG")
 	camName := os.Getenv("VEDETTA_LIVE_CAMERA")
-	if cfgPath == "" || camName == "" {
-		t.Skip("set VEDETTA_LIVE_CONFIG and VEDETTA_LIVE_CAMERA to run the live HLS pipeline check")
+	rtspURL := os.Getenv("VEDETTA_LIVE_RTSP_URL")
+	if camName == "" || (cfgPath == "" && rtspURL == "") {
+		t.Skip("set VEDETTA_LIVE_CAMERA and either VEDETTA_LIVE_CONFIG or VEDETTA_LIVE_RTSP_URL to run the live HLS pipeline check")
 	}
 
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		t.Fatalf("load config %s: %v", cfgPath, err)
-	}
-
-	var rtspURL string
-	for _, c := range cfg.Cameras {
-		if c.Name == camName {
-			rtspURL = c.URL // exactly what Camera.DetectURL() / the page uses
-			break
-		}
-	}
 	if rtspURL == "" {
-		t.Fatalf("camera %q not found in %s", camName, cfgPath)
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			t.Fatalf("load config %s: %v", cfgPath, err)
+		}
+
+		for _, c := range cfg.Cameras {
+			if c.Name == camName {
+				rtspURL = c.URL // exactly what Camera.DetectURL() / the page uses
+				break
+			}
+		}
+		if rtspURL == "" {
+			t.Fatalf("camera %q not found in %s", camName, cfgPath)
+		}
 	}
 	safe := rtsp.SanitizeURL(rtspURL)
 	t.Logf("driving live HLS pipeline for camera %q (%s)", camName, safe)
@@ -122,4 +127,32 @@ func TestLiveHLSPipelineProducesVideo(t *testing.T) {
 
 	t.Logf("LIVE HLS VERIFIED: init=%d bytes (v=%s), segment %d=%d bytes - "+
 		"camera %q serves live video, not snapshot-only", len(init), ver, id, len(seg), camName)
+
+	// Structural validity is not enough: AVPlayer can accept and download a
+	// fragmented MP4 timeline while VideoToolbox rejects every H.264 sample,
+	// yielding advancing audio over a black picture. Decode an actual frame
+	// through VideoToolbox when ffmpeg is available on the live-test host.
+	// Feeding init+fragment as one seekable input exactly reproduces the bytes
+	// behind EXT-X-MAP followed by the media segment.
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Log("ffmpeg not installed; skipping live HLS frame decode check")
+		return
+	}
+	media := make([]byte, 0, len(init)+len(seg))
+	media = append(media, init...)
+	media = append(media, seg...)
+	decodeCtx, decodeCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer decodeCancel()
+	args := []string{"-v", "error", "-xerror"}
+	if runtime.GOOS == "darwin" {
+		args = append(args, "-hwaccel", "videotoolbox")
+	}
+	args = append(args, "-i", "pipe:0", "-map", "0:v:0", "-frames:v", "1", "-f", "null", "-")
+	cmd := exec.CommandContext(decodeCtx, ffmpeg, args...)
+	cmd.Stdin = bytes.NewReader(media)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("VideoToolbox could not decode the live HLS video fragment: %v\n%s", err, output)
+	}
+	t.Log("LIVE HLS DECODE VERIFIED: VideoToolbox produced a video frame")
 }

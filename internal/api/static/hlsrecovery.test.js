@@ -50,13 +50,19 @@ test('restart budget is a strict cap, not off-by-one', () => {
 });
 
 test('watchdog accepts an advancing native-HLS media clock', () => {
-  assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10.25 }), false);
-  assert.equal(nativeHlsPlaybackStalled({ observedTime: 10, currentTime: 10.01 }), true);
+  assert.equal(nativeHlsPlaybackStalled({ hasDecodedFrame: true, observedTime: 10, currentTime: 10.25 }), false);
+  assert.equal(nativeHlsPlaybackStalled({ hasDecodedFrame: true, observedTime: 10, currentTime: 10.01 }), true);
 });
 
-test('frame-aware watchdog rejects audio-only advancement over black video', () => {
+test('watchdog rejects audio-only advancement over black video with or without rVFC', () => {
   assert.equal(nativeHlsPlaybackStalled({
     frameTrackingSupported: true,
+    hasDecodedFrame: false,
+    observedTime: 10,
+    currentTime: 20,
+  }), true);
+  assert.equal(nativeHlsPlaybackStalled({
+    frameTrackingSupported: false,
     hasDecodedFrame: false,
     observedTime: 10,
     currentTime: 20,

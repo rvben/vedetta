@@ -1042,9 +1042,10 @@ function scheduleDegradedRetry(name) {
 // Picks the best live transport for this platform. iOS WebKit has no usable
 // MediaSource and WebRTC there silently fails over WAN without a TURN server,
 // but it plays HLS natively in a <video> with real H.264 + AAC audio. So iOS
-// goes to native HLS, falling back to the snapshot loop if the playlist never
-// produces a playable segment. Every other client starts with MSE and
-// cascades (MSE -> WebRTC -> MJPEG) guarded by the frame watchdogs. Manual
+// goes to native HLS, falling back to the low-latency snapshot stream if the
+// playlist never produces a decoded video frame. Every other client starts
+// with MSE and cascades (MSE -> WebRTC -> MJPEG) guarded by the frame
+// watchdogs. Manual
 // transport buttons still let LAN users opt into WebRTC for higher quality.
 // Kick the server into muxing the live HLS substream the instant the camera
 // page knows it will show live video - before any player attaches. The
@@ -1076,13 +1077,13 @@ function startLiveStream() {
 // HLS_WARMUP_RETRY_MS / HLS_MAX_WARMUP_RETRIES bound how long we wait for the
 // server to cut its first segment (it 503s with Retry-After until the first
 // keyframe arrives). HLS_STALL_TIMEOUT_MS is the post-playing watchdog: if
-// playback freezes for this long we fall back to the snapshot loop.
+// playback produces no visual frame for this long we fall back to snapshots.
 var HLS_WARMUP_RETRY_MS = 1000;
 var HLS_MAX_WARMUP_RETRIES = 15;
-var HLS_STALL_TIMEOUT_MS = 12000;
+var HLS_STALL_TIMEOUT_MS = 8000;
 // A post-start error (notably an evicted-segment 404 after iOS suspends and
 // resumes a backgrounded tab) gets this many live-HLS restarts to resync to
-// the live edge before the quality/snapshot cascade. The budget is refreshed
+// the live edge before the snapshot fallback. The budget is refreshed
 // each time playback recovers, so every suspend episode gets its own restart.
 var HLS_MAX_RESTARTS = 1;
 var hlsWarmupTimer = null;
@@ -1139,13 +1140,9 @@ function startNativeHLS() {
   var started = false;
   var warmupAttempts = 0;
   var hlsRestartsUsed = 0;
-  // Quality cascade. 'high' is the main/record stream (1080p, AAC audio) but
-  // it can flap; if it never produces a playable segment within the warmup
-  // budget (or stalls after starting) we step down to 'low' (the detect
-  // substream, which stays connected) before giving up on video entirely and
-  // dropping to the snapshot loop. This keeps moving video on screen instead
-  // of falling straight to static frames when only the main stream is sick.
-  var qualityTier = 'high';
+  // Native HLS uses the already-warm detection stream. If AVPlayer accepts
+  // its audio timeline but never decodes video, fall back to the iPhone-safe
+  // snapshot stream; retrying ?quality=low would select the same RTSP source.
   nativeHLSTargetDuration = 1;
   nativeHLSHasDecodedFrame = false;
   nativeHLSLastDecodedFrameAt = 0;
@@ -1176,33 +1173,19 @@ function startNativeHLS() {
     startSnapshotStream();
   }
 
-  // Step the quality cascade down one level before resorting to snapshots.
-  // From 'high' we retry the whole warmup on the stable 'low' substream;
-  // from 'low' there is nowhere left to go, so fall back to snapshots.
   function escalateOrFallback() {
     if (seq !== hlsSeq) return;
-    if (qualityTier !== 'high') {
-      fallback();
-      return;
-    }
-    qualityTier = 'low';
-    started = false;
-    nativeHLSHasDecodedFrame = false;
-    nativeHLSLastDecodedFrameAt = 0;
-    updatePauseUI();
-    warmupAttempts = 0;
-    if (hlsWarmupTimer) { clearTimeout(hlsWarmupTimer); hlsWarmupTimer = null; }
-    if (hlsStallTimer) { clearTimeout(hlsStallTimer); hlsStallTimer = null; }
-    showStreamConnecting('Live');
-    // Reset the element so a prior error state does not poison the retry.
-    try { video.removeAttribute('src'); video.load(); } catch (e) { /* best effort */ }
-    hlsWarmupTimer = setTimeout(attempt, HLS_WARMUP_RETRY_MS);
+    fallback();
   }
 
   function armStallWatchdog() {
-    if (hlsStallTimer) clearTimeout(hlsStallTimer);
+    // Keep one fixed visual deadline. Safari emits timeupdate for advancing
+    // AAC even when VideoToolbox renders no frames; resetting this timer from
+    // those events produced a permanent "Connecting live…" spinner.
+    if (hlsStallTimer) return;
     var observedTime = video.currentTime;
     hlsStallTimer = setTimeout(function () {
+      hlsStallTimer = null;
       if (seq !== hlsSeq) return;
       if (!nativeHlsPlaybackStalled({
         observedTime: observedTime,
@@ -1216,9 +1199,9 @@ function startNativeHLS() {
         now: Date.now(),
         timeout: HLS_STALL_TIMEOUT_MS,
       })) {
-        // iOS can emit timeupdate less often than this watchdog. The media
-        // clock is the reliable signal: if it advanced, keep the current
-        // rendition and observe the next interval.
+        // Playback is paused/backgrounded or a real frame arrived recently.
+        // Observe the next fixed interval without letting audio events move
+        // this deadline indefinitely.
         armStallWatchdog();
         return;
       }
@@ -1272,7 +1255,6 @@ function startNativeHLS() {
         video.videoWidth > 0 && video.videoHeight > 0) {
       onDecodedVideoFrame();
     }
-    armStallWatchdog();
   }
 
   // Restart native HLS in place: drop the errored src and re-poll the
@@ -1324,7 +1306,7 @@ function startNativeHLS() {
   // state on iOS.
   function attempt() {
     if (seq !== hlsSeq) return;
-    var url = liveHlsUrl(name, qualityTier);
+    var url = liveHlsUrl(name, 'high');
     fetch(url, { cache: 'no-store' })
       .then(function (r) {
         if (seq !== hlsSeq) return;

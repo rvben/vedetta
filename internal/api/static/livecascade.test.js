@@ -64,8 +64,8 @@ test('normal camera down is still offline, not sleeping', () => {
 });
 
 // The initial page load must not start a transport for a camera that cannot
-// currently produce video. This is especially important on iPhone, where the
-// native-HLS high/low warmup cascade otherwise looks like a 30-second hang.
+// currently produce video. This is especially important on iPhone, where a
+// native-HLS warmup otherwise looks like a long hang.
 
 test('initial online camera starts live video', () => {
   assert.equal(initialLiveState({ online: true, sleeping: false }), 'live');

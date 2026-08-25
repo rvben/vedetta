@@ -27,8 +27,13 @@ function nextHlsErrorAction(state) {
 // punish an intentionally paused or background-throttled player.
 function nativeHlsPlaybackStalled(state) {
   if (state.hidden || state.userPaused || state.paused) return false;
+
+  // The media clock can advance on AAC alone. Until the page has observed a
+  // video frame (rVFC, or dimensions on older WebKit), clock progress says
+  // nothing about whether the user has a picture.
+  if (!state.hasDecodedFrame) return true;
+
   if (state.frameTrackingSupported) {
-    if (!state.hasDecodedFrame) return true;
     var lastFrameAt = Number(state.lastDecodedFrameAt);
     var now = Number(state.now);
     var timeout = Number(state.timeout);

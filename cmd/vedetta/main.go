@@ -124,8 +124,13 @@ func main() {
 	configPath := flag.String("config", "config.yml", "path to configuration file")
 	flag.Parse()
 
+	// One LevelVar governs every sink. It starts at Info so the messages emitted
+	// before the config is read are never lost, and is set from logging.level
+	// below; because the handlers hold the var itself, that later assignment
+	// reaches handlers already built.
+	logLevel := new(slog.LevelVar)
 	baseHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 	})
 	slog.SetDefault(slog.New(baseHandler))
 
@@ -143,6 +148,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	applyLogLevel(logLevel, cfg)
+
 	// When a log file is configured, route slog through a size-rotating writer so
 	// vedetta's own logs can never grow without bound. The default (empty File)
 	// keeps logging to stdout, which the supervisor / container runtime captures.
@@ -153,7 +160,7 @@ func main() {
 			slog.Error("failed to open log file, continuing on stdout", "file", cfg.Logging.File, "error", rerr)
 		} else {
 			defer rw.Close()
-			baseHandler = slog.NewTextHandler(rw, &slog.HandlerOptions{Level: slog.LevelInfo})
+			baseHandler = slog.NewTextHandler(rw, &slog.HandlerOptions{Level: logLevel})
 			slog.SetDefault(slog.New(baseHandler))
 		}
 	}
@@ -172,7 +179,7 @@ func main() {
 	stopSupervisor := watchdog.SuperviseSelf(ctx, watchdog.SupervisorHeartbeatInterval, watchdog.SupervisorTimeout)
 	defer stopSupervisor()
 
-	logProvider := wireLogging(ctx, cfg, baseHandler)
+	logProvider := wireLogging(ctx, cfg, logLevel, baseHandler)
 	defer func() {
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
@@ -293,8 +300,11 @@ func main() {
 
 		// Re-wire logging with the reloaded config. The earlier base-only
 		// provider holds no exporter, so it needs no separate shutdown; the
-		// deferred closure reads logProvider at exit and flushes this one.
-		logProvider = wireLogging(ctx, cfg, baseHandler)
+		// deferred closure reads logProvider at exit and flushes this one. The
+		// level is re-applied too, so a level chosen during setup takes effect
+		// without a restart.
+		applyLogLevel(logLevel, cfg)
+		logProvider = wireLogging(ctx, cfg, logLevel, baseHandler)
 
 		tp, _ := tracing.Init(ctx, tracing.Config(cfg.Tracing), Version)
 		defer func() {
@@ -474,9 +484,23 @@ func main() {
 // tracing transport (endpoint, protocol, insecure) to logging as one unit, so
 // that when logging configures no endpoint of its own it reuses tracing's whole
 // transport atomically rather than a mismatched mix.
-func wireLogging(ctx context.Context, cfg *config.Config, base slog.Handler) *logging.Provider {
+// applyLogLevel sets the process-wide level from config. An unrecognized name
+// leaves the level untouched and says so, rather than silently reverting to
+// Info and leaving the operator to wonder why debug output never appeared.
+func applyLogLevel(level *slog.LevelVar, cfg *config.Config) {
+	lvl, ok := logging.ParseLevel(cfg.Logging.Level)
+	if !ok {
+		slog.Warn("unrecognized logging.level, keeping current level",
+			"level", cfg.Logging.Level, "supported", "debug, info, warn, error")
+		return
+	}
+	level.Set(lvl)
+}
+
+func wireLogging(ctx context.Context, cfg *config.Config, level slog.Leveler, base slog.Handler) *logging.Provider {
 	lp, _ := logging.Init(ctx, logging.Config{
 		Enabled:          cfg.Logging.Enabled,
+		Level:            level,
 		Endpoint:         cfg.Logging.Endpoint,
 		Protocol:         cfg.Logging.Protocol,
 		Insecure:         cfg.Logging.Insecure,

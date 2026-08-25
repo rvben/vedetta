@@ -227,6 +227,17 @@ tracing:
 # crashes the process.
 logging:
   enabled: false
+  # Minimum severity to emit: debug, info, warn, or error. Applies to every sink
+  # at once (stdout, the rotating file below, and OTLP export), so raising
+  # verbosity cannot leave one of them at a different threshold.
+  #
+  # Routine HTTP traffic - health probes, the metrics scrape, live-stream
+  # transports - logs at debug, because it is the large majority of requests on
+  # a running install and says nothing while it succeeds. A request that fails
+  # or stalls is reported at warn or error regardless. Set this to debug to get
+  # the full per-request record back, including User-Agent and cache headers,
+  # when diagnosing a specific client.
+  level: info
   # OTLP endpoint. A scheme-less host:port (paired with insecure below) or a full
   # URL. Empty reuses the tracing endpoint above; if that is also empty the
   # exporter reads OTEL_EXPORTER_OTLP_LOGS_ENDPOINT then OTEL_EXPORTER_OTLP_ENDPOINT.

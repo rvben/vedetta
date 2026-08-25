@@ -83,7 +83,11 @@ func Init(ctx context.Context, cfg Config, version string, base slog.Handler) (*
 		log.WithResource(res),
 	)
 	otelArm := otelslog.NewHandler(instrumentationScope, otelslog.WithLoggerProvider(lp))
-	gated := newLevelGate(slog.LevelInfo, otelArm)
+	var min slog.Leveler = slog.LevelInfo
+	if cfg.Level != nil {
+		min = cfg.Level
+	}
+	gated := newLevelGate(min, otelArm)
 
 	return &Provider{
 		handler:  newFanout(base, gated),

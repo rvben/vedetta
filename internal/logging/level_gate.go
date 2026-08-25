@@ -9,17 +9,21 @@ import (
 // whatever the inner handler already allows. It exists so the OTLP arm cannot
 // report Enabled for sub-threshold records (which would otherwise force record
 // construction and export below the intended level).
+//
+// min is a slog.Leveler, not a fixed slog.Level, so a process-wide *slog.LevelVar
+// governs the export arm and the local handler as one setting. A plain
+// slog.Level still satisfies Leveler for a fixed threshold.
 type levelGate struct {
-	min   slog.Level
+	min   slog.Leveler
 	inner slog.Handler
 }
 
-func newLevelGate(min slog.Level, inner slog.Handler) *levelGate {
+func newLevelGate(min slog.Leveler, inner slog.Handler) *levelGate {
 	return &levelGate{min: min, inner: inner}
 }
 
 func (g *levelGate) Enabled(ctx context.Context, l slog.Level) bool {
-	return l >= g.min && g.inner.Enabled(ctx, l)
+	return l >= g.min.Level() && g.inner.Enabled(ctx, l)
 }
 
 func (g *levelGate) Handle(ctx context.Context, r slog.Record) error {

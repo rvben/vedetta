@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"log/slog"
 	"strings"
 
 	"github.com/rvben/vedetta/internal/otelexport"
@@ -12,7 +13,11 @@ import (
 // its own, logs reuse tracing's endpoint, protocol, and insecure flag as one unit
 // rather than a mismatched mix.
 type Config struct {
-	Enabled          bool
+	Enabled bool
+	// Level is the minimum severity the OTLP arm exports. Nil means Info. Pass
+	// the same *slog.LevelVar the local handler uses so one setting governs both
+	// arms and a level change cannot leave them disagreeing.
+	Level            slog.Leveler
 	Endpoint         string
 	Protocol         string
 	Insecure         bool

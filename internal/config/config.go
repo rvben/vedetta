@@ -155,7 +155,12 @@ type TracingConfig struct {
 // also empty the OTLP exporter resolves the endpoint from the standard
 // OTEL_EXPORTER_OTLP_LOGS_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT env vars.
 type LoggingConfig struct {
-	Enabled     bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// Level is the minimum severity vedetta emits: "debug", "info", "warn" or
+	// "error". Empty means "info". It applies uniformly to stdout, the rotating
+	// file, and the OTLP export arm, so raising verbosity to diagnose an issue
+	// cannot leave one sink quietly at a different threshold.
+	Level       string `yaml:"level"`
 	Endpoint    string `yaml:"endpoint"`
 	Protocol    string `yaml:"protocol"`
 	Insecure    bool   `yaml:"insecure"`

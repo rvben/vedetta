@@ -38,6 +38,12 @@ const (
 	// while staying bounded in memory.
 	hlsWindowSegments = 32
 
+	// Apple's live-HLS authoring contract requires at least six segments in a
+	// live media playlist. Publishing after the first GOP made a freshly
+	// restarted server work only after several browser refreshes, once the
+	// rolling window had filled by accident.
+	hlsMinPlaylistSegments = 6
+
 	// A consumer with no playlist/segment/init request for this long is
 	// torn down and detached from the RTSP source.
 	hlsIdleTimeout = 30 * time.Second
@@ -49,10 +55,11 @@ const (
 // fMP4 fragment (moof+mdat) holding the video GOP and the audio that plays
 // alongside it.
 type hlsSegment struct {
-	id       uint64
-	data     []byte
-	duration float64 // seconds, from the video track
-	disc     bool    // true when SPS changed before this segment
+	id              uint64
+	data            []byte
+	duration        float64 // seconds, from the video track
+	disc            bool    // true when SPS changed before this segment
+	programDateTime time.Time
 }
 
 // hlsConsumer implements rtsp.Consumer, muxing live RTP H.264+AAC into a
@@ -105,8 +112,13 @@ type hlsConsumer struct {
 
 	ring      []hlsSegment
 	nextSegID uint64
+	// discontinuitySequence counts discontinuities removed from the rolling
+	// window, as required by EXT-X-DISCONTINUITY-SEQUENCE.
+	discontinuitySequence uint64
+	nextProgramDateTime   time.Time
 
-	// ready is closed exactly once, when the first segment is cut. A native
+	// ready is closed exactly once, when enough segments for a valid Apple live
+	// playlist have been cut. A native
 	// HLS client (AVPlayer) treats an HTTP 503 on the playlist as a fatal,
 	// non-recoverable error, so the handler must hold the cold-window
 	// request on this channel instead of answering 503 while warming up.
@@ -451,21 +463,34 @@ func (c *hlsConsumer) closeSegmentLocked() {
 	data := make([]byte, len(buf.Bytes()))
 	copy(data, buf.Bytes())
 
-	seg := hlsSegment{
-		id:       c.nextSegID,
-		data:     data,
-		duration: float64(c.segVideoTicks) / 90000.0,
-		disc:     c.pendingDisc,
+	duration := float64(c.segVideoTicks) / 90000.0
+	programDateTime := c.nextProgramDateTime
+	if programDateTime.IsZero() || c.pendingDisc {
+		programDateTime = time.Now().UTC().Add(-time.Duration(duration * float64(time.Second)))
 	}
+	seg := hlsSegment{
+		id:              c.nextSegID,
+		data:            data,
+		duration:        duration,
+		disc:            c.pendingDisc,
+		programDateTime: programDateTime,
+	}
+	c.nextProgramDateTime = programDateTime.Add(time.Duration(duration * float64(time.Second)))
 	if c.nextSegID == 0 {
 		slog.Info("HLS first segment cut", "stream", c.label,
 			"duration", seg.duration, "bytes", len(data), "audio", c.hasAudio && len(c.segAudio) > 0)
 	}
 	c.ring = append(c.ring, seg)
 	if len(c.ring) > hlsWindowSegments {
-		c.ring = c.ring[len(c.ring)-hlsWindowSegments:]
+		drop := len(c.ring) - hlsWindowSegments
+		for i := 0; i < drop; i++ {
+			if c.ring[i].disc {
+				c.discontinuitySequence++
+			}
+		}
+		c.ring = c.ring[drop:]
 	}
-	if !c.readyClosed {
+	if !c.readyClosed && len(c.ring) >= hlsMinPlaylistSegments {
 		c.readyClosed = true
 		close(c.ready)
 	}
@@ -515,20 +540,13 @@ func (c *hlsConsumer) playlist() (string, bool) {
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
 	b.WriteString("#EXT-X-VERSION:7\n")
+	// Every media segment starts with an IDR, so advertise that guarantee.
+	// AVPlayer can then start at a segment boundary without attempting an
+	// exact mid-GOP seek that discards the only decoder-refresh frame.
+	b.WriteString("#EXT-X-INDEPENDENT-SEGMENTS\n")
 	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", targetDuration)
-	// AVPlayer otherwise begins at the oldest segment in our deliberately
-	// generous suspend/resume window. Start three target durations from the
-	// live edge: far enough back to avoid underruns, but never half a minute
-	// behind while the page misleadingly looks frozen.
-	startOffset := float64(targetDuration * 3)
-	totalDuration := 0.0
-	for i := range c.ring {
-		totalDuration += c.ring[i].duration
-	}
-	if totalDuration > startOffset {
-		fmt.Fprintf(&b, "#EXT-X-START:TIME-OFFSET=-%.3f,PRECISE=YES\n", startOffset)
-	}
 	fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", c.ring[0].id)
+	fmt.Fprintf(&b, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", c.discontinuitySequence)
 	if ver := c.initVersionLocked(); ver != "" {
 		fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"live/init.mp4?v=%s\"\n", ver)
 	} else {
@@ -538,19 +556,25 @@ func (c *hlsConsumer) playlist() (string, bool) {
 		if c.ring[i].disc {
 			b.WriteString("#EXT-X-DISCONTINUITY\n")
 		}
+		if !c.ring[i].programDateTime.IsZero() {
+			fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n", c.ring[i].programDateTime.Format(time.RFC3339Nano))
+		}
 		fmt.Fprintf(&b, "#EXTINF:%.6f,\n", c.ring[i].duration)
 		fmt.Fprintf(&b, "live/%d\n", c.ring[i].id)
 	}
 	return b.String(), true
 }
 
-// waitPlaylist returns the live playlist, holding the caller until the
-// first segment is cut or ctx is done. The cold warmup window must never
+// waitPlaylist returns the live playlist, holding the caller until Apple's
+// minimum live window is ready or ctx is done. The cold warmup window must never
 // surface to a native HLS client as an HTTP 503: AVPlayer treats that as a
 // fatal, non-recoverable error and never retries.
 func (c *hlsConsumer) waitPlaylist(ctx context.Context) (string, bool) {
-	if pl, ok := c.playlist(); ok {
-		return pl, true
+	c.mu.Lock()
+	ready := len(c.ring) >= hlsMinPlaylistSegments
+	c.mu.Unlock()
+	if ready {
+		return c.playlist()
 	}
 	select {
 	case <-c.ready:
@@ -790,9 +814,9 @@ func (m *HLSManager) Playlist(rtspURL string) (string, bool) {
 }
 
 // PlaylistWait serves the live playlist, holding the request until the
-// first segment is cut or ctx is done. Native HLS clients (AVPlayer) treat
-// an HTTP 503 on the playlist as fatal, so callers must wait out the cold
-// warmup window rather than 503 a client that would never retry.
+// Apple-minimum live window is ready or ctx is done. Native HLS clients
+// (AVPlayer) treat an HTTP 503 on the playlist as fatal, so callers must wait
+// out the cold warmup window rather than 503 a client that would never retry.
 func (m *HLSManager) PlaylistWait(ctx context.Context, rtspURL string) (string, bool) {
 	c := m.getOrCreate(rtspURL)
 	return c.waitPlaylist(ctx)

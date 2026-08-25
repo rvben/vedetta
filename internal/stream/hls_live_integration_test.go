@@ -93,6 +93,14 @@ func TestLiveHLSPipelineProducesVideo(t *testing.T) {
 	if !strings.Contains(pl, "#EXTM3U") {
 		t.Fatalf("playlist is not a valid HLS playlist:\n%s", pl)
 	}
+	for _, tag := range []string{"#EXT-X-INDEPENDENT-SEGMENTS", "#EXT-X-PROGRAM-DATE-TIME:", "#EXT-X-DISCONTINUITY-SEQUENCE:"} {
+		if !strings.Contains(pl, tag) {
+			t.Fatalf("playlist is missing Apple live-HLS tag %q:\n%s", tag, pl)
+		}
+	}
+	if strings.Contains(pl, "#EXT-X-START") {
+		t.Fatalf("playlist forces an exact seek instead of starting on an independent segment:\n%s", pl)
+	}
 
 	// The reaped/rebuilt-init fix: the MAP URI must be content-versioned so a
 	// resuming AVPlayer refetches instead of decoding against a stale init.
@@ -106,6 +114,24 @@ func TestLiveHLSPipelineProducesVideo(t *testing.T) {
 	if len(matches) == 0 {
 		t.Fatalf("playlist advertises no media segments (no live video produced):\n%s", pl)
 	}
+
+	// A single keyframe proves only that the container opens. The iPhone bug
+	// this test guards against appeared after that first frame: AVPlayer kept
+	// advancing the audio clock while the video track stopped producing
+	// pictures. Wait for several complete GOPs so the decode check below must
+	// cross real fMP4 segment boundaries and sustain the camera frame rate.
+	segmentDeadline := time.Now().Add(12 * time.Second)
+	for len(matches) < 4 && time.Now().Before(segmentDeadline) {
+		time.Sleep(250 * time.Millisecond)
+		pl, ok = m.Playlist(rtspURL)
+		if !ok {
+			continue
+		}
+		matches = segRe.FindAllStringSubmatch(pl, -1)
+	}
+	if len(matches) < 4 {
+		t.Fatalf("playlist produced only %d segments; need at least 4 to verify sustained live video:\n%s", len(matches), pl)
+	}
 	t.Logf("playlist OK: %d live segments advertised", len(matches))
 
 	init, ver, ok := m.InitSegment(rtspURL)
@@ -113,46 +139,55 @@ func TestLiveHLSPipelineProducesVideo(t *testing.T) {
 		t.Fatalf("init segment not served: ok=%v len=%d ver=%q", ok, len(init), ver)
 	}
 
-	// Newest advertised segment must resolve to real fMP4 bytes - that is the
-	// frame data a player decodes for live video.
-	newest := matches[len(matches)-1][1]
-	id, err := strconv.ParseUint(newest, 10, 64)
-	if err != nil {
-		t.Fatalf("unparseable segment id %q: %v", newest, err)
-	}
-	seg, ok := m.Segment(rtspURL, id)
-	if !ok || len(seg) == 0 {
-		t.Fatalf("media segment %d not served: ok=%v len=%d", id, ok, len(seg))
+	media := append([]byte(nil), init...)
+	var firstID, newestID uint64
+	mediaBytes := 0
+	for i, match := range matches {
+		id, err := strconv.ParseUint(match[1], 10, 64)
+		if err != nil {
+			t.Fatalf("unparseable segment id %q: %v", match[1], err)
+		}
+		seg, ok := m.Segment(rtspURL, id)
+		if !ok || len(seg) == 0 {
+			t.Fatalf("media segment %d not served: ok=%v len=%d", id, ok, len(seg))
+		}
+		if i == 0 {
+			firstID = id
+		}
+		newestID = id
+		mediaBytes += len(seg)
+		media = append(media, seg...)
 	}
 
-	t.Logf("LIVE HLS VERIFIED: init=%d bytes (v=%s), segment %d=%d bytes - "+
-		"camera %q serves live video, not snapshot-only", len(init), ver, id, len(seg), camName)
+	t.Logf("LIVE HLS VERIFIED: init=%d bytes (v=%s), segments %d..%d=%d bytes - "+
+		"camera %q serves sustained live media", len(init), ver, firstID, newestID, mediaBytes, camName)
 
 	// Structural validity is not enough: AVPlayer can accept and download a
 	// fragmented MP4 timeline while VideoToolbox rejects every H.264 sample,
 	// yielding advancing audio over a black picture. Decode an actual frame
 	// through VideoToolbox when ffmpeg is available on the live-test host.
-	// Feeding init+fragment as one seekable input exactly reproduces the bytes
-	// behind EXT-X-MAP followed by the media segment.
+	// Feeding init+fragments as one seekable input exactly reproduces the bytes
+	// behind EXT-X-MAP followed by consecutive media segments.
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Log("ffmpeg not installed; skipping live HLS frame decode check")
 		return
 	}
-	media := make([]byte, 0, len(init)+len(seg))
-	media = append(media, init...)
-	media = append(media, seg...)
 	decodeCtx, decodeCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer decodeCancel()
 	args := []string{"-v", "error", "-xerror"}
 	if runtime.GOOS == "darwin" {
 		args = append(args, "-hwaccel", "videotoolbox")
 	}
-	args = append(args, "-i", "pipe:0", "-map", "0:v:0", "-frames:v", "1", "-f", "null", "-")
+	args = append(args, "-i", "pipe:0", "-map", "0:v:0", "-frames:v", "30", "-f", "null", "-", "-progress", "pipe:1")
 	cmd := exec.CommandContext(decodeCtx, ffmpeg, args...)
 	cmd.Stdin = bytes.NewReader(media)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("VideoToolbox could not decode the live HLS video fragment: %v\n%s", err, output)
 	}
-	t.Log("LIVE HLS DECODE VERIFIED: VideoToolbox produced a video frame")
+	if !regexp.MustCompile(`(?m)^frame=30\s*$`).Match(output) {
+		t.Fatalf("VideoToolbox ended before 30 live video frames; output:\n%s", output)
+	}
+	t.Log("LIVE HLS DECODE VERIFIED: VideoToolbox produced 30 consecutive video frames across segment boundaries")
 }

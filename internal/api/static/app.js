@@ -11,11 +11,6 @@ let mseBlobURL = null;
 let mseWatchdogTimer = null; // detects a silently-black MSE stream (iPhone Safari)
 let webrtcWatchdogTimer = null; // detects WebRTC that signals OK but never delivers frames
 let mjpegWatchdogTimer = null; // polls for the first decoded MJPEG frame (load event is unreliable)
-let snapshotStreamTimer = null; // chained timer for the snapshot-refresh loop (iPhone live transport)
-let snapshotStreamStartupTimer = null; // offline watchdog until the first snapshot frame
-let snapshotStreamSeq = 0; // bumped to invalidate in-flight snapshot loaders on teardown
-let snapshotFrameTimeoutTimer = null; // per-frame timeout so a hung Image cannot freeze the loop
-let snapshotStallInterval = null; // post-startup stall watchdog (auto-recovery + offline)
 let currentStream = null; // 'mse' | 'webrtc' | 'mjpeg' | 'hls' | null
 let cameraAvailabilityTimer = null; // status-only polling while live video cannot start
 let cameraAvailabilityName = null;
@@ -648,11 +643,6 @@ var MSE_WATCHDOG_TIMEOUT_MS = 6000;
 var WEBRTC_WATCHDOG_TIMEOUT_MS = 4000;
 var MJPEG_FRAME_POLL_MS = 200;
 var MJPEG_WATCHDOG_TIMEOUT_MS = 8000;
-var SNAPSHOT_STREAM_INTERVAL_MS = 150; // ~6-7 fps target; self-throttles to network speed
-var SNAPSHOT_STREAM_FAIL_LIMIT = 5; // consecutive snapshot errors before declaring offline
-var SNAPSHOT_FRAME_TIMEOUT_MS = 4000; // abandon a single Image() that neither loads nor errors
-var SNAPSHOT_STALL_RECOVER_MS = 3000; // no decoded frame this long -> kick the loop back to life
-var SNAPSHOT_STALL_OFFLINE_MS = 12000; // no decoded frame this long -> declare offline
 
 function clearMSEOfflineTimer() {
   if (mseOfflineTimer) {
@@ -679,27 +669,6 @@ function clearMJPEGWatchdog() {
   if (mjpegWatchdogTimer) {
     clearInterval(mjpegWatchdogTimer);
     mjpegWatchdogTimer = null;
-  }
-}
-
-function clearSnapshotStream() {
-  // Bump the sequence so any in-flight Image loader callbacks become no-ops.
-  snapshotStreamSeq++;
-  if (snapshotStreamTimer) {
-    clearTimeout(snapshotStreamTimer);
-    snapshotStreamTimer = null;
-  }
-  if (snapshotStreamStartupTimer) {
-    clearTimeout(snapshotStreamStartupTimer);
-    snapshotStreamStartupTimer = null;
-  }
-  if (snapshotFrameTimeoutTimer) {
-    clearTimeout(snapshotFrameTimeoutTimer);
-    snapshotFrameTimeoutTimer = null;
-  }
-  if (snapshotStallInterval) {
-    clearInterval(snapshotStallInterval);
-    snapshotStallInterval = null;
   }
 }
 
@@ -1038,15 +1007,15 @@ function scheduleDegradedRetry(name) {
   }, delay);
 }
 
-// Picks the best live transport for this platform. iPhone WebKit has no
-// usable MSE, WebRTC fails over this WAN without TURN, and native HLS accepts
-// audio while rendering affected cameras black. Start its proven sequential
-// JPEG feed immediately; every other client retains the higher-frame-rate
-// MSE -> WebRTC -> MJPEG cascade.
+// Picks the best real-video transport for this platform. iPhone WebKit has no
+// generally usable MediaSource, so it tries low-latency WebRTC first and then
+// native HLS; other clients retain the MSE -> WebRTC -> MJPEG cascade.
+// Snapshot polling is never called live: a snapshot is only a backdrop while
+// genuine video connects.
 function startLiveStream() {
   clearCameraAvailabilityWatch();
-  if (preferredLiveTransport(isIOSWebKit()) === 'snapshot') {
-    startSnapshotStream();
+  if (preferredLiveTransport(isIOSWebKit()) === 'webrtc') {
+    startWebRTC();
     return;
   }
   startMSE();
@@ -1055,7 +1024,8 @@ function startLiveStream() {
 // HLS_WARMUP_RETRY_MS / HLS_MAX_WARMUP_RETRIES bound how long we wait for the
 // server to cut its first segment (it 503s with Retry-After until the first
 // keyframe arrives). HLS_STALL_TIMEOUT_MS is the post-playing watchdog: if
-// playback produces no visual frame for this long we fall back to snapshots.
+// playback produces no visual frame for this long we surface an honest
+// reconnecting state and retry real video.
 var HLS_WARMUP_RETRY_MS = 1000;
 var HLS_MAX_WARMUP_RETRIES = 15;
 var HLS_STALL_TIMEOUT_MS = 8000;
@@ -1090,8 +1060,8 @@ function clearNativeHLS() {
 // .m3u8 directly (no MediaSource, no JS muxing). iOS blocks autoplay with
 // sound, so we start muted and expose the mute button so the user can enable
 // the camera's AAC audio with one tap. A warmup loop tolerates the initial
-// 503s while the server waits for a keyframe; a stall watchdog falls back to
-// the snapshot loop if playback freezes.
+// 503s while the server builds a player-ready live window; a stall watchdog
+// returns to an honest reconnecting state if playback freezes.
 function startNativeHLS() {
   const name = getCameraName();
   if (!name) return;
@@ -1103,7 +1073,7 @@ function startNativeHLS() {
   showSnapshotBackdrop(name);
 
   const video = el('live-video');
-  if (!video) { hideStreamConnecting(); startSnapshotStream(); return; }
+  if (!video) { hideStreamConnecting(); enterDegradedState(name); return; }
 
   // Detach handlers from any prior startNativeHLS run so listeners do not
   // accumulate across transport restarts.
@@ -1118,9 +1088,9 @@ function startNativeHLS() {
   var started = false;
   var warmupAttempts = 0;
   var hlsRestartsUsed = 0;
-  // Native HLS uses the already-warm detection stream. If AVPlayer accepts
-  // its audio timeline but never decodes video, fall back to the iPhone-safe
-  // snapshot stream; retrying ?quality=low would select the same RTSP source.
+  // Native HLS uses the already-warm detection stream. A decoded video frame,
+  // not merely an advancing audio clock, is required before this attempt is
+  // allowed to claim Live.
   nativeHLSTargetDuration = 1;
   nativeHLSHasDecodedFrame = false;
   nativeHLSLastDecodedFrameAt = 0;
@@ -1147,8 +1117,8 @@ function startNativeHLS() {
   function fallback() {
     if (seq !== hlsSeq) return;
     clearNativeHLS();
-    // Leave currentStream so stopStream() in startSnapshotStream() cleans up.
-    startSnapshotStream();
+    stopStream();
+    enterDegradedState(name);
   }
 
   function escalateOrFallback() {
@@ -1238,7 +1208,7 @@ function startNativeHLS() {
   // Restart native HLS in place: drop the errored src and re-poll the
   // playlist so AVPlayer resyncs to the live edge (the playlist's advanced
   // EXT-X-MEDIA-SEQUENCE). Used to recover an iOS suspend/resume stall
-  // without changing quality tier or stranding on the snapshot loop.
+  // without changing quality tier or stranding in a stale media session.
   function restartHLS() {
     if (hlsStallTimer) { clearTimeout(hlsStallTimer); hlsStallTimer = null; }
     showStreamConnecting('Live');
@@ -1623,6 +1593,18 @@ async function startWebRTC() {
   if (!name) return;
   stopStream();
   showStreamConnecting('WebRTC');
+  showSnapshotBackdrop(name);
+  var attemptedPeer = null;
+
+  function fallbackToNextVideo(message) {
+    if (message) console.warn(message);
+    stopStream();
+    if (isIOSWebKit()) {
+      startNativeHLS();
+    } else {
+      startMJPEG();
+    }
+  }
 
   try {
     // ICE configuration is per-peer and the browser is the offerer, so the
@@ -1639,233 +1621,138 @@ async function startWebRTC() {
       iceServers = [];
     }
 
-    peerConnection = new RTCPeerConnection({ iceServers });
+    const pc = new RTCPeerConnection({ iceServers });
+    attemptedPeer = pc;
+    peerConnection = pc;
+    var firstVideoFrame = false;
 
-    peerConnection.addTransceiver('video', { direction: 'recvonly' });
-    peerConnection.addTransceiver('audio', { direction: 'recvonly' });
+    function markWebRTCVideoLive() {
+      if (firstVideoFrame || peerConnection !== pc || currentStream !== 'webrtc') return;
+      firstVideoFrame = true;
+      clearWebRTCWatchdog();
+      webrtcReconnectAttempts = 0;
+      resetDegradedBackoff();
+      hideStreamConnecting();
+      var viewport = el('live-viewport');
+      if (viewport) {
+        viewport.style.backgroundImage = '';
+        viewport.classList.remove('live-snapshot-fallback');
+      }
+      updatePauseUI();
+      toast('WebRTC connected');
+    }
 
-    peerConnection.ontrack = function(event) {
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    pc.ontrack = function(event) {
       const video = el('live-video');
-      if (!video) return;
+      if (!video || peerConnection !== pc) return;
       video.srcObject = event.streams[0];
       video.classList.remove('hidden');
       hide('live-snapshot');
       hide('live-mjpeg');
+      video.playsInline = true;
+      video.setAttribute('playsinline', '');
+      video.setAttribute('webkit-playsinline', '');
+      video.autoplay = true;
+
+      // Signaling and ICE success do not prove that the decoder produced a
+      // picture. Keep the connecting state and snapshot backdrop until the
+      // browser presents an actual video frame.
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        video.requestVideoFrameCallback(function() {
+          markWebRTCVideoLive();
+        });
+      } else {
+        video.addEventListener('loadeddata', markWebRTCVideoLive, { once: true });
+      }
+      var playPromise = video.play();
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(function() { showAutoplayBlockedPrompt(video); });
+      }
     };
 
-    peerConnection.oniceconnectionstatechange = function() {
-      const state = peerConnection.iceConnectionState;
+    pc.oniceconnectionstatechange = function() {
+      if (peerConnection !== pc) return;
+      const state = pc.iceConnectionState;
       if (state === 'failed' || state === 'disconnected') {
-        // iPhone has no usable TURN-less WebRTC path on remote networks, so
-        // reconnect attempts only prolong the black screen. Switch straight
-        // to the reliable MJPEG transport instead.
+        // A public iPhone connection often has no route to host candidates
+        // when TURN is not configured. Native HLS is the real-video fallback.
         if (isIOSWebKit()) {
-          toast('WebRTC unavailable, switching to MJPEG', 'error');
-          stopStream();
-          startMJPEG();
+          fallbackToNextVideo('WebRTC unavailable; switching to native HLS');
           return;
         }
         toast('WebRTC connection lost', 'error');
         stopStream();
         webrtcAutoReconnect();
       } else if (state === 'connected') {
-        clearWebRTCWatchdog();
-        webrtcReconnectAttempts = 0;
-        resetDegradedBackoff();
+        // Wait for markWebRTCVideoLive(): ICE can be connected while the
+        // H.264 decoder is still black.
       }
     };
 
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    if (peerConnection !== pc) return;
 
     const resp = await fetch('/api/cameras/' + encodeURIComponent(name) + '/webrtc/offer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(peerConnection.localDescription)
+      body: JSON.stringify(pc.localDescription)
     });
 
     if (!resp.ok) throw new Error('Server returned ' + resp.status);
 
     const answer = await resp.json();
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-
+    if (peerConnection !== pc) return;
     currentStream = 'webrtc';
-    hideStreamConnecting();
+    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    if (peerConnection !== pc) return;
+
     updateStreamButtons();
     startStreamStats();
 
     // Check if audio was negotiated (m=audio with port > 0 in SDP answer)
     var hasAudio = false;
-    if (peerConnection.remoteDescription && peerConnection.remoteDescription.sdp) {
-      var sdpLines = peerConnection.remoteDescription.sdp.split('\r\n');
+    if (pc.remoteDescription && pc.remoteDescription.sdp) {
+      var sdpLines = pc.remoteDescription.sdp.split('\r\n');
       hasAudio = sdpLines.some(function(l) {
         return l.startsWith('m=audio ') && !l.startsWith('m=audio 0');
       });
     }
     updateMuteButton(hasAudio);
-    toast('WebRTC connected');
 
     // Signaling succeeded, but ICE can still silently fail (STUN-only across
-    // networks), leaving a connected-but-frameless black video. If no real
-    // frame dimensions appear within the timeout, fall back to MJPEG.
+    // networks), leaving a connected-but-frameless black video. If no decoded
+    // frame arrives within the timeout, continue to the next real-video path.
     clearWebRTCWatchdog();
     webrtcWatchdogTimer = setTimeout(function() {
-      var v = el('live-video');
-      if (currentStream === 'webrtc' && v && v.videoWidth === 0 && v.videoHeight === 0) {
-        console.warn('WebRTC produced no video frames, falling back to MJPEG');
-        stopStream();
-        startMJPEG();
+      if (peerConnection === pc && currentStream === 'webrtc' && !firstVideoFrame) {
+        fallbackToNextVideo('WebRTC produced no video frames');
       }
     }, WEBRTC_WATCHDOG_TIMEOUT_MS);
   } catch (err) {
+    if (attemptedPeer && peerConnection !== attemptedPeer) return;
     console.error('WebRTC error:', err);
-    toast('WebRTC failed, falling back to MJPEG', 'error');
-    stopStream();
-    startMJPEG();
+    if (isIOSWebKit()) {
+      fallbackToNextVideo('WebRTC failed; switching to native HLS');
+    } else {
+      stopStream();
+      startMJPEG();
+    }
   }
 }
 
-// iPhone Safari does not continuously refresh an image element from a
-// multipart/x-mixed-replace stream: it renders only the first frame, so the
-// true MJPEG transport looks like a frozen snapshot there. Use a JS
-// snapshot-refresh loop on iPhone (works on every browser, low latency) and
-// the native multipart stream everywhere else. Single decision point keeps
-// every caller, the action allowlist, and the manual button correct.
+// iPhone Safari renders only the first frame of multipart MJPEG. Route a
+// manual MJPEG request back to native HLS there so every path still produces
+// genuine video rather than relabeling a JPEG polling loop as Live.
 function startMJPEG() {
   if (isIOSWebKit()) {
-    startSnapshotStream();
+    startNativeHLS();
     return;
   }
   startMjpegMultipart();
-}
-
-// Live-ish transport built from sequential single JPEGs. Each frame is the
-// camera's latest decoded in-memory frame (served by the snapshot endpoint
-// with no transcode), preloaded into an off-screen Image and swapped in on
-// decode so there is no flicker or half-drawn frame. The loop reschedules
-// only after a frame resolves, so it self-throttles to network speed
-// instead of piling up requests.
-function startSnapshotStream() {
-  const name = getCameraName();
-  if (!name) return;
-  stopStream();
-  showStreamConnecting('Live');
-
-  const displayImg = el('live-mjpeg');
-  if (!displayImg) { hideStreamConnecting(); return; }
-  displayImg.classList.remove('hidden');
-  hide('live-snapshot');
-  hide('live-video');
-
-  const seq = ++snapshotStreamSeq;
-  var firstFrame = false;
-  var failCount = 0;
-  var lastFrameAt = Date.now();
-  var loopArmed = false; // true while a loader or its timeout is outstanding
-
-  function goOffline() {
-    clearSnapshotStream();
-    hideStreamConnecting();
-    stopStreamStats();
-    displayImg.classList.add('hidden');
-    enterDegradedState(name);
-  }
-
-  function scheduleNext() {
-    loopArmed = false;
-    snapshotStreamTimer = setTimeout(loadFrame, SNAPSHOT_STREAM_INTERVAL_MS);
-  }
-
-  function loadFrame() {
-    if (seq !== snapshotStreamSeq || currentStream !== 'mjpeg') return;
-    loopArmed = true;
-    var loader = new Image();
-    var settled = false;
-
-    function settle(fn) {
-      // First of onload/onerror/timeout wins; the rest become no-ops so a
-      // late callback cannot double-schedule the loop.
-      return function () {
-        if (settled || seq !== snapshotStreamSeq) return;
-        settled = true;
-        if (snapshotFrameTimeoutTimer) {
-          clearTimeout(snapshotFrameTimeoutTimer);
-          snapshotFrameTimeoutTimer = null;
-        }
-        fn();
-      };
-    }
-
-    loader.onload = settle(function () {
-      failCount = 0;
-      lastFrameAt = Date.now();
-      // The URL is already decoded in cache, so this swap is instant.
-      displayImg.src = loader.src;
-      if (!firstFrame) {
-        firstFrame = true;
-        if (snapshotStreamStartupTimer) {
-          clearTimeout(snapshotStreamStartupTimer);
-          snapshotStreamStartupTimer = null;
-        }
-        hideStreamConnecting();
-      }
-      scheduleNext();
-    });
-
-    loader.onerror = settle(function () {
-      failCount++;
-      if (failCount >= SNAPSHOT_STREAM_FAIL_LIMIT) { goOffline(); return; }
-      scheduleNext();
-    });
-
-    // Per-frame timeout: a hung request that never fires onload/onerror would
-    // otherwise freeze the loop forever. Treat it as a soft failure, abandon
-    // the loader, and keep going.
-    snapshotFrameTimeoutTimer = setTimeout(settle(function () {
-      loader.onload = loader.onerror = null;
-      loader.src = '';
-      failCount++;
-      if (failCount >= SNAPSHOT_STREAM_FAIL_LIMIT) { goOffline(); return; }
-      scheduleNext();
-    }), SNAPSHOT_FRAME_TIMEOUT_MS);
-
-    loader.src = '/api/cameras/' + encodeURIComponent(name) + '/snapshot?t=' + Date.now();
-  }
-
-  currentStream = 'mjpeg';
-  updateStreamButtons();
-  toast('Live stream started');
-
-  // Wall-clock offline watchdog: independent of loader callbacks in case the
-  // snapshot endpoint hangs without ever resolving or erroring.
-  snapshotStreamStartupTimer = setTimeout(function () {
-    if (seq === snapshotStreamSeq && !firstFrame) goOffline();
-  }, MJPEG_WATCHDOG_TIMEOUT_MS);
-
-  loadFrame();
-
-  // Post-startup stall watchdog: even with the per-frame timeout, a wedged
-  // event loop or a chain of soft failures can leave the picture frozen.
-  // After the first frame, if nothing fresh has decoded for a while, kick the
-  // loop back to life; if it stays dead, declare the camera offline.
-  snapshotStallInterval = setInterval(function () {
-    if (seq !== snapshotStreamSeq || !firstFrame) return;
-    var stalledFor = Date.now() - lastFrameAt;
-    if (stalledFor >= SNAPSHOT_STALL_OFFLINE_MS) { goOffline(); return; }
-    if (stalledFor >= SNAPSHOT_STALL_RECOVER_MS && !loopArmed) {
-      if (snapshotStreamTimer) { clearTimeout(snapshotStreamTimer); snapshotStreamTimer = null; }
-      loadFrame();
-    }
-  }, 1000);
-
-  stopStreamStats();
-  streamStatsInterval = setInterval(function () {
-    var statsEl = el('stream-stats');
-    if (!statsEl || !displayImg) return;
-    if (displayImg.naturalWidth && displayImg.naturalHeight) {
-      statsEl.innerHTML = '<span>Live</span><span>' + displayImg.naturalWidth + '×' + displayImg.naturalHeight + '</span>';
-    }
-  }, 2000);
 }
 
 function startMjpegMultipart() {
@@ -2280,7 +2167,6 @@ function stopStream() {
 
   clearWebRTCWatchdog();
   clearMJPEGWatchdog();
-  clearSnapshotStream();
   clearNativeHLS();
   if (peerConnection) {
     peerConnection.close();

@@ -17,10 +17,11 @@ import (
 
 // hlsWarmupWait bounds how long GetLiveHLS holds a playlist request while
 // the muxer waits for the camera's first keyframe. It must exceed the
-// observed cold-start (~1s sub-stream, up to ~7s main) so a native HLS
-// client receives a 200 instead of a fatal 503, but stay under the client
-// stall watchdog so a genuinely dead camera still falls back promptly.
-const hlsWarmupWait = 8 * time.Second
+// observed cold-start plus the six-segment Apple live-playlist minimum so a
+// native HLS client receives a player-ready 200 instead of a fatal 503. The
+// sub-stream consumers are normally kept warm, making this wait relevant only
+// immediately after startup or a camera reconnect.
+const hlsWarmupWait = 16 * time.Second
 
 func optStr(v string) *string {
 	if v == "" {
@@ -165,7 +166,7 @@ func (s *Server) GetLiveHLS(w http.ResponseWriter, r *http.Request, name string)
 
 	rtspURL := s.hlsRTSPURL(r, cam)
 
-	// Hold the request through the cold warmup window instead of answering
+	// Hold the request until the Apple-valid live window is ready instead of answering
 	// 503: iOS native HLS (AVPlayer) treats a 503 on the playlist as a
 	// fatal, non-recoverable error and never retries, cascading the camera
 	// page to ~1fps snapshots. Bounded by the request context so a client

@@ -41,13 +41,12 @@ function initialLiveState(status) {
   return 'offline';
 }
 
-// iPhone WebKit accepts Vedetta's native HLS audio timeline on affected
-// cameras while rendering no video frames. The sequential JPEG transport is
-// the only consistently visual path there; choosing it up front avoids an
-// eight-second black-video probe on every page load. Other platforms retain
-// the higher-frame-rate MSE cascade.
+// iPhone WebKit has no generally usable MediaSource. Try low-latency WebRTC
+// first (instant on the LAN or when TURN is configured), then let its bounded
+// watchdog fall through to native HLS on remote networks. Both are real video;
+// snapshots are only a connecting backdrop.
 function preferredLiveTransport(iosWebKit) {
-  return iosWebKit ? 'snapshot' : 'mse';
+  return iosWebKit ? 'webrtc' : 'mse';
 }
 
 if (typeof module !== 'undefined' && module.exports) {

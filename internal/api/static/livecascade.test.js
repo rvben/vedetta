@@ -90,8 +90,8 @@ test('missing or malformed status is not mislabeled as a camera outage', () => {
   assert.equal(initialLiveState({ online: false }), 'unavailable');
 });
 
-test('iPhone starts the reliable visual transport without probing black HLS first', () => {
-  assert.equal(preferredLiveTransport(true), 'snapshot');
+test('iPhone starts low-latency WebRTC rather than a snapshot loop', () => {
+  assert.equal(preferredLiveTransport(true), 'webrtc');
 });
 
 test('other platforms retain the high-frame-rate MSE cascade', () => {

@@ -40,12 +40,14 @@ func TestHLSWaitPlaylistBlocksUntilReady(t *testing.T) {
 	c := newHLSConsumer(nil, nil)
 
 	// The first segment is not ready yet; it lands shortly after the
-	// request arrives (mirrors first-keyframe warmup).
+	// request arrives (mirrors the player-ready live-window warmup).
 	go func() {
 		time.Sleep(150 * time.Millisecond)
 		c.mu.Lock()
-		addVideoSample(c, hlsTargetSegmentTicks)
-		c.closeSegmentLocked()
+		for i := 0; i < hlsMinPlaylistSegments; i++ {
+			addVideoSample(c, hlsTargetSegmentTicks)
+			c.closeSegmentLocked()
+		}
 		c.mu.Unlock()
 	}()
 
@@ -67,6 +69,25 @@ func TestHLSWaitPlaylistBlocksUntilReady(t *testing.T) {
 		t.Fatalf("waitPlaylist returned in %v: it answered the cold "+
 			"window immediately instead of holding the request until "+
 			"the segment was ready", elapsed)
+	}
+}
+
+func TestHLSReadyRequiresAppleMinimumLiveWindow(t *testing.T) {
+	c := newHLSConsumer(nil, nil)
+	for i := 0; i < hlsMinPlaylistSegments-1; i++ {
+		closeOneSecondSegment(c)
+	}
+	select {
+	case <-c.ready:
+		t.Fatalf("playlist became client-ready with fewer than %d segments", hlsMinPlaylistSegments)
+	default:
+	}
+
+	closeOneSecondSegment(c)
+	select {
+	case <-c.ready:
+	default:
+		t.Fatalf("playlist did not become ready at %d segments", hlsMinPlaylistSegments)
 	}
 }
 
@@ -125,8 +146,10 @@ func TestHLSPlaylistFormat(t *testing.T) {
 	mustContain := []string{
 		"#EXTM3U",
 		"#EXT-X-VERSION:7",
+		"#EXT-X-INDEPENDENT-SEGMENTS",
 		"#EXT-X-TARGETDURATION:2", // ceil(max duration 2.0)
 		"#EXT-X-MEDIA-SEQUENCE:4", // first segment id in the window
+		"#EXT-X-DISCONTINUITY-SEQUENCE:0",
 		"#EXT-X-MAP:URI=\"live/init.mp4?v=" + ver + "\"",
 		"#EXT-X-DISCONTINUITY", // before segment 5
 		"#EXTINF:1.000000,",
@@ -148,7 +171,7 @@ func TestHLSPlaylistFormat(t *testing.T) {
 	}
 
 	// The discontinuity tag belongs immediately before segment 5, not 4 or 6.
-	discIdx := strings.Index(pl, "#EXT-X-DISCONTINUITY")
+	discIdx := strings.Index(pl, "#EXT-X-DISCONTINUITY\n")
 	seg5Idx := strings.Index(pl, "live/5")
 	seg4Idx := strings.Index(pl, "live/4")
 	if seg4Idx >= discIdx || discIdx >= seg5Idx {
@@ -156,7 +179,7 @@ func TestHLSPlaylistFormat(t *testing.T) {
 	}
 }
 
-func TestHLSPlaylistStartsNearLiveEdge(t *testing.T) {
+func TestHLSPlaylistLetsPlayerStartOnIndependentSegment(t *testing.T) {
 	c := newHLSConsumer(nil, nil)
 	c.initSegment = []byte("INIT")
 	for i := uint64(1); i <= 10; i++ {
@@ -167,8 +190,11 @@ func TestHLSPlaylistStartsNearLiveEdge(t *testing.T) {
 	if !ok {
 		t.Fatal("playlist must be ready once the ring has segments")
 	}
-	if !strings.Contains(pl, "#EXT-X-START:TIME-OFFSET=-3.000,PRECISE=YES") {
-		t.Fatalf("playlist must start AVPlayer near the live edge\n---\n%s", pl)
+	if !strings.Contains(pl, "#EXT-X-INDEPENDENT-SEGMENTS") {
+		t.Fatalf("playlist must declare keyframe-aligned independent segments\n---\n%s", pl)
+	}
+	if strings.Contains(pl, "#EXT-X-START") {
+		t.Fatalf("playlist must not force AVPlayer to seek into a GOP\n---\n%s", pl)
 	}
 }
 
@@ -182,7 +208,48 @@ func TestHLSPlaylistOmitsStartHintForShortColdWindow(t *testing.T) {
 		t.Fatal("playlist must be ready once the ring has segments")
 	}
 	if strings.Contains(pl, "#EXT-X-START") {
-		t.Fatalf("short cold playlist must not advertise an out-of-range start offset\n---\n%s", pl)
+		t.Fatalf("cold playlist must not force an exact start offset\n---\n%s", pl)
+	}
+}
+
+func TestHLSPlaylistCarriesProgramDateTime(t *testing.T) {
+	c := newHLSConsumer(nil, nil)
+	c.initSegment = []byte("INIT")
+	closeOneSecondSegment(c)
+
+	pl, ok := c.playlist()
+	if !ok {
+		t.Fatal("playlist must be ready once a segment is cut")
+	}
+	const prefix = "#EXT-X-PROGRAM-DATE-TIME:"
+	idx := strings.Index(pl, prefix)
+	if idx < 0 {
+		t.Fatalf("live playlist missing program date-time metadata\n---\n%s", pl)
+	}
+	value := pl[idx+len(prefix):]
+	if end := strings.IndexByte(value, '\n'); end >= 0 {
+		value = value[:end]
+	}
+	if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+		t.Fatalf("program date-time %q is not RFC3339: %v", value, err)
+	}
+}
+
+func TestHLSDiscontinuitySequenceAdvancesWhenMarkerIsEvicted(t *testing.T) {
+	c := newHLSConsumer(nil, nil)
+	c.initSegment = []byte("INIT")
+	c.pendingDisc = true
+	closeOneSecondSegment(c)
+	for i := 0; i < hlsWindowSegments; i++ {
+		closeOneSecondSegment(c)
+	}
+
+	pl, ok := c.playlist()
+	if !ok {
+		t.Fatal("playlist must be ready")
+	}
+	if !strings.Contains(pl, "#EXT-X-DISCONTINUITY-SEQUENCE:1") {
+		t.Fatalf("evicted discontinuity was not reflected in sequence\n---\n%s", pl)
 	}
 }
 

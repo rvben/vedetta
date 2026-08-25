@@ -316,20 +316,23 @@ func (s *Source) WaitForVideoParams(ctx context.Context) bool {
 // against responsiveness and therefore no reason to back off.
 const onDemandRetry = 3 * time.Second
 
-// onDemandWarnInterval bounds how often a faulted on-demand source repeats
-// itself in the log. The condition is steady rather than eventful - a wrong
-// password stays wrong - so one line every few minutes is enough to prove it is
-// still happening, while onDemandRetry would produce twenty a minute.
-const onDemandWarnInterval = 5 * time.Minute
+// failureLogInterval bounds how often a failing source repeats itself in the
+// log. A connection fault is a steady condition rather than an event - a wrong
+// password stays wrong, an unplugged camera stays unplugged - so one line every
+// few minutes proves it is still happening, while the retry cadence would
+// produce twenty a minute. A camera offline for weeks otherwise accounts for
+// most of the error log and buries the faults worth reading.
+const failureLogInterval = 5 * time.Minute
 
-// shouldWarn reports whether a non-routine on-demand failure is due a log line,
-// and stamps the emission. The first fault after any successful connection logs
-// immediately; repeats are held back to onDemandWarnInterval.
-func (s *Source) shouldWarn() bool {
+// shouldLogFailure reports whether a connection failure is due a log line, and
+// stamps the emission. The first failure after any successful connection logs
+// immediately, so a camera going down is still reported at once; repeats are
+// held back to failureLogInterval.
+func (s *Source) shouldLogFailure() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	if !s.lastWarn.IsZero() && now.Sub(s.lastWarn) < onDemandWarnInterval {
+	if !s.lastWarn.IsZero() && now.Sub(s.lastWarn) < failureLogInterval {
 		return false
 	}
 	s.lastWarn = now
@@ -394,7 +397,7 @@ func (s *Source) Connect(ctx context.Context) {
 			// battery camera indistinguishable from a normal nap, so this must
 			// reach the log at a level the process actually emits. Rate-limited
 			// because the retry interval is three seconds.
-			if s.shouldWarn() {
+			if s.shouldLogFailure() {
 				slog.Warn("on-demand RTSP source failing, not merely unpublished",
 					"url", SanitizeURL(s.url),
 					"error", health.LastError,
@@ -404,11 +407,20 @@ func (s *Source) Connect(ctx context.Context) {
 				)
 			}
 		case err != nil:
-			slog.Error("RTSP connection error, reconnecting",
-				"url", SanitizeURL(s.url),
-				"error", err,
-				"retry_in", wait,
-			)
+			// Rate-limited for the same reason as the on-demand path above: a
+			// camera that has been unreachable for months retries forever, and
+			// logging every attempt turns a permanent known fault into the bulk
+			// of the error log. The count and last-good time keep the throttled
+			// line as informative as the stream of them it replaces.
+			if s.shouldLogFailure() {
+				slog.Error("RTSP connection error, reconnecting",
+					"url", SanitizeURL(s.url),
+					"error", err,
+					"consecutive_failures", health.ConsecutiveFailures,
+					"last_connected", lastConnectedLabel(health.LastConnected),
+					"retry_in", wait,
+				)
+			}
 		default:
 			slog.Info("RTSP connection closed, reconnecting", "url", SanitizeURL(s.url))
 		}

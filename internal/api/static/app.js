@@ -1894,14 +1894,22 @@ function prepareVideoForMutedAutoplay(video) {
 
 function showAutoplayBlockedPrompt(video) {
   var overlay = el('video-tap-to-start');
-  if (!overlay || !video || userPaused || videoScrubbing || video.ended) return;
+  // play() promises and the element's autoplay state can settle in either
+  // order on WebKit. Never let an older rejection cover video that has since
+  // started playing on its own.
+  if (!overlay || !video || !video.paused || userPaused || videoScrubbing || video.ended) return;
   overlay.classList.remove('hidden');
 }
 
 function requestMutedAutoplay(video) {
   prepareVideoForMutedAutoplay(video);
+  // The autoplay attribute may start playback after an early play() rejection
+  // once WebKit receives its first frame. Every transport needs these listeners
+  // so that successful late start always wins over a stale policy prompt.
+  attachAutoplayBlockedDetector(video);
   var attempt = ++autoplayAttemptSeq;
   var retriesRemaining = 2;
+  var readinessDeadline = Date.now() + 2000;
   var retryTimer = null;
   var retryScheduled = false;
 
@@ -1913,24 +1921,33 @@ function requestMutedAutoplay(video) {
     if (!isCurrent() || retryScheduled) return;
     retryScheduled = true;
 
+    function removeReadinessListeners() {
+      video.removeEventListener('loadeddata', retry);
+      video.removeEventListener('canplay', retry);
+    }
+
     function retry() {
       if (!retryScheduled) return;
       retryScheduled = false;
-      video.removeEventListener('loadedmetadata', retry);
-      video.removeEventListener('loadeddata', retry);
-      video.removeEventListener('canplay', retry);
+      removeReadinessListeners();
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
       }
       if (!isCurrent()) return;
+      // A tap cannot repair a stream that has not produced playable media.
+      // Keep the honest connecting state and let the transport watchdog own
+      // recovery instead of consuming the policy retry budget too early.
+      if (video.readyState < 2) {
+        if (Date.now() < readinessDeadline) retryWhenMediaIsReady();
+        return;
+      }
       tryPlay();
     }
 
     // WebKit can reject the first muted play() in the short interval between
-    // ontrack and usable media. Retry as soon as metadata/data arrives, with a
-    // small timer as a backstop for WebRTC implementations that omit events.
-    video.addEventListener('loadedmetadata', retry, { once: true });
+    // ontrack and usable media. Retry only once a current frame is available;
+    // loadedmetadata is too early for a newly attached MediaStream.
     video.addEventListener('loadeddata', retry, { once: true });
     video.addEventListener('canplay', retry, { once: true });
     retryTimer = setTimeout(retry, video.readyState >= 2 ? 80 : 250);
@@ -1938,6 +1955,14 @@ function requestMutedAutoplay(video) {
 
   function rejected(error) {
     if (!isCurrent() || !autoplayNeedsUserGesture(error)) return;
+    if (!video.paused) {
+      hideAutoplayBlockedPrompt();
+      return;
+    }
+    if (video.readyState < 2) {
+      retryWhenMediaIsReady();
+      return;
+    }
     if (retriesRemaining > 0) {
       retriesRemaining--;
       retryWhenMediaIsReady();

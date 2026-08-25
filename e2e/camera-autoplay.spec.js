@@ -93,6 +93,65 @@ test('a transient WebKit policy rejection is retried without showing a tap promp
   });
 });
 
+test('WebRTC waits for playable media without exhausting autoplay retries', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const video = document.querySelector('#live-video');
+    let readyState = 0;
+    let playCalls = 0;
+    Object.defineProperty(video, 'readyState', {
+      configurable: true,
+      get: () => readyState,
+    });
+    video.play = () => {
+      playCalls++;
+      if (readyState < 2) return Promise.reject({ name: 'NotAllowedError' });
+      return Promise.resolve();
+    };
+
+    window.requestMutedAutoplay(video);
+    await new Promise(resolve => setTimeout(resolve, 600));
+    const beforeMedia = {
+      playCalls,
+      promptVisible: !document.querySelector('#video-tap-to-start').classList.contains('hidden'),
+    };
+
+    readyState = 2;
+    video.dispatchEvent(new Event('loadeddata'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    return {
+      beforeMedia,
+      playCalls,
+      promptVisible: !document.querySelector('#video-tap-to-start').classList.contains('hidden'),
+    };
+  });
+
+  expect(result).toEqual({
+    beforeMedia: { playCalls: 1, promptVisible: false },
+    playCalls: 2,
+    promptVisible: false,
+  });
+});
+
+test('a late WebKit playing event clears an earlier policy prompt', async ({ page }) => {
+  const overlay = page.locator('#video-tap-to-start');
+
+  await page.evaluate(async () => {
+    const video = document.querySelector('#live-video');
+    Object.defineProperty(video, 'readyState', { configurable: true, value: 4 });
+    video.play = () => Promise.reject({ name: 'NotAllowedError' });
+    window.requestMutedAutoplay(video);
+    await new Promise(resolve => setTimeout(resolve, 250));
+  });
+  await expect(overlay).toBeVisible();
+
+  await page.evaluate(() => {
+    document.querySelector('#live-video').dispatchEvent(new Event('playing'));
+  });
+  await expect(overlay).toBeHidden();
+});
+
 test('a stopped transport cannot surface a stale autoplay prompt', async ({ page }) => {
   await page.evaluate(async () => {
     const video = document.querySelector('#live-video');

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vedetta"
-version = "0.7.15"
+version = "0.7.16"
 description = "Vedetta NVR — lightweight open-source network video recorder with object detection"
 readme = "README.md"
 license = "Apache-2.0"

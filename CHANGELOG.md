@@ -4,49 +4,61 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.16](https://github.com/rvben/vedetta/compare/v0.7.15...v0.7.16) - 2026-08-26
 
+### Added
 
+- **logging**: add configurable logging.level ([50014f5](https://github.com/rvben/vedetta/commit/50014f591dcc75c75b9c12105dc521b2d21bf7d7))
+- **doorbell**: answer a ring with live view and talkback ([3725624](https://github.com/rvben/vedetta/commit/37256244b2d08444853a118e5e13b9e60883e517))
+- **notify**: add images to test notifications ([4e11670](https://github.com/rvben/vedetta/commit/4e11670185dafac165e69a55e39492887ef6bd3a))
+- **activity**: add reversible evidence corrections ([499dad4](https://github.com/rvben/vedetta/commit/499dad42a5cf84e7738d0fb28943bfaef7ebf2ce))
+- **activity**: add explicit incident lifecycle ([735af63](https://github.com/rvben/vedetta/commit/735af6373e1ca3b227329ca5e4dd5ce5be339c7b))
+- **activity**: add incident-first review foundation ([8ff58c2](https://github.com/rvben/vedetta/commit/8ff58c22179761027bfe2412ae849450185d6eb9))
+- **ui**: polish navigation and accessibility ([0c20f49](https://github.com/rvben/vedetta/commit/0c20f49898b359ff3d1130c5a068768ea720fb37))
+- **events**: improve activity review workflow ([cabd836](https://github.com/rvben/vedetta/commit/cabd836ffaad3a1eab7b515536dd9295a81f2834))
+- **api**: report a sleeping on-demand camera as sleeping, not offline ([4e91e1d](https://github.com/rvben/vedetta/commit/4e91e1d765af2de45fddca67a695f970c33d5ce5))
+- **camera**: add on_demand mode for battery cameras ([de5159c](https://github.com/rvben/vedetta/commit/de5159ce3e1b82d7fdbbf9cb36e65701e2a10eaf))
 
+### Fixed
 
+- **stream**: clear stale iPhone autoplay prompt ([d6dc9e4](https://github.com/rvben/vedetta/commit/d6dc9e45889863a1f6fb0e132cfe2d9ecf2a67ae))
+- **api**: stop reporting the startup readiness gate as a server fault ([017db29](https://github.com/rvben/vedetta/commit/017db294fc4cec48b49419f76ee274bd84b7eb76))
+- **api**: classify each request once for tracing, metrics, and access logs ([5b464cf](https://github.com/rvben/vedetta/commit/5b464cf24b0e90deddedd1df52baa810e6bc0d8f))
+- **config**: reject an unrecognized logging.level at startup ([9f5f271](https://github.com/rvben/vedetta/commit/9f5f2717b3dfcc4fac4b46eb819b14c6e5fee4a3))
+- **logging**: keep the log rotating after a failed close ([3683852](https://github.com/rvben/vedetta/commit/368385295b57926b22426b0efdb97f1704b036d2))
+- **stream**: preserve iPhone muted autoplay ([ee001f2](https://github.com/rvben/vedetta/commit/ee001f236377c07a448b76f3b1b4cfe62fc37cbc))
+- **stream**: autoplay muted live video on iPhone ([1513f15](https://github.com/rvben/vedetta/commit/1513f15eeca6514c409b3aa57d6970e5df25e10a))
+- **stream**: restore genuine iPhone live video ([72d514c](https://github.com/rvben/vedetta/commit/72d514cf8d78508bfa0f61068d4e9ef4b80f1f38))
+- **stream**: start reliable iPhone feed immediately ([bafb4ec](https://github.com/rvben/vedetta/commit/bafb4eca6a113388e40781ca69ce1100cfcfd222))
+- **stream**: bound iPhone live video recovery ([56350e9](https://github.com/rvben/vedetta/commit/56350e9ec027101b8ba969b2d1f6894999893d06))
+- **rtsp**: rate-limit repeated connection error logs ([bec146f](https://github.com/rvben/vedetta/commit/bec146f52f4b2a34ad3138f76761379a8d3f3b11))
+- **api**: grade HTTP access logs by outcome instead of logging every request at info ([339e008](https://github.com/rvben/vedetta/commit/339e0088b74bee8c5bf2fb17752847546f7b9185))
+- **stream**: decode live HLS video on iPhone ([341c2e4](https://github.com/rvben/vedetta/commit/341c2e455bd88ab66da9fedd2eee1390fd33cbe2))
+- **stream**: stabilize iPhone live playback ([cfd9d71](https://github.com/rvben/vedetta/commit/cfd9d711a2c21a6d907fc83fe26f09aeaff02621))
+- **recording**: schedule historical clip repair ([c322d05](https://github.com/rvben/vedetta/commit/c322d05ab602cc5a7eeaf34f339813aadc5fa05a))
+- **media**: assemble H264 frames by timestamp ([9360825](https://github.com/rvben/vedetta/commit/93608250c9f2a38a86dd80e5b078e5f6c81b9ca1))
+- **events**: restore event video playback ([b30af56](https://github.com/rvben/vedetta/commit/b30af56a176cf829401f04a2a7b70804c302fc9f))
+- **events**: prevent delayed and corrupted doorbell events ([d0aed1f](https://github.com/rvben/vedetta/commit/d0aed1f0ea89bdd4e9b001d576ff4b601279b8ee))
+- **tests**: replace real network addresses with documentation ranges ([ab5d371](https://github.com/rvben/vedetta/commit/ab5d3719dc79cadf4c1218950b9e759710b85de9))
+- **mqtt**: bound broker socket writes ([3a2e678](https://github.com/rvben/vedetta/commit/3a2e67855e0af7b739590331674b50c276e5a94c))
+- **mqtt**: bound published snapshot resolution ([56d8db5](https://github.com/rvben/vedetta/commit/56d8db5fcd1f3229af0a1a6188cd7a353c5a908b))
+- **mqtt**: treat sleeping cameras as connected ([9d6a06c](https://github.com/rvben/vedetta/commit/9d6a06cb4052e592f132ceaa68891fc745888ce6))
+- **recording**: harden isolated recompression commits ([71f9fa1](https://github.com/rvben/vedetta/commit/71f9fa175d7c88c65ce65f8abfedbc8c9d173d12))
+- **objects**: preserve sightings after event retention ([b3adbbb](https://github.com/rvben/vedetta/commit/b3adbbbbe3374f35ba5f51b847d58b8b1e7cb843))
+- **media**: isolate native decoder pointers from GC ([cd65766](https://github.com/rvben/vedetta/commit/cd65766aa81715a90b726430bd8897672364eab0))
+- **ui**: harden recovery and first-run flows ([7cbbe5e](https://github.com/rvben/vedetta/commit/7cbbe5ea2e8bce06bd8796d6a93ed3bae8629d8f))
+- **ui**: harden recovery and polling ([62c4c48](https://github.com/rvben/vedetta/commit/62c4c48d44eb44d3093531c79b29c7e5bda6d169))
+- **camera**: show unavailable states immediately ([012667e](https://github.com/rvben/vedetta/commit/012667e0d50c97bd56ec7ee66a8591ab3310e816))
+- **camera**: make recording scrubbing smooth ([8474d9f](https://github.com/rvben/vedetta/commit/8474d9f36241479fd0d58c538e1438e9e78fc567))
+- **lifecycle**: unify graceful shutdown ([c009fe6](https://github.com/rvben/vedetta/commit/c009fe6a55fc290af2977840d4d99cd54f9d4e0e))
+- **camera**: distinguish an unreachable on-demand camera from a sleeping one ([9266347](https://github.com/rvben/vedetta/commit/92663474e11dfe3b4bc639d00f128dd49412914f))
+- **stream**: reattach consumers after source replacement ([f70dd7d](https://github.com/rvben/vedetta/commit/f70dd7d762c932d139ecc4aafe80cb4840390026))
+- **config**: preserve advanced recording settings ([470bc95](https://github.com/rvben/vedetta/commit/470bc9575f9ae2fa9bf3117354d6de1efb54edf0))
+- **api**: keep camera fields the edit form does not expose ([e21e363](https://github.com/rvben/vedetta/commit/e21e36324a0408b1e8402a41772b0fccffcc0777))
 
+### Performance
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+- **stream**: prime WebRTC viewers from warm feed ([a4785a7](https://github.com/rvben/vedetta/commit/a4785a76d03df91a66de8fec0e3a094f51cc5a56))
 
 ## [0.7.15](https://github.com/rvben/vedetta/compare/v0.7.14...v0.7.15) - 2026-07-10
 

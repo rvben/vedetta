@@ -1,4 +1,4 @@
-.PHONY: build build-capi build-hwaccel build-deploy run test test-js test-browser test-race bench lint clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
+.PHONY: build build-capi build-hwaccel build-deploy run test test-js test-browser test-race bench lint lint-install clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
 
 BINARY := vedetta
 BUILD_DIR := ./build
@@ -8,6 +8,7 @@ LDFLAGS := -ldflags="-X main.Version=$(VERSION)"
 CODESIGN_IDENTITY := Apple Development: ruben@am8.nl (D7C7CMD397)
 CODESIGN_IDENTIFIER := nl.am8.vedetta
 DEPLOY_HOST := mac-mini
+GOLANGCI_LINT_VERSION := v2.13.1
 
 build:
 	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) ./cmd/vedetta
@@ -62,7 +63,18 @@ test-race:
 bench:
 	go test ./internal/detect/ -bench=. -benchmem -count=1
 
+# Install the linter CI uses. The version is pinned because an unpinned
+# "@latest" lets a golangci-lint release turn main red with no change to this
+# repository, and makes a local `make lint` disagree with CI about the same
+# commit. Bump it deliberately, after running the new version here.
+lint-install:
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
 lint:
+	@installed=$$(golangci-lint version --short 2>/dev/null || echo none); \
+	if [ "v$$installed" != "$(GOLANGCI_LINT_VERSION)" ]; then \
+		echo "warning: golangci-lint v$$installed differs from the pinned $(GOLANGCI_LINT_VERSION) that CI runs; 'make lint-install' to match"; \
+	fi
 	golangci-lint run ./...
 
 clean:

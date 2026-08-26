@@ -93,6 +93,14 @@ type peerState struct {
 	// decode-corrupting hole at the handoff boundary.
 	deliveryMu     sync.Mutex
 	transportReady bool
+	// pendingVideo holds one packet so the next packet can prove whether it is
+	// really the end of its access unit. A few cameras set RTP's marker bit on
+	// both the IDR slice and trailing SEI metadata at the same timestamp. Safari
+	// treats those duplicate frame boundaries as two samples with one timestamp
+	// and can freeze after the first decoded image. One-packet lookahead lets us
+	// emit exactly one marker on the final packet of every timestamp while adding
+	// less than one frame of latency.
+	pendingVideo *rtp.Packet
 
 	// Forwarding diagnostics. WriteRTP can fail silently deep in the pion
 	// stack (e.g. a buffer pool with a fixed-size slot rejects payloads
@@ -135,7 +143,7 @@ func (p *peerState) deliverVideo(pkt *rtp.Packet) error {
 	if !p.transportReady {
 		return nil
 	}
-	return p.writeVideo(pkt)
+	return p.queueVideo(pkt)
 }
 
 func (p *peerState) deliverAudio(pkt *rtp.Packet) error {
@@ -161,7 +169,7 @@ func (p *peerState) activateTransport(source *rtsp.Source) {
 
 	primed := 0
 	for _, pkt := range source.LatestVideoGOP() {
-		if err := p.writeVideo(pkt); err != nil {
+		if err := p.queueVideo(pkt); err != nil {
 			// A fresh keyframe on the live path can recover from a failed replay.
 			p.mu.Lock()
 			p.keyframeSeen = false
@@ -173,6 +181,35 @@ func (p *peerState) activateTransport(source *rtsp.Source) {
 	}
 	p.transportReady = true
 	slog.Info("WebRTC transport ready", "camera", p.cameraName, "primedPackets", primed)
+}
+
+// queueVideo normalizes RTP marker bits with one-packet lookahead before the
+// packet reaches Pion. RFC 6184 defines Marker as the last packet of an access
+// unit, but cameras in the field can mark several NAL units sharing the same
+// timestamp (for example IDR and trailing SEI). Browser H.264 depacketizers can
+// then construct duplicate samples for one timestamp and stop advancing.
+//
+// deliveryMu serializes this method, including the cached-GOP-to-live handoff,
+// so pendingVideo always observes the source packet order. The stored packet is
+// a shallow copy because only its header is changed; RTP payloads remain
+// immutable throughout the fan-out pipeline.
+func (p *peerState) queueVideo(pkt *rtp.Packet) error {
+	if pkt == nil {
+		return nil
+	}
+	next := *pkt
+	if p.pendingVideo == nil {
+		p.pendingVideo = &next
+		return nil
+	}
+
+	pending := *p.pendingVideo
+	// A packet followed by another packet at the same timestamp cannot be the
+	// access-unit boundary. Conversely, the final packet before a timestamp
+	// change is the boundary even when a camera forgot to mark it.
+	pending.Marker = pending.Timestamp != next.Timestamp
+	p.pendingVideo = &next
+	return p.writeVideo(&pending)
 }
 
 // classifyInbound bumps the NAL-type counter for pkt. The classification

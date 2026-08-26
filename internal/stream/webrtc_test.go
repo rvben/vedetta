@@ -203,6 +203,59 @@ func TestBuildNALPacketCopiesHeaderAndPayload(t *testing.T) {
 	}
 }
 
+func TestQueueVideoNormalizesDuplicateMarkersWithinAccessUnit(t *testing.T) {
+	peer, writer := newTestPeer(nil, nil)
+
+	packets := []*rtp.Packet{
+		{Header: rtp.Header{Timestamp: 90_000, Marker: true}, Payload: []byte{0x67, 0x64}},
+		{Header: rtp.Header{Timestamp: 90_000, Marker: true}, Payload: []byte{0x68, 0xee}},
+		{Header: rtp.Header{Timestamp: 90_000, Marker: true}, Payload: []byte{0x65, 0x88}},
+		// The real Garage stream appends SEI after its IDR and incorrectly marks
+		// both packets as an access-unit boundary.
+		{Header: rtp.Header{Timestamp: 90_000, Marker: true}, Payload: []byte{0x06, 0x05}},
+		{Header: rtp.Header{Timestamp: 94_500, Marker: true}, Payload: []byte{0x41, 0x9a}},
+	}
+	for _, pkt := range packets {
+		if err := peer.queueVideo(pkt); err != nil {
+			t.Fatalf("queueVideo: %v", err)
+		}
+	}
+
+	got := writer.snapshot()
+	if len(got) != 4 {
+		t.Fatalf("forwarded %d packets, want 4 completed-timestamp packets", len(got))
+	}
+	for i, pkt := range got {
+		wantMarker := i == len(got)-1
+		if pkt.Marker != wantMarker {
+			t.Errorf("packet %d marker = %v, want %v", i, pkt.Marker, wantMarker)
+		}
+		if pkt.Timestamp != 0 {
+			t.Errorf("packet %d rebased timestamp = %d, want 0", i, pkt.Timestamp)
+		}
+	}
+}
+
+func TestQueueVideoRepairsMissingFinalMarker(t *testing.T) {
+	peer, writer := newTestPeer(nil, nil)
+	idr := idrPacket(1, 90_000)
+	idr.Marker = false
+	if err := peer.queueVideo(idr); err != nil {
+		t.Fatalf("queue IDR: %v", err)
+	}
+	if err := peer.queueVideo(pPacket(2, 94_500)); err != nil {
+		t.Fatalf("queue next frame: %v", err)
+	}
+
+	got := writer.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("forwarded %d packets, want 1", len(got))
+	}
+	if !got[0].Marker {
+		t.Fatal("final packet before a timestamp change was not marked")
+	}
+}
+
 // makeBigNAL builds a payload that starts with a single-NAL header of the
 // given type and pads the rest with deterministic, non-zero data of length
 // `size-1`. The total payload length is `size`.
@@ -1318,10 +1371,13 @@ func TestWebrtcConsumer_PeerWriteDoesNotBlockMembershipChanges(t *testing.T) {
 	slow := &peerState{video: &trackState{track: bw}, keyframeSeen: true, transportReady: true}
 	wc := &webrtcConsumer{peers: []*peerState{slow}}
 
-	// Single small NAL (type 1, no fragmentation) → exactly one peer write.
-	pkt := &rtp.Packet{Payload: []byte{0x01, 0xAA}}
+	// The marker normalizer intentionally holds one packet for lookahead. Prime
+	// it, then the next packet causes exactly one peer write.
+	pkt := &rtp.Packet{Header: rtp.Header{Timestamp: 1000}, Payload: []byte{0x01, 0xAA}}
+	wc.OnVideoRTP(pkt)
+	next := &rtp.Packet{Header: rtp.Header{Timestamp: 4000}, Payload: []byte{0x01, 0xBB}}
 
-	go wc.OnVideoRTP(pkt)
+	go wc.OnVideoRTP(next)
 	select {
 	case <-bw.entered:
 	case <-time.After(2 * time.Second):
@@ -1355,6 +1411,11 @@ func TestPeerActivateTransportPrimesCachedGOPBeforeLivePackets(t *testing.T) {
 	}
 	if err := peer.deliverVideo(pPacket(12, 7000)); err != nil {
 		t.Fatalf("deliver live packet: %v", err)
+	}
+	// One more live packet flushes the preceding packet through the one-packet
+	// marker-normalization lookahead.
+	if err := peer.deliverVideo(pPacket(13, 10000)); err != nil {
+		t.Fatalf("deliver lookahead packet: %v", err)
 	}
 
 	got := writer.snapshot()

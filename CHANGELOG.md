@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.17](https://github.com/rvben/vedetta/compare/v0.7.16...v0.7.17) - 2026-08-26
+
+### Fixed
+
+- **stream**: normalize WebRTC frame boundaries ([db90f5b](https://github.com/rvben/vedetta/commit/db90f5ba9c6b3d2abc00045ecaeba4a2e5071bfa))
+
 ## [0.7.16](https://github.com/rvben/vedetta/compare/v0.7.15...v0.7.16) - 2026-08-26
 
 ### Added

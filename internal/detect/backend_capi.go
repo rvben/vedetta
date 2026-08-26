@@ -170,6 +170,10 @@ type CAPIBackend struct {
 	outputBuf []float32
 }
 
+// capiBackendCompiledIn reports that this build carries the C ONNX Runtime
+// backend, so selecting it is worth attempting at runtime.
+const capiBackendCompiledIn = true
+
 // NewCAPIBackend creates a C ONNX Runtime inference backend.
 func NewCAPIBackend(modelData []byte) (*CAPIBackend, error) {
 	if len(modelData) == 0 {

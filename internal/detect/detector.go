@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"log/slog"
@@ -205,13 +206,26 @@ func (d *Detector) init(cfg config.DetectConfig) error {
 	return nil
 }
 
+// errCAPINotCompiledIn reports a C ONNX Runtime backend that this binary cannot
+// provide at all, as opposed to one that is present but failed to start.
+var errCAPINotCompiledIn = errors.New("c ONNX Runtime not available: build with -tags cgo_onnxruntime")
+
 // selectBackend picks the best available backend based on config and build tags.
+//
+// Whether the C backend exists is settled at compile time by
+// capiBackendCompiledIn, so a build without it never calls a constructor that
+// cannot succeed: the explicit request fails with the reason, and auto-selection
+// goes straight to the pure Go backend instead of probing and logging every
+// start.
 func selectBackend(preference string, modelData []byte) (Backend, error) {
 	switch preference {
 	case "go":
 		return NewGoBackend(modelData)
 
 	case "onnxruntime_c":
+		if !capiBackendCompiledIn {
+			return nil, fmt.Errorf("c ONNX Runtime backend: %w", errCAPINotCompiledIn)
+		}
 		b, err := NewCAPIBackend(modelData)
 		if err != nil {
 			return nil, fmt.Errorf("c ONNX Runtime backend: %w", err)
@@ -219,13 +233,16 @@ func selectBackend(preference string, modelData []byte) (Backend, error) {
 		return b, nil
 
 	case "", "auto":
-		// Try C ONNX Runtime first (faster), fall back to pure Go.
-		b, err := NewCAPIBackend(modelData)
-		if err == nil {
-			slog.Info("auto-selected C ONNX Runtime backend")
-			return b, nil
+		// Prefer C ONNX Runtime when it is compiled in (faster), fall back to
+		// pure Go when it is absent or fails to initialize.
+		if capiBackendCompiledIn {
+			b, err := NewCAPIBackend(modelData)
+			if err == nil {
+				slog.Info("auto-selected C ONNX Runtime backend")
+				return b, nil
+			}
+			slog.Info("C ONNX Runtime not available, using pure Go backend", "reason", err.Error())
 		}
-		slog.Info("C ONNX Runtime not available, using pure Go backend", "reason", err.Error())
 		return NewGoBackend(modelData)
 
 	default:

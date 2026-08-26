@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"os"
@@ -66,9 +67,11 @@ func TestSelectBackend_AutoFallsBackToGo(t *testing.T) {
 	}
 	defer b.Close()
 
-	// Without cgo_onnxruntime tag, auto falls back to Go.
-	if _, ok := b.(*GoBackend); !ok {
-		t.Logf("auto-selected: %s (%T) — C ONNX Runtime may be available", b.Name(), b)
+	// A build without the C backend has exactly one correct answer, so assert
+	// it. A build with the C backend may still land on Go when the runtime
+	// fails to initialize, which is the fallback working, so accept either.
+	if _, isGo := b.(*GoBackend); !isGo && !capiBackendCompiledIn {
+		t.Fatalf("auto selected %T (%s) in a build with no C ONNX Runtime backend", b, b.Name())
 	}
 }
 
@@ -88,10 +91,18 @@ func TestSelectBackend_UnknownReturnsError(t *testing.T) {
 	}
 }
 
+// Asking for a backend this binary does not carry must say so. The model is a
+// real one on purpose: with empty bytes the C constructor rejects the input
+// instead, so an "any error" assertion would pass for the wrong reason and could
+// not tell a missing backend from a bad model.
 func TestSelectBackend_OnnxruntimeCWithoutTag(t *testing.T) {
-	_, err := selectBackend("onnxruntime_c", []byte{})
-	if err == nil {
-		t.Fatal("expected error without cgo_onnxruntime build tag")
+	if capiBackendCompiledIn {
+		t.Skip("built with -tags cgo_onnxruntime: the C backend is present")
+	}
+
+	_, err := selectBackend("onnxruntime_c", loadTestModel(t))
+	if !errors.Is(err, errCAPINotCompiledIn) {
+		t.Fatalf("error = %v, want one wrapping errCAPINotCompiledIn", err)
 	}
 }
 

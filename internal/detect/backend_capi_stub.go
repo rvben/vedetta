@@ -4,13 +4,16 @@ package detect
 
 import "fmt"
 
+// capiBackendCompiledIn reports that this build has no C ONNX Runtime backend.
+const capiBackendCompiledIn = false
+
 // CAPIBackend is a stub when built without the cgo_onnxruntime tag.
 // All methods return errors indicating the backend is unavailable.
 type CAPIBackend struct{}
 
 // NewCAPIBackend returns an error when built without the cgo_onnxruntime tag.
 func NewCAPIBackend(_ []byte) (*CAPIBackend, error) {
-	return nil, fmt.Errorf("c ONNX Runtime not available: build with -tags cgo_onnxruntime")
+	return nil, errCAPINotCompiledIn
 }
 
 func (b *CAPIBackend) Run(_ []float32) ([]float32, error) {

@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **detect**: decide C ONNX Runtime availability at build time ([e917fe5](https://github.com/rvben/vedetta/commit/e917fe5db01fa589ab2488112d1c110639740bcc))
 - **stream**: clear stale iPhone autoplay prompt ([d6dc9e4](https://github.com/rvben/vedetta/commit/d6dc9e45889863a1f6fb0e132cfe2d9ecf2a67ae))
 - **api**: stop reporting the startup readiness gate as a server fault ([017db29](https://github.com/rvben/vedetta/commit/017db294fc4cec48b49419f76ee274bd84b7eb76))
 - **api**: classify each request once for tracing, metrics, and access logs ([5b464cf](https://github.com/rvben/vedetta/commit/5b464cf24b0e90deddedd1df52baa810e6bc0d8f))

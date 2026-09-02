@@ -343,13 +343,10 @@ func reconcileActivityTx(tx *sql.Tx, activityID string) (string, error) {
 	return "", nil
 }
 
-func backfillActivities(db *sql.DB) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
+// backfillActivities groups every existing event into an activity. It runs
+// inside the caller's transaction so the backfill and the schema version that
+// records it commit together.
+func backfillActivities(tx *sql.Tx) error {
 	rows, err := tx.Query(`SELECT ` + eventSelectCols + ` FROM events ORDER BY timestamp ASC, id ASC`)
 	if err != nil {
 		return err
@@ -364,7 +361,7 @@ func backfillActivities(db *sql.DB) error {
 			return fmt.Errorf("event %s: %w", event.ID, err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func activityFilterClause(filters ActivityFilters) (string, []any) {

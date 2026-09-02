@@ -609,17 +609,44 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("logging.level: invalid value %q (want debug, info, warn, or error)", cfg.Logging.Level)
 	}
 
+	if err := applyRecordingSettings(cfg); err != nil {
+		return nil, err
+	}
+	applyDoorbellDefaults(cfg)
+	if err := validateAPI(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateAuthUsers(cfg); err != nil {
+		return nil, err
+	}
+	resolvePaths(cfg, filepath.Dir(path))
+	if err := validateCameras(cfg); err != nil {
+		return nil, err
+	}
+	if err := normalizeTelemetry(cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// applyRecordingSettings validates the recording block and resolves the
+// human-readable sizes into the byte counts the recorder uses.
+func applyRecordingSettings(cfg *Config) error {
+	if err := ValidateRecording(cfg.Recording); err != nil {
+		return err
+	}
 	if cfg.Recording.MaxStorage != "" {
 		bytes, err := parseByteSize(cfg.Recording.MaxStorage)
 		if err != nil {
-			return nil, fmt.Errorf("recording.max_storage: %w", err)
+			return fmt.Errorf("recording.max_storage: %w", err)
 		}
 		cfg.Recording.maxStorageBytes = bytes
 	}
 	if cfg.Recording.MinDiskFree != "" {
 		bytes, err := parseByteSize(cfg.Recording.MinDiskFree)
 		if err != nil {
-			return nil, fmt.Errorf("recording.min_disk_free: %w", err)
+			return fmt.Errorf("recording.min_disk_free: %w", err)
 		}
 		cfg.Recording.minDiskFreeBytes = bytes
 	}
@@ -636,70 +663,113 @@ func Load(path string) (*Config, error) {
 		cfg.Recording.TieredStorage.Priority = "largest"
 	}
 	if cfg.Recording.TieredStorage.Priority != "largest" && cfg.Recording.TieredStorage.Priority != "oldest" {
-		return nil, fmt.Errorf("recording.tiered_storage.priority: must be \"largest\" or \"oldest\"")
+		return fmt.Errorf("recording.tiered_storage.priority: must be \"largest\" or \"oldest\"")
 	}
+	return nil
+}
 
+// applyDoorbellDefaults fills in the doorbell timings that a zero value would
+// otherwise turn into an instant clip or a negative debounce.
+func applyDoorbellDefaults(cfg *Config) {
 	if cfg.Doorbell.ClipSeconds <= 0 {
 		cfg.Doorbell.ClipSeconds = 15
 	}
 	if cfg.Doorbell.DebounceSeconds < 0 {
 		cfg.Doorbell.DebounceSeconds = 10
 	}
+}
 
+// validateAPI checks the listener, its exposure and the origins and proxies it
+// trusts. These decide who can reach the API, so an inconsistent combination is
+// an error rather than a default.
+func validateAPI(cfg *Config) error {
 	// Validate TLS config: both cert and key must be set together
 	if (cfg.API.TLSCert != "") != (cfg.API.TLSKey != "") {
-		return nil, fmt.Errorf("api: both tls_cert and tls_key must be set")
+		return fmt.Errorf("api: both tls_cert and tls_key must be set")
 	}
 	if cfg.API.Exposure != "lan" && cfg.API.Exposure != "internet" {
-		return nil, fmt.Errorf("api.exposure: must be \"lan\" or \"internet\"")
+		return fmt.Errorf("api.exposure: must be \"lan\" or \"internet\"")
 	}
 	if cfg.API.Exposure == "internet" && cfg.API.TLSCert == "" && len(cfg.API.TrustedProxies) == 0 {
-		return nil, fmt.Errorf("api.exposure=internet requires tls_cert/tls_key or at least one trusted proxy")
+		return fmt.Errorf("api.exposure=internet requires tls_cert/tls_key or at least one trusted proxy")
 	}
 	for i, proxy := range cfg.API.TrustedProxies {
 		if _, err := parseProxyPrefix(proxy); err != nil {
-			return nil, fmt.Errorf("api.trusted_proxies[%d]: %w", i, err)
+			return fmt.Errorf("api.trusted_proxies[%d]: %w", i, err)
 		}
 	}
 	for i, origin := range cfg.API.AllowedOrigins {
 		u, err := url.Parse(origin)
 		if err != nil || u.Scheme == "" || u.Host == "" {
-			return nil, fmt.Errorf("api.allowed_origins[%d]: must be an absolute origin", i)
+			return fmt.Errorf("api.allowed_origins[%d]: must be an absolute origin", i)
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			return nil, fmt.Errorf("api.allowed_origins[%d]: scheme must be http or https", i)
+			return fmt.Errorf("api.allowed_origins[%d]: scheme must be http or https", i)
 		}
 		if u.Path != "" && u.Path != "/" {
-			return nil, fmt.Errorf("api.allowed_origins[%d]: origin must not include a path", i)
+			return fmt.Errorf("api.allowed_origins[%d]: origin must not include a path", i)
 		}
 		if u.RawQuery != "" || u.Fragment != "" {
-			return nil, fmt.Errorf("api.allowed_origins[%d]: origin must not include query or fragment", i)
+			return fmt.Errorf("api.allowed_origins[%d]: origin must not include query or fragment", i)
 		}
 	}
 
 	if cfg.Auth.Proxy.Header != "" && len(cfg.API.TrustedProxies) == 0 {
-		return nil, fmt.Errorf("auth.proxy.header requires at least one api.trusted_proxies entry")
+		return fmt.Errorf("auth.proxy.header requires at least one api.trusted_proxies entry")
 	}
+	return nil
+}
 
+// validateAuthUsers rejects a configuration nobody could log in to, and users
+// that carry no credential.
+func validateAuthUsers(cfg *Config) error {
 	if len(cfg.Auth.Users) == 0 {
-		return nil, fmt.Errorf("at least one auth user must be configured")
+		return fmt.Errorf("at least one auth user must be configured")
 	}
 
-	configDir := filepath.Dir(path)
+	for i, user := range cfg.Auth.Users {
+		if user.Username == "" {
+			return fmt.Errorf("auth.users[%d]: username is required", i)
+		}
+		if user.PasswordHash == "" {
+			return fmt.Errorf("auth.users[%d]: password_hash is required", i)
+		}
+	}
+	return nil
+}
+
+// resolvePaths makes every configured path absolute against the directory the
+// config file lives in, so a relative path means the same thing regardless of
+// the working directory the process was started from.
+func resolvePaths(cfg *Config, configDir string) {
 	cfg.Storage.DBPath = normalizePath(configDir, cfg.Storage.DBPath)
 	cfg.Recording.Path = normalizePath(configDir, cfg.Recording.Path)
 	cfg.Events.SnapshotPath = normalizePath(configDir, cfg.Events.SnapshotPath)
 	cfg.Detect.ModelPath = normalizePath(configDir, cfg.Detect.ModelPath)
 	cfg.API.TLSCert = normalizePath(configDir, cfg.API.TLSCert)
 	cfg.API.TLSKey = normalizePath(configDir, cfg.API.TLSKey)
+}
+
+// validateCameras checks each camera entry and fills in the stream defaults.
+func validateCameras(cfg *Config) error {
+	// seenCameraNames rejects a name that appears twice. The manager keys its
+	// camera map by name, so a duplicate silently discards one entry's settings
+	// while the start order still lists the name twice, and both entries share
+	// one recording directory.
+	seenCameraNames := make(map[string]string, len(cfg.Cameras))
 
 	for i := range cfg.Cameras {
 		cam := &cfg.Cameras[i]
 		if err := ValidateCameraName(cam.Name); err != nil {
-			return nil, fmt.Errorf("camera %d: %w", i, err)
+			return fmt.Errorf("camera %d: %w", i, err)
 		}
+		key := strings.ToLower(cam.Name)
+		if first, ok := seenCameraNames[key]; ok {
+			return fmt.Errorf("camera %d: duplicate camera name %q (already configured as %q)", i, cam.Name, first)
+		}
+		seenCameraNames[key] = cam.Name
 		if cam.URL == "" {
-			return nil, fmt.Errorf("camera %q: url is required", cam.Name)
+			return fmt.Errorf("camera %q: url is required", cam.Name)
 		}
 		switch cam.RTSPTransport {
 		case "":
@@ -707,7 +777,7 @@ func Load(path string) (*Config, error) {
 		case "tcp", "udp", "auto":
 			// valid
 		default:
-			return nil, fmt.Errorf("camera %q: rtsp_transport must be tcp, udp, or auto (got %q)", cam.Name, cam.RTSPTransport)
+			return fmt.Errorf("camera %q: rtsp_transport must be tcp, udp, or auto (got %q)", cam.Name, cam.RTSPTransport)
 		}
 		if cam.Detect.Width == 0 {
 			cam.Detect.Width = 640
@@ -721,31 +791,26 @@ func Load(path string) (*Config, error) {
 		}
 		for j, z := range cam.Zones {
 			if z.Name == "" {
-				return nil, fmt.Errorf("camera %q: zone %d: name is required", cam.Name, j)
+				return fmt.Errorf("camera %q: zone %d: name is required", cam.Name, j)
 			}
 			if len(z.Points) < 3 {
-				return nil, fmt.Errorf("camera %q: zone %q: points must contain at least 3 polygon points", cam.Name, z.Name)
+				return fmt.Errorf("camera %q: zone %q: points must contain at least 3 polygon points", cam.Name, z.Name)
 			}
 			for _, point := range z.Points {
 				if len(point) != 2 {
-					return nil, fmt.Errorf("camera %q: zone %q: each point must be [x, y]", cam.Name, z.Name)
+					return fmt.Errorf("camera %q: zone %q: each point must be [x, y]", cam.Name, z.Name)
 				}
 				if point[0] < 0 || point[0] > 1 || point[1] < 0 || point[1] > 1 {
-					return nil, fmt.Errorf("camera %q: zone %q: points must be between 0.0 and 1.0", cam.Name, z.Name)
+					return fmt.Errorf("camera %q: zone %q: points must be between 0.0 and 1.0", cam.Name, z.Name)
 				}
 			}
 		}
 	}
+	return nil
+}
 
-	for i, user := range cfg.Auth.Users {
-		if user.Username == "" {
-			return nil, fmt.Errorf("auth.users[%d]: username is required", i)
-		}
-		if user.PasswordHash == "" {
-			return nil, fmt.Errorf("auth.users[%d]: password_hash is required", i)
-		}
-	}
-
+// normalizeTelemetry canonicalizes the tracing and logging export settings.
+func normalizeTelemetry(cfg *Config) error {
 	// Normalize to match the runtime resolver (otelexport.ParseProtocol): trim
 	// and lower-case so values like "GRPC" or " grpc " validate and are stored
 	// canonically rather than rejected here but accepted at export time.
@@ -756,14 +821,14 @@ func Load(path string) (*Config, error) {
 	switch cfg.Tracing.Protocol {
 	case "http", "http/protobuf", "grpc":
 	default:
-		return nil, fmt.Errorf("tracing.protocol: must be \"http\", \"http/protobuf\", or \"grpc\"")
+		return fmt.Errorf("tracing.protocol: must be \"http\", \"http/protobuf\", or \"grpc\"")
 	}
 	if cfg.Tracing.ServiceName == "" {
 		cfg.Tracing.ServiceName = "vedetta"
 	}
 	for k := range cfg.Tracing.Headers {
 		if strings.TrimSpace(k) == "" {
-			return nil, fmt.Errorf("tracing.headers: header name must not be empty")
+			return fmt.Errorf("tracing.headers: header name must not be empty")
 		}
 	}
 
@@ -776,18 +841,17 @@ func Load(path string) (*Config, error) {
 	switch cfg.Logging.Protocol {
 	case "", "http", "http/protobuf", "grpc":
 	default:
-		return nil, fmt.Errorf("logging.protocol: must be \"http\", \"http/protobuf\", or \"grpc\"")
+		return fmt.Errorf("logging.protocol: must be \"http\", \"http/protobuf\", or \"grpc\"")
 	}
 	if cfg.Logging.ServiceName == "" {
 		cfg.Logging.ServiceName = "vedetta"
 	}
 	for k := range cfg.Logging.Headers {
 		if strings.TrimSpace(k) == "" {
-			return nil, fmt.Errorf("logging.headers: header name must not be empty")
+			return fmt.Errorf("logging.headers: header name must not be empty")
 		}
 	}
-
-	return cfg, nil
+	return nil
 }
 
 // parseByteSize parses human-readable byte sizes like "10GB", "500MB", "1TB".

@@ -2,11 +2,18 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
 )
+
+// ErrDuplicateCameraName reports a write refused because the config already
+// carries that name. It is separated from the I/O failures around it so an API
+// caller can answer with the operator's mistake instead of a server error:
+// the correction is obvious and belongs in the response.
+var ErrDuplicateCameraName = errors.New("camera name already in use")
 
 // yamlConfig mirrors Config but uses string durations for human-readable YAML output.
 // time.Duration fields marshal as nanoseconds by default, so this struct ensures
@@ -40,6 +47,8 @@ type yamlDetect struct {
 
 // WriteInitialConfig writes a new config.yml with auth credentials and all defaults.
 func WriteInitialConfig(path, username, passwordHash string) error {
+	defer lockConfig(path)()
+
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("config already exists")
 	} else if err != nil && !os.IsNotExist(err) {
@@ -50,7 +59,7 @@ func WriteInitialConfig(path, username, passwordHash string) error {
 	if err != nil {
 		return fmt.Errorf("generating config: %w", err)
 	}
-	return os.WriteFile(path, []byte(content), 0600)
+	return writeConfigFile(path, []byte(content), 0600)
 }
 
 // GenerateInitialConfigYAML returns the YAML string for an initial config with
@@ -104,7 +113,8 @@ func GenerateInitialConfigYAML(username, passwordHash string) (string, error) {
 
 // updateConfigSection reads the config file as a yaml.Node tree, finds or creates
 // the given top-level key, replaces its value with the provided struct, and writes
-// the file back, preserving existing structure and comments.
+// the file back, preserving existing structure and comments. The caller holds the
+// path's config lock.
 func updateConfigSection(path, sectionKey string, value any) error {
 	doc, root, err := readConfigDocument(path)
 	if err != nil {
@@ -138,7 +148,7 @@ func updateConfigSection(path, sectionKey string, value any) error {
 
 // updateConfigSectionFields merges the encoded fields into an existing mapping
 // instead of replacing the whole section. Unedited and unknown fields retain
-// their yaml.Node values and comments.
+// their yaml.Node values and comments. The caller holds the path's config lock.
 func updateConfigSectionFields(path, sectionKey string, value any) error {
 	doc, root, err := readConfigDocument(path)
 	if err != nil {
@@ -189,6 +199,7 @@ func updateConfigSectionFields(path, sectionKey string, value any) error {
 
 // UpdateMQTT updates the mqtt section of the config file.
 func UpdateMQTT(path string, mqtt MQTTConfig) error {
+	defer lockConfig(path)()
 	return updateConfigSection(path, "mqtt", mqtt)
 }
 
@@ -200,6 +211,7 @@ type yamlUpdateConfig struct {
 
 // UpdateUpdates updates the updates section of the config file.
 func UpdateUpdates(path string, updates UpdateConfig) error {
+	defer lockConfig(path)()
 	y := yamlUpdateConfig{
 		CheckEnabled:  updates.CheckEnabled,
 		CheckInterval: updates.CheckInterval.String(),
@@ -222,6 +234,7 @@ type yamlRecordingWrite struct {
 // UpdateRecording updates the UI-editable recording fields while preserving
 // advanced and unknown fields in the same section.
 func UpdateRecording(path string, rec RecordingConfig) error {
+	defer lockConfig(path)()
 	y := yamlRecordingWrite{
 		Path:          rec.Path,
 		Continuous:    rec.Continuous,
@@ -240,6 +253,8 @@ func UpdateRecording(path string, rec RecordingConfig) error {
 // (score_threshold and labels) while preserving all other fields such as
 // model_path, backend, motion, and object_match_threshold.
 func UpdateDetect(path string, detect DetectConfig) error {
+	defer lockConfig(path)()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
@@ -271,6 +286,8 @@ func AppendCamera(path string, cam CameraConfig, comment string) error {
 	if cam.URL == "" {
 		return fmt.Errorf("camera url is required")
 	}
+
+	defer lockConfig(path)()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -315,6 +332,19 @@ func AppendCamera(path string, cam CameraConfig, comment string) error {
 		camerasSeq = seqNode
 	}
 
+	// Reject a name the config already carries, applying the same rule Load
+	// enforces so an accepted append cannot produce a file the next start
+	// refuses to read.
+	for _, existing := range camerasSeq.Content {
+		nameNode := findMappingValue(existing, "name")
+		if nameNode == nil {
+			continue
+		}
+		if sameCameraName(nameNode.Value, cam.Name) {
+			return fmt.Errorf("%w: %q is already configured as %q", ErrDuplicateCameraName, cam.Name, nameNode.Value)
+		}
+	}
+
 	// Marshal the camera to a yaml.Node
 	camNode, err := marshalCameraNode(cam, comment)
 	if err != nil {
@@ -323,22 +353,7 @@ func AppendCamera(path string, cam CameraConfig, comment string) error {
 
 	camerasSeq.Content = append(camerasSeq.Content, camNode)
 
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return fmt.Errorf("encoding config: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return fmt.Errorf("closing encoder: %w", err)
-	}
-
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("stat config: %w", err)
-	}
-
-	return os.WriteFile(path, buf.Bytes(), info.Mode().Perm())
+	return writeDocToFile(path, &doc)
 }
 
 // GenerateCameraYAML returns a YAML snippet for a camera configuration.
@@ -419,8 +434,9 @@ func readConfigDocument(path string) (doc, root *yaml.Node, err error) {
 	return doc, root, nil
 }
 
-// writeDocToFile encodes a yaml.Node document and writes it to the given path,
-// preserving the file's existing permissions.
+// writeDocToFile encodes a yaml.Node document and replaces the file at the given
+// path with it, preserving the file's existing permissions. The caller holds the
+// path's config lock.
 func writeDocToFile(path string, doc *yaml.Node) error {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
@@ -431,16 +447,25 @@ func writeDocToFile(path string, doc *yaml.Node) error {
 	if err := enc.Close(); err != nil {
 		return fmt.Errorf("closing encoder: %w", err)
 	}
-	info, err := os.Stat(path)
+	mode, err := configFileMode(path)
 	if err != nil {
-		return fmt.Errorf("stat config: %w", err)
+		return err
 	}
-	return os.WriteFile(path, buf.Bytes(), info.Mode().Perm())
+	return writeConfigFile(path, buf.Bytes(), mode)
 }
 
 // UpdateCamera replaces the camera entry at the given index in the cameras
 // sequence with the provided CameraConfig.
 func UpdateCamera(path string, index int, cam CameraConfig) error {
+	if err := ValidateCameraName(cam.Name); err != nil {
+		return fmt.Errorf("invalid camera name: %w", err)
+	}
+	if cam.URL == "" {
+		return fmt.Errorf("camera url is required")
+	}
+
+	defer lockConfig(path)()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
@@ -460,6 +485,24 @@ func UpdateCamera(path string, index int, cam CameraConfig) error {
 	if index < 0 || index >= len(camerasSeq.Content) {
 		return fmt.Errorf("camera index %d out of range (have %d cameras)", index, len(camerasSeq.Content))
 	}
+
+	// A rename must obey the same uniqueness rule Load enforces, or the write
+	// succeeds and the next start refuses the file it just produced. The entry
+	// being replaced is skipped so an edit that leaves the name alone is not
+	// rejected by its own name.
+	for i, existing := range camerasSeq.Content {
+		if i == index {
+			continue
+		}
+		nameNode := findMappingValue(existing, "name")
+		if nameNode == nil {
+			continue
+		}
+		if sameCameraName(nameNode.Value, cam.Name) {
+			return fmt.Errorf("%w: %q is already configured as %q", ErrDuplicateCameraName, cam.Name, nameNode.Value)
+		}
+	}
+
 	var camNode yaml.Node
 	if err := camNode.Encode(cam); err != nil {
 		return fmt.Errorf("marshaling camera: %w", err)
@@ -471,6 +514,8 @@ func UpdateCamera(path string, index int, cam CameraConfig) error {
 // RemoveCamera removes the camera entry at the given index from the cameras
 // sequence, shifting subsequent entries down.
 func RemoveCamera(path string, index int) error {
+	defer lockConfig(path)()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
@@ -497,6 +542,8 @@ func RemoveCamera(path string, index int) error {
 // UpdateAuthPassword updates the password_hash for the given username in the
 // auth.users section of the config file.
 func UpdateAuthPassword(path string, username, newHash string) error {
+	defer lockConfig(path)()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)

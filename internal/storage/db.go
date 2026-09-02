@@ -1311,43 +1311,6 @@ func (d *DB) EventMediaRefs() ([]EventMediaRef, error) {
 	return refs, rows.Err()
 }
 
-func (d *DB) DeleteEventsOlderThan(cutoff time.Time) error {
-	tx, err := d.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.Query(`
-		SELECT DISTINCT ae.activity_id
-		FROM activity_events ae
-		JOIN events e ON e.id = ae.event_id
-		WHERE e.timestamp < ?`, utc(cutoff))
-	if err != nil {
-		return err
-	}
-	var activityIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		activityIDs = append(activityIDs, id)
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if _, err := tx.Exec("DELETE FROM events WHERE timestamp < ?", utc(cutoff)); err != nil {
-		return err
-	}
-	for _, activityID := range activityIDs {
-		if _, err := reconcileActivityTx(tx, activityID); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
 func (d *DB) DeleteFacesOlderThan(cutoff time.Time) error {
 	_, err := d.db.Exec(`
 		DELETE FROM faces

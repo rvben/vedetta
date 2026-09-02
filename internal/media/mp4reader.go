@@ -326,24 +326,24 @@ func TrimMP4(inputPath, outputPath string, start, duration time.Duration) error 
 	for trackID := range trackTimeScales {
 		newBaseTimes[trackID] = 0
 	}
-	for _, frag := range fragments {
-		var refTraf *trafEntry
-		if t := frag.traf(videoTrackID); t != nil {
-			refTraf = t
-		} else if len(frag.trafs) > 0 {
-			refTraf = &frag.trafs[0]
-		} else {
+	firstIdx := firstFragmentForStart(fragments, videoTrackID, trackTimeScales, start)
+	for i, frag := range fragments {
+		// The lower bound is an index, not a timestamp: it is the overlapping
+		// fragment backed up to the last one that opens on a keyframe.
+		if i < firstIdx {
+			continue
+		}
+		refTraf := refTrafForWindow(&frag, videoTrackID)
+		if refTraf == nil {
 			continue
 		}
 		ts := trackTimeScales[refTraf.trackID]
 		if ts == 0 {
 			ts = 90000
 		}
-		startTick := uint64(start.Seconds() * float64(ts))
-		endTick := startTick + uint64(duration.Seconds()*float64(ts))
+		endTick := uint64(start.Seconds()*float64(ts)) + uint64(duration.Seconds()*float64(ts))
 
-		fragEnd := refTraf.decodeTime + uint64(refTraf.duration)
-		if refTraf.decodeTime >= endTick || fragEnd <= startTick {
+		if refTraf.decodeTime >= endTick {
 			continue
 		}
 
@@ -357,6 +357,64 @@ func TrimMP4(inputPath, outputPath string, start, duration time.Duration) error 
 	}
 
 	return nil
+}
+
+// refTrafForWindow picks the traf a fragment's position on the timeline is read
+// from. The video track is the canonical clock because a trim window is stated
+// in wall time; a fragment carrying no video falls back to whatever track it
+// has, so an audio-only tail is still placed rather than dropped.
+func refTrafForWindow(frag *fragment, videoTrackID uint32) *trafEntry {
+	if t := frag.traf(videoTrackID); t != nil {
+		return t
+	}
+	if len(frag.trafs) > 0 {
+		return &frag.trafs[0]
+	}
+	return nil
+}
+
+// firstFragmentForStart returns the index of the fragment a trim starting at
+// start must begin copying from.
+//
+// Selecting by window overlap alone begins wherever the window lands, and a
+// fragment does not necessarily open on a keyframe: SegmentWriter flushes a
+// partial GOP when no keyframe arrives within the expected interval, so a
+// recording legitimately contains fragments that open on a P frame. A clip that
+// begins on one references a keyframe that is not in the file, and its opening
+// frames, the part of an event clip anyone looks at, cannot be decoded.
+//
+// The index is therefore backed up to the newest preceding fragment that does
+// open on a sync sample. The cost is at most one GOP of extra lead-in, and the
+// requested window is still covered because the end bound is untouched.
+func firstFragmentForStart(fragments []fragment, videoTrackID uint32, timeScales map[uint32]uint32, start time.Duration) int {
+	overlap := -1
+	for i := range fragments {
+		refTraf := refTrafForWindow(&fragments[i], videoTrackID)
+		if refTraf == nil {
+			continue
+		}
+		ts := timeScales[refTraf.trackID]
+		if ts == 0 {
+			ts = 90000
+		}
+		if refTraf.decodeTime+uint64(refTraf.duration) <= uint64(start.Seconds()*float64(ts)) {
+			continue
+		}
+		overlap = i
+		break
+	}
+	if overlap < 0 {
+		return len(fragments)
+	}
+	for i := overlap; i >= 0; i-- {
+		if t := fragments[i].traf(videoTrackID); t != nil {
+			if t.isSync {
+				return i
+			}
+			continue
+		}
+	}
+	return overlap
 }
 
 // TrimMP4ToWriter writes a trimmed fMP4 starting at the given offset to w.
@@ -392,21 +450,12 @@ func TrimMP4ToWriter(inputPath string, w io.Writer, start time.Duration) error {
 	for trackID := range trackTimeScales {
 		newBaseTimes[trackID] = 0
 	}
-	for _, frag := range fragments {
-		var refTraf *trafEntry
-		if t := frag.traf(videoTrackID); t != nil {
-			refTraf = t
-		} else if len(frag.trafs) > 0 {
-			refTraf = &frag.trafs[0]
-		} else {
+	firstIdx := firstFragmentForStart(fragments, videoTrackID, trackTimeScales, start)
+	for i, frag := range fragments {
+		if i < firstIdx {
 			continue
 		}
-		ts := trackTimeScales[refTraf.trackID]
-		if ts == 0 {
-			ts = 90000
-		}
-		startTick := uint64(start.Seconds() * float64(ts))
-		if refTraf.decodeTime+uint64(refTraf.duration) <= startTick {
+		if refTrafForWindow(&frag, videoTrackID) == nil {
 			continue
 		}
 

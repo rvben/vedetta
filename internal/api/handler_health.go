@@ -63,7 +63,7 @@ func (s *Server) GetHealth(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	mqttStatus := "disabled"
-	if s.mqttClient != nil {
+	if s.mqttConnected() {
 		mqttStatus = "connected"
 	} else if s.mqttEnabled {
 		mqttStatus = "disconnected"

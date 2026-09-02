@@ -2,23 +2,19 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/rvben/vedetta/internal/api"
-	"github.com/rvben/vedetta/internal/auth"
 	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/config"
 	"github.com/rvben/vedetta/internal/detect"
@@ -31,9 +27,6 @@ import (
 	"github.com/rvben/vedetta/internal/rtsp"
 	"github.com/rvben/vedetta/internal/snapshot"
 	"github.com/rvben/vedetta/internal/storage"
-	"github.com/rvben/vedetta/internal/stream"
-	"github.com/rvben/vedetta/internal/tracing"
-	"github.com/rvben/vedetta/internal/update"
 	"github.com/rvben/vedetta/internal/watchdog"
 
 	"golang.org/x/crypto/bcrypt"
@@ -50,17 +43,84 @@ const livenessTimeout = 2 * time.Minute
 // well before that continued growth reaches the OS OOM-kill point.
 const memoryGuardHardExitGrace = 15 * time.Second
 
+const (
+	// mqttRetryInterval is how long the background reconnect waits between
+	// attempts when the broker was unreachable at startup.
+	mqttRetryInterval = 30 * time.Second
+
+	// mqttStatusInterval is the cadence of the periodic disk and camera status
+	// publishes.
+	mqttStatusInterval = 30 * time.Second
+
+	// cameraStatusWarmupPublishes and cameraStatusWarmupInterval publish camera
+	// status a few times quickly after startup, so cameras appear in Home
+	// Assistant as they connect instead of after a full status interval.
+	cameraStatusWarmupPublishes = 3
+	cameraStatusWarmupInterval  = 5 * time.Second
+
+	// diskMonitorInterval is how often disk pressure is sampled.
+	diskMonitorInterval = 30 * time.Second
+
+	// eventChannelBuffer and detectionChannelBuffer size the pipeline channels
+	// between the camera goroutines and the central event loop.
+	eventChannelBuffer     = 100
+	detectionChannelBuffer = 64
+)
+
 // Version is injected at build time via -ldflags="-X main.Version=<tag>".
-// Falls back to "dev" when building without ldflags (local development).
+// The Makefile, both Dockerfiles, and the release workflow all inject it, so
+// every published artifact identifies itself. The initializer stays a plain
+// string constant because the linker can only rewrite a statically
+// initialized string; main resolves the fallback at startup instead.
 var Version = "dev"
+
+// versionFromBuildInfo recovers a build identity from the metadata the Go
+// toolchain embeds when no version was injected at link time. `go install
+// module@version` records the module version, and `go build` inside a checkout
+// records the VCS revision and whether the tree was dirty. Only a build with
+// neither remains "dev".
+func versionFromBuildInfo() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	var revision string
+	modified := false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	if revision == "" {
+		return "dev"
+	}
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	if modified {
+		return revision + "-dirty"
+	}
+	return revision
+}
 
 // subsystems holds all initialized runtime components so both the normal and
 // setup-mode startup paths can share the same initialization logic.
 type subsystems struct {
-	// mqttClient is read by the event loop and the disk/camera-status ticker
-	// goroutines while the reconnect goroutine may install a new client, so
-	// access goes through atomic load/store.
-	mqttClient     atomic.Pointer[mqtt.Client]
+	// mqtt owns the one client the whole process publishes through: the event
+	// loop, the disk and camera-status tickers, the settings handler's
+	// reconnect and the background retry all go through it, so a broker change
+	// reaches every publisher at once.
+	mqtt mqtt.Holder
+	// announcer republishes Home Assistant discovery whenever a broker
+	// connection is established, including the background reconnect that can
+	// install a client long after startup.
+	announcer      mqttAnnouncer
 	detector       *detect.Detector
 	faceRecognizer *detect.FaceRecognizer
 	objectEmbedder *detect.ObjectEmbedder
@@ -91,33 +151,14 @@ func main() {
 		os.Exit(watchdog.RunSupervisorChild())
 	}
 
-	// Handle subcommands before flag parsing
-	if len(os.Args) > 1 && os.Args[1] == "discover" {
-		runDiscover()
-		return
+	// Fill in the build identity when the linker did not inject one. Assigning
+	// here rather than in the declaration keeps -X working: an injected value is
+	// never "dev", so this leaves it untouched.
+	if Version == "dev" {
+		Version = versionFromBuildInfo()
 	}
 
-	if len(os.Args) > 1 && os.Args[1] == "streams" {
-		runStreams()
-		return
-	}
-
-	// Hidden subcommand: the recompressor re-execs this binary to transcode a
-	// single segment in an isolated child process, so an OpenH264 heap-corruption
-	// crash dies with the child instead of the NVR. Kept tiny: no config, DB, or
-	// network.
-	if len(os.Args) > 1 && os.Args[1] == "transcode" {
-		runTranscode(os.Args[2:])
-		return
-	}
-
-	if len(os.Args) > 2 && os.Args[1] == "auth" && os.Args[2] == "hash-password" {
-		runHashPassword(os.Args[3:])
-		return
-	}
-
-	if len(os.Args) > 2 && os.Args[1] == "auth" && os.Args[2] == "create-token" {
-		runCreateToken(os.Args[3:])
+	if runSubcommand(os.Args[1:]) {
 		return
 	}
 
@@ -193,6 +234,74 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
+	startProcessGuards(ctx, cfg, db)
+
+	if setupMode {
+		reloaded, setupServer, ok := runSetupMode(ctx, cancel, cfg, *configPath, db)
+		if !ok {
+			return
+		}
+		cfg = reloaded
+
+		// Re-wire logging with the reloaded config. The earlier base-only
+		// provider holds no exporter, so it needs no separate shutdown; the
+		// deferred closure reads logProvider at exit and flushes this one. The
+		// level is re-applied too, so a level chosen during setup takes effect
+		// without a restart.
+		applyLogLevel(logLevel, cfg)
+		logProvider = wireLogging(ctx, cfg, logLevel, baseHandler)
+
+		runFullMode(ctx, cancel, cfg, *configPath, db, setupServer)
+		return
+	}
+
+	runFullMode(ctx, cancel, cfg, *configPath, db, nil)
+}
+
+// runSubcommand handles the CLI subcommands that must run before flag parsing
+// and before any config, database or network work. It reports whether it
+// handled the invocation.
+func runSubcommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "version", "-version", "--version":
+		fmt.Println(Version)
+	case "healthcheck":
+		runHealthcheck()
+	case "discover":
+		runDiscover()
+	case "streams":
+		runStreams()
+	case "transcode":
+		// The recompressor re-execs this binary to transcode a single segment
+		// in an isolated child process, so an OpenH264 heap-corruption crash
+		// dies with the child instead of the NVR. Kept tiny: no config, DB, or
+		// network.
+		runTranscode(args[1:])
+	case "auth":
+		if len(args) < 2 {
+			return false
+		}
+		switch args[1] {
+		case "hash-password":
+			runHashPassword(args[2:])
+		case "create-token":
+			runCreateToken(args[2:])
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// startProcessGuards arms the in-process liveness heartbeat and, when
+// configured, the memory-pressure guard. Both request the same graceful
+// shutdown an operator SIGTERM does, so the supervisor restarts cleanly.
+func startProcessGuards(ctx context.Context, cfg *config.Config, db *storage.DB) {
 	// Liveness guard: a heartbeat goroutine pings the database on an
 	// interval; if the process stalls (deadlock or a stuck loop that keeps
 	// the heartbeat from running) the watchdog terminates it so launchd
@@ -267,214 +376,6 @@ func main() {
 			slog.Warn("memory guard enabled but limit unresolved; set runtime.memory_limit_mb to enable it")
 		}
 	}
-
-	if setupMode {
-		slog.Info("no config file found, starting in setup mode", "config", *configPath)
-
-		setupDone := make(chan struct{})
-		setupAPI := api.SetupModeAPIConfig(cfg.API)
-		server := api.NewSetupMode(setupAPI, db, *configPath, setupDone)
-		slog.Info("open the web UI to complete setup", "url", fmt.Sprintf("http://localhost:%d/", setupAPI.Port))
-		go func() {
-			if err := server.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Error("API server failed", "error", err)
-				cancel()
-			}
-		}()
-
-		// Block until setup completes or process is killed
-		select {
-		case <-setupDone:
-			slog.Info("setup complete, loading config")
-		case <-ctx.Done():
-			awaitShutdown(ctx, cancel, server, nil)
-			return
-		}
-
-		// Reload the written config
-		cfg, err = config.Load(*configPath)
-		if err != nil {
-			slog.Warn("config not found after setup, using defaults", "error", err)
-			cfg = config.Defaults()
-		}
-
-		// Re-wire logging with the reloaded config. The earlier base-only
-		// provider holds no exporter, so it needs no separate shutdown; the
-		// deferred closure reads logProvider at exit and flushes this one. The
-		// level is re-applied too, so a level chosen during setup takes effect
-		// without a restart.
-		applyLogLevel(logLevel, cfg)
-		logProvider = wireLogging(ctx, cfg, logLevel, baseHandler)
-
-		tp, _ := tracing.Init(ctx, tracing.Config(cfg.Tracing), Version)
-		defer func() {
-			sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer scancel()
-			_ = tp.Shutdown(sctx)
-		}()
-
-		// Seed auth users from config into DB
-		for _, user := range cfg.Auth.Users {
-			if err := db.SeedAuthUser(user.Username, user.PasswordHash); err != nil {
-				slog.Error("failed to seed auth user", "username", user.Username, "error", err)
-			}
-		}
-
-		authChecker := auth.NewFromDB(cfg.Auth, cfg.API, db)
-		defer authChecker.Close()
-
-		sub := initSubsystems(ctx, cancel, cfg, db)
-		defer closeSubsystems(sub)
-
-		dispatcher := setupNotifier(db, cfg)
-		wireNotifier(ctx, server, dispatcher, cfg)
-		// Avoid the typed-nil-in-interface trap: only store a non-nil dispatcher,
-		// so the emit path's `sub.notifier != nil` check is correct when push is
-		// disabled.
-		if dispatcher != nil {
-			sub.notifier = dispatcher
-		}
-
-		// Reconcile event media availability with the filesystem
-		go recording.ReconcileEventMediaAvailability(db)
-
-		runEventLoop(ctx, cfg, db, sub, server, tp.Tracer())
-		startOnvifSubscribers(ctx, cfg, sub.manager)
-
-		// Transition the running server to full mode
-		server.SetTracingEnabled(cfg.Tracing.Enabled)
-		server.TransitionToFull(authChecker)
-		server.SetSubsystems(sub.manager, sub.recorder, sub.hub, sub.faceRecognizer, sub.objectEmbedder, cfg.Events.SnapshotPath, filepath.Join(cfg.Events.SnapshotPath, "faces"), cfg.Cameras, sub.ptzClients, cfg.WebRTC)
-		server.ObjectMatchThreshold = cfg.Detect.ObjectMatchThreshold
-		if cfg.MQTT.Enabled {
-			server.SetMQTTEnabled(true)
-		}
-		if mc := sub.mqttClient.Load(); mc != nil {
-			server.SetMQTT(mc)
-		}
-
-		// Start RTSP re-publishing server if enabled
-		if cfg.RTSPServer.Enabled {
-			rtspServer := stream.NewRTSPServer(sub.hub, cfg.RTSPServer, authChecker, cfg.Cameras)
-			if err := rtspServer.Start(); err != nil {
-				slog.Error("RTSP re-publish server failed to start", "error", err)
-			} else {
-				defer rtspServer.Close()
-				slog.Info("RTSP re-publish server started", "port", cfg.RTSPServer.Port)
-			}
-		}
-
-		server.SetVersion(Version)
-		server.SetConfigPath(*configPath)
-		server.SetMQTTConfig(cfg.MQTT)
-		server.SetDetector(sub.detector)
-		server.SetRecordingConfig(cfg.Recording)
-		server.SetRTSPServerConfig(cfg.RTSPServer)
-		if cfg.Updates.CheckEnabled {
-			checker := update.New(Version, cfg.Updates.CheckInterval, db)
-			checker.Start(ctx)
-			defer checker.Stop()
-			server.SetUpdateChecker(checker)
-		}
-
-		slog.Info("vedetta started", "cameras", len(cfg.Cameras))
-
-		awaitShutdown(ctx, cancel, server, sub.recorder)
-		return
-	}
-
-	// Normal startup path — config exists
-	// Seed auth users from config into DB so config acts as the source of truth for initial credentials.
-	for _, user := range cfg.Auth.Users {
-		if err := db.SeedAuthUser(user.Username, user.PasswordHash); err != nil {
-			slog.Error("failed to seed auth user", "username", user.Username, "error", err)
-		}
-	}
-
-	// Reconcile event media availability with the filesystem without deleting metadata.
-	go recording.ReconcileEventMediaAvailability(db)
-
-	authChecker := auth.NewFromDB(cfg.Auth, cfg.API, db)
-	defer authChecker.Close()
-
-	// Start API server early so the UI is available during initialization
-	server := api.New(cfg.API, authChecker, db)
-	server.SetVersion(Version)
-	server.SetConfigPath(*configPath)
-	server.SetMQTTConfig(cfg.MQTT)
-	server.SetRecordingConfig(cfg.Recording)
-	server.SetRTSPServerConfig(cfg.RTSPServer)
-	if cfg.Updates.CheckEnabled {
-		checker := update.New(Version, cfg.Updates.CheckInterval, db)
-		checker.Start(ctx)
-		defer checker.Stop()
-		server.SetUpdateChecker(checker)
-	}
-	server.SetContext(ctx)
-
-	tp, _ := tracing.Init(ctx, tracing.Config(cfg.Tracing), Version)
-	defer func() {
-		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer scancel()
-		_ = tp.Shutdown(sctx)
-	}()
-	server.SetTracingEnabled(cfg.Tracing.Enabled)
-
-	go func() {
-		if err := server.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("API server failed", "error", err)
-			cancel()
-		}
-	}()
-
-	pref := applyHWAccelPreference(cfg)
-	// Auto-install the software decoder unless the operator has explicitly opted
-	// into hardware-only decode. Under "auto" OpenH264 remains the fallback when
-	// no hardware decoder initializes, so it is still installed.
-	if pref != media.HWAccelVT {
-		ensureOpenH264(ctx, cfg)
-	}
-
-	sub := initSubsystems(ctx, cancel, cfg, db)
-	defer closeSubsystems(sub)
-
-	dispatcher := setupNotifier(db, cfg)
-	wireNotifier(ctx, server, dispatcher, cfg)
-	// Avoid the typed-nil-in-interface trap: only store a non-nil dispatcher,
-	// so the emit path's `sub.notifier != nil` check is correct when push is
-	// disabled.
-	if dispatcher != nil {
-		sub.notifier = dispatcher
-	}
-
-	runEventLoop(ctx, cfg, db, sub, server, tp.Tracer())
-	startOnvifSubscribers(ctx, cfg, sub.manager)
-
-	// Start RTSP re-publishing server if enabled
-	if cfg.RTSPServer.Enabled {
-		rtspServer := stream.NewRTSPServer(sub.hub, cfg.RTSPServer, authChecker, cfg.Cameras)
-		if err := rtspServer.Start(); err != nil {
-			slog.Error("RTSP re-publish server failed to start", "error", err)
-		} else {
-			defer rtspServer.Close()
-			slog.Info("RTSP re-publish server started", "port", cfg.RTSPServer.Port)
-		}
-	}
-
-	// Wire subsystems into the API server now that everything is initialized
-	server.SetDetector(sub.detector)
-	server.SetSubsystems(sub.manager, sub.recorder, sub.hub, sub.faceRecognizer, sub.objectEmbedder, cfg.Events.SnapshotPath, filepath.Join(cfg.Events.SnapshotPath, "faces"), cfg.Cameras, sub.ptzClients, cfg.WebRTC)
-	server.ObjectMatchThreshold = cfg.Detect.ObjectMatchThreshold
-	if cfg.MQTT.Enabled {
-		server.SetMQTTEnabled(true)
-	}
-	if mc := sub.mqttClient.Load(); mc != nil {
-		server.SetMQTT(mc)
-	}
-
-	slog.Info("vedetta started", "cameras", len(cfg.Cameras))
-
-	awaitShutdown(ctx, cancel, server, sub.recorder)
 }
 
 // applyLogLevel sets the process-wide level from config.
@@ -503,7 +404,7 @@ func applyLogLevel(level *slog.LevelVar, cfg *config.Config) {
 // that when logging configures no endpoint of its own it reuses tracing's whole
 // transport atomically rather than a mismatched mix.
 func wireLogging(ctx context.Context, cfg *config.Config, level slog.Leveler, base slog.Handler) *logging.Provider {
-	lp, _ := logging.Init(ctx, logging.Config{
+	lp, err := logging.Init(ctx, logging.Config{
 		Enabled:          cfg.Logging.Enabled,
 		Level:            level,
 		Endpoint:         cfg.Logging.Endpoint,
@@ -515,51 +416,107 @@ func wireLogging(ctx context.Context, cfg *config.Config, level slog.Leveler, ba
 		FallbackProtocol: cfg.Tracing.Protocol,
 		FallbackInsecure: cfg.Tracing.Insecure,
 	}, Version, base)
+	if err != nil {
+		// Init degrades to local-only logging rather than failing, so this only
+		// fires if that contract changes. An operator who configured log export
+		// and gets none deserves a line saying why.
+		slog.Error("log export initialization failed, continuing with local logging only", "error", err)
+	}
 	slog.SetDefault(slog.New(lp.Handler()))
 	return lp
 }
 
-// initSubsystems creates and starts all runtime components: MQTT, detector,
-// face recognizer, object embedder, RTSP hub, recorder, and camera manager.
-func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.Config, db *storage.DB) *subsystems {
+// initSubsystems creates and starts all runtime components. Each subsystem the
+// subsystems struct names gets its own initializer, so the sequence reads as
+// the dependency order it actually is.
+func initSubsystems(ctx context.Context, cfg *config.Config, db *storage.DB) *subsystems {
 	var sub subsystems
 
-	if cfg.MQTT.Enabled {
-		c, mqttErr := mqtt.New(cfg.MQTT)
-		if mqttErr != nil {
-			slog.Warn("MQTT unavailable, continuing without it", "error", mqttErr)
-			// Retry in the background without outliving the application. A client
-			// that connects concurrently with shutdown is closed instead of being
-			// installed after closeSubsystems has already run.
-			go func() {
-				for {
-					timer := time.NewTimer(30 * time.Second)
-					select {
-					case <-ctx.Done():
-						timer.Stop()
-						return
-					case <-timer.C:
-					}
+	initMQTTClient(ctx, cfg, &sub)
+	initDetection(cfg, &sub)
+	initHub(ctx, cfg, &sub)
+	stoppedCameras := initRecording(ctx, cfg, db, &sub)
+	initCameraManager(cfg, &sub)
 
-					client, connectErr := mqtt.New(cfg.MQTT)
-					if connectErr != nil {
-						slog.Debug("MQTT reconnect failed", "error", connectErr)
-						continue
-					}
-					if ctx.Err() != nil {
-						client.Close()
-						return
-					}
-					slog.Info("MQTT reconnected")
-					sub.mqttClient.Store(client)
-					return
-				}
-			}()
-		} else {
-			sub.mqttClient.Store(c)
-		}
+	// Continuous recording starts after the manager is built: NewManager (via
+	// NewCamera) registers each camera's reconnect sink with the hub, and
+	// StartContinuousRecording is the first subsystem to open the record
+	// stream. Starting it before registration would lose any reconnect in the
+	// gap.
+	sub.recorder.StartContinuousRecording(ctx, stoppedCameras)
+	sub.recorder.StartRetentionCleanup(ctx)
+	sub.recorder.StartStatsRefresh(ctx)
+	sub.recorder.StartRecompressionJob(ctx)
+
+	// Sync zones from config to DB and load them into cameras.
+	syncConfigZones(db, cfg.Cameras, sub.manager)
+
+	// Disk pressure monitoring: emits log events on transitions and every 30s.
+	diskMonitor := recording.NewDiskMonitor(sub.recorder.DiskMonitorSampler())
+	go diskMonitor.Run(ctx, diskMonitorInterval)
+
+	startMQTTPublishers(ctx, cfg, db, &sub, diskMonitor)
+
+	sub.manager.Start(ctx, stoppedCameras)
+	sub.ptzClients = probePTZClients(cfg)
+	startCameraStatusPublisher(ctx, cfg, &sub)
+
+	return &sub
+}
+
+// initMQTTClient connects the MQTT client, retrying in the background when the
+// broker is unreachable at startup.
+func initMQTTClient(ctx context.Context, cfg *config.Config, sub *subsystems) {
+	if !cfg.MQTT.Enabled {
+		return
 	}
+	c, mqttErr := mqtt.New(cfg.MQTT)
+	if mqttErr == nil {
+		sub.mqtt.Store(c)
+		return
+	}
+	slog.Warn("MQTT unavailable, continuing without it", "error", mqttErr)
+	// Retry without outliving the application, and without outliving the
+	// settings it is retrying. A client that connects concurrently with
+	// shutdown, or after the operator has saved different broker settings or
+	// turned MQTT off, is closed instead of being installed: the loop offers
+	// its client against the generation it started from, and the holder
+	// refuses it once anything else has installed one.
+	startGen := sub.mqtt.Generation()
+	go func() {
+		for {
+			timer := time.NewTimer(mqttRetryInterval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 
+			client, connectErr := mqtt.New(cfg.MQTT)
+			if connectErr != nil {
+				slog.Debug("MQTT reconnect failed", "error", connectErr)
+				continue
+			}
+			if ctx.Err() != nil {
+				client.Close()
+				return
+			}
+			if !sub.mqtt.StoreIfGeneration(startGen, client) {
+				client.Close()
+				slog.Info("MQTT settings changed while reconnecting, dropping the startup connection")
+				return
+			}
+			slog.Info("MQTT reconnected")
+			return
+		}
+	}()
+}
+
+// initDetection builds the object detector and the optional face and
+// re-identification models. A model that fails to load disables its feature
+// rather than the process.
+func initDetection(cfg *config.Config, sub *subsystems) {
 	sub.detector = detect.New(cfg.Detect)
 
 	fr, frErr := detect.NewFaceRecognizer(detect.FaceRecognizerConfig{
@@ -579,14 +536,14 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 		sub.objectEmbedder = oe
 		slog.Info("object re-identification enabled")
 	}
+}
 
-	// Create RTSP Hub — central connection manager
+// initHub creates the RTSP connection manager and registers each camera's
+// transport before any consumer opens a stream. The Hub shares one Source per
+// URL, so the recorder, live-stream consumers and the detect loop must all
+// create it with the configured transport regardless of which connects first.
+func initHub(ctx context.Context, cfg *config.Config, sub *subsystems) {
 	sub.hub = rtsp.NewHub(ctx)
-
-	// Register each camera's RTSP transport before any consumer opens a stream.
-	// The Hub shares one Source per URL, so the recorder, live-stream consumers,
-	// and the detect loop must all create it with the configured transport
-	// regardless of which connects first.
 	for _, cam := range cfg.Cameras {
 		sub.hub.RegisterTransport(cam.URL, cam.RTSPTransport)
 		if cam.RecordURL != "" {
@@ -597,13 +554,17 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 			sub.hub.RegisterOnDemand(cam.RecordURL)
 		}
 	}
+}
 
+// initRecording builds the snapshot saver and the recorder, registers every
+// enabled camera with it, and returns the set of cameras an operator has
+// stopped.
+func initRecording(ctx context.Context, cfg *config.Config, db *storage.DB, sub *subsystems) map[string]bool {
 	snapshotFallbackRoot := snapshot.DefaultFallbackRoot()
 	sub.snapshotSaver = snapshot.NewSaver(cfg.Events.SnapshotPath, snapshotFallbackRoot, cfg.Events.SnapshotQuality)
+	sub.recorder = recording.New(cfg.Recording, cfg.Events, cfg.Cameras, db, sub.hub,
+		cfg.Events.SnapshotPath, snapshotFallbackRoot, sub.snapshotSaver)
 
-	sub.recorder = recording.New(cfg.Recording, cfg.Events, cfg.Cameras, db, sub.hub, cfg.Events.SnapshotPath, snapshotFallbackRoot, sub.snapshotSaver)
-
-	// Register cameras for recording
 	for _, cam := range cfg.Cameras {
 		if !cam.IsEnabled() {
 			continue
@@ -619,132 +580,89 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 	stoppedList, err := db.ListStoppedCameras()
 	if err != nil {
 		slog.Error("failed to load stopped cameras", "error", err)
-	} else {
-		for _, name := range stoppedList {
-			stoppedCameras[name] = true
+		return stoppedCameras
+	}
+	for _, name := range stoppedList {
+		stoppedCameras[name] = true
+	}
+	if len(stoppedCameras) > 0 {
+		slog.Info("cameras marked as stopped", "count", len(stoppedCameras))
+	}
+	return stoppedCameras
+}
+
+// initCameraManager creates the pipeline channels and the camera manager that
+// feeds them.
+func initCameraManager(cfg *config.Config, sub *subsystems) {
+	sub.events = make(chan camera.Event, eventChannelBuffer)
+	sub.eventEnds = make(chan camera.EventEnd, eventChannelBuffer)
+	sub.presenceEvents = make(chan camera.PresenceEvent, eventChannelBuffer)
+	sub.faceEvents = make(chan camera.FaceEvent, eventChannelBuffer)
+	sub.motionActivity = make(chan camera.MotionActivity, eventChannelBuffer)
+	sub.detections = make(chan camera.DetectionFrame, detectionChannelBuffer)
+
+	sub.manager = camera.NewManager(cfg.Cameras, sub.detector, cfg.Detect.Motion,
+		sub.events, sub.eventEnds, sub.presenceEvents, sub.hub,
+		cfg.Events.SnapshotPath, cfg.Events.SnapshotQuality, cfg.Recording.Path,
+		sub.faceRecognizer, sub.faceEvents, filepath.Join(cfg.Events.SnapshotPath, "faces"),
+		sub.motionActivity, sub.detections)
+}
+
+// startMQTTPublishers arms Home Assistant discovery and the periodic disk
+// status publish.
+func startMQTTPublishers(ctx context.Context, cfg *config.Config, db *storage.DB, sub *subsystems, diskMonitor *recording.DiskMonitor) {
+	// Announce every entity now, and again on each broker reconnect. Discovery
+	// is retained broker state: a broker restart drops it, and without a
+	// republish Home Assistant keeps no Vedetta entities until the next
+	// process restart.
+	sub.announcer.setAnnounce(func() {
+		publishHomeAssistantDiscovery(cfg, db, sub.mqtt.Load())
+	})
+	// Every client the holder installs is announced to, not just the one
+	// present now: the broker can be down at boot, and an operator can point
+	// Vedetta at a different broker at any time. A fresh broker holds none of
+	// the retained discovery state, so without this its entities never appear.
+	sub.mqtt.SetOnSwap(func(c *mqtt.Client) {
+		if c == nil {
+			return
 		}
-		if len(stoppedCameras) > 0 {
-			slog.Info("cameras marked as stopped", "count", len(stoppedCameras))
-		}
+		sub.announcer.attach(c)
+	})
+
+	// Gated on the configuration rather than on a live client: the broker can
+	// be down at boot and the client appear later from the background
+	// reconnect, and the publish reads the current client on every tick.
+	if !cfg.MQTT.Enabled {
+		return
 	}
 
-	// Publish HA MQTT discovery for all enabled cameras
-	if mc := sub.mqttClient.Load(); mc != nil {
-		var cameraNames []string
-		for _, cam := range cfg.Cameras {
-			if cam.IsEnabled() {
-				cameraNames = append(cameraNames, cam.Name)
+	go func() {
+		t := time.NewTicker(mqttStatusInterval)
+		defer t.Stop()
+		publish := func() {
+			c := sub.mqtt.Load()
+			if c == nil {
+				return
+			}
+			sampler := sub.recorder.DiskMonitorSampler()
+			paused := sub.recorder.AnyCameraPaused()
+			diskMonitor.SetPaused(paused)
+			c.PublishDiskStatus(sampler.Available(), sampler.Total(), paused)
+		}
+		publish()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				publish()
 			}
 		}
-		mc.PublishDiscovery(cameraNames)
+	}()
+}
 
-		// Publish discovery for tracked objects
-		if knownObjects, err := db.ListKnownObjects(); err == nil {
-			var objInfos []mqtt.ObjectInfo
-			for _, obj := range knownObjects {
-				objInfos = append(objInfos, mqtt.ObjectInfo{Name: obj.Name, Label: obj.Label})
-			}
-			mc.PublishObjectDiscovery(objInfos)
-		}
-
-		// Publish doorbell discovery for enabled-doorbell cameras; clear it for others
-		// so Home Assistant drops the entity when doorbell is turned off.
-		var doorbellCams, nonDoorbellCams []string
-		for _, cam := range cfg.Cameras {
-			if !cam.IsEnabled() {
-				continue
-			}
-			if cam.Doorbell.Enabled {
-				doorbellCams = append(doorbellCams, cam.Name)
-			} else {
-				nonDoorbellCams = append(nonDoorbellCams, cam.Name)
-			}
-		}
-		mc.PublishDoorbellDiscovery(doorbellCams)
-		mc.ClearDoorbellDiscovery(nonDoorbellCams)
-	}
-
-	sub.events = make(chan camera.Event, 100)
-	sub.eventEnds = make(chan camera.EventEnd, 100)
-	sub.presenceEvents = make(chan camera.PresenceEvent, 100)
-	sub.faceEvents = make(chan camera.FaceEvent, 100)
-	sub.motionActivity = make(chan camera.MotionActivity, 100)
-	sub.detections = make(chan camera.DetectionFrame, 64)
-
-	sub.manager = camera.NewManager(cfg.Cameras, sub.detector, cfg.Detect.Motion, sub.events, sub.eventEnds, sub.presenceEvents, sub.hub, cfg.Events.SnapshotPath, cfg.Events.SnapshotQuality, cfg.Recording.Path, sub.faceRecognizer, sub.faceEvents, filepath.Join(cfg.Events.SnapshotPath, "faces"), sub.motionActivity, sub.detections)
-
-	// Start continuous segment recording after the manager is built: NewManager
-	// (via NewCamera) registers each camera's reconnect sink with the hub, and
-	// StartContinuousRecording is the first subsystem to open the record stream.
-	// Starting it before registration would lose any reconnect in the gap.
-	sub.recorder.StartContinuousRecording(ctx, stoppedCameras)
-	sub.recorder.StartRetentionCleanup(ctx)
-	sub.recorder.StartStatsRefresh(ctx)
-	sub.recorder.StartRecompressionJob(ctx)
-
-	// Sync zones from config to DB and load them into cameras
-	syncConfigZones(db, cfg.Cameras, sub.manager)
-
-	// Publish HA discovery for zone presence sensors
-	if mc := sub.mqttClient.Load(); mc != nil {
-		var zoneInfos []mqtt.ZoneInfo
-		for _, camCfg := range cfg.Cameras {
-			if !camCfg.IsEnabled() {
-				continue
-			}
-			zones, err := db.ListZones(camCfg.Name)
-			if err != nil {
-				continue
-			}
-			for _, z := range zones {
-				if !z.TrackPresence || !z.Enabled {
-					continue
-				}
-				for _, label := range z.Labels {
-					zoneInfos = append(zoneInfos, mqtt.ZoneInfo{ZoneName: z.Name, Label: label})
-				}
-			}
-		}
-		if len(zoneInfos) > 0 {
-			mc.PublishPresenceDiscovery(zoneInfos)
-		}
-	}
-
-	// Disk pressure monitoring — emits log events on transitions and every 30s.
-	diskMonitor := recording.NewDiskMonitor(sub.recorder.DiskMonitorSampler())
-	go diskMonitor.Run(ctx, 30*time.Second)
-
-	if mc := sub.mqttClient.Load(); mc != nil {
-		mc.PublishDiskDiscovery()
-
-		go func() {
-			t := time.NewTicker(30 * time.Second)
-			defer t.Stop()
-			publish := func() {
-				c := sub.mqttClient.Load()
-				if c == nil {
-					return
-				}
-				sampler := sub.recorder.DiskMonitorSampler()
-				paused := sub.recorder.AnyCameraPaused()
-				diskMonitor.SetPaused(paused)
-				c.PublishDiskStatus(sampler.Available(), sampler.Total(), paused)
-			}
-			publish()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					publish()
-				}
-			}
-		}()
-	}
-
-	sub.manager.Start(ctx, stoppedCameras)
-
-	// Probe cameras for PTZ support (concurrent, non-blocking)
+// probePTZClients probes every enabled camera for PTZ support concurrently.
+func probePTZClients(cfg *config.Config) map[string]*camera.PTZClient {
 	ptzClients := make(map[string]*camera.PTZClient)
 	var ptzMu sync.Mutex
 	var ptzWg sync.WaitGroup
@@ -769,45 +687,46 @@ func initSubsystems(ctx context.Context, cancel context.CancelFunc, cfg *config.
 	if len(ptzClients) > 0 {
 		slog.Info("PTZ cameras detected", "count", len(ptzClients))
 	}
-	sub.ptzClients = ptzClients
+	return ptzClients
+}
 
-	// Periodically publish camera online/offline status to MQTT.
-	if mc := sub.mqttClient.Load(); mc != nil {
-		go func() {
-			publishStatuses := func() {
-				c := sub.mqttClient.Load()
-				if c == nil {
-					return
-				}
-				for _, st := range sub.manager.CameraStatuses() {
-					c.PublishCameraStatus(st.Name, st.Online, st.Stopped, st.Sleeping)
-				}
-			}
-
-			// Publish a few times quickly at startup to catch cameras as they connect
-			for range 3 {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(5 * time.Second):
-					publishStatuses()
-				}
-			}
-
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					publishStatuses()
-				}
-			}
-		}()
+// startCameraStatusPublisher publishes camera online/offline status to MQTT,
+// quickly at first so cameras appear as they connect, then on a steady tick.
+func startCameraStatusPublisher(ctx context.Context, cfg *config.Config, sub *subsystems) {
+	if !cfg.MQTT.Enabled {
+		return
 	}
+	go func() {
+		publishStatuses := func() {
+			c := sub.mqtt.Load()
+			if c == nil {
+				return
+			}
+			for _, st := range sub.manager.CameraStatuses() {
+				c.PublishCameraStatus(st.Name, st.Online, st.Stopped, st.Sleeping)
+			}
+		}
 
-	return &sub
+		for range cameraStatusWarmupPublishes {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(cameraStatusWarmupInterval):
+				publishStatuses()
+			}
+		}
+
+		ticker := time.NewTicker(mqttStatusInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				publishStatuses()
+			}
+		}
+	}()
 }
 
 // ensureOpenH264 auto-installs the OpenH264 library when it is missing and
@@ -921,9 +840,7 @@ func configuredCameraNames(cfg *config.Config) []string {
 
 // closeSubsystems releases resources held by subsystems.
 func closeSubsystems(sub *subsystems) {
-	if mc := sub.mqttClient.Load(); mc != nil {
-		mc.Close()
-	}
+	sub.mqtt.Close()
 	sub.detector.Close()
 	if sub.faceRecognizer != nil {
 		sub.faceRecognizer.Close()
@@ -964,18 +881,24 @@ func (d *doorbellDebouncer) allow(camera string, t time.Time, window time.Durati
 // and a goroutine that processes their events.
 func startOnvifSubscribers(ctx context.Context, cfg *config.Config, mgr *camera.Manager) {
 	onvifEvents := make(chan camera.OnvifEvent, 50)
-	for _, cam := range cfg.Cameras {
-		if !cam.IsEnabled() || !cam.Doorbell.Enabled {
-			continue
+
+	// Each subscriber runs on its own camera's context rather than the process
+	// context, so stopping a camera stops its ONVIF subscription instead of
+	// leaving it polling a camera the operator turned off. Registering it as a
+	// start hook also covers cameras started later.
+	mgr.OnCameraStart(func(camCtx context.Context, name string) {
+		cam := mgr.GetCamera(name)
+		if cam == nil || !cam.DoorbellEnabled() {
+			return
 		}
-		sub, err := camera.NewOnvifEventSubscriber(cam.Name, cam.URL, onvifEvents)
+		subscriber, err := camera.NewOnvifEventSubscriber(name, cam.DetectURL(), onvifEvents)
 		if err != nil {
-			slog.Warn("ONVIF event subscriber failed", "camera", cam.Name, "error", err)
-			continue
+			slog.Warn("ONVIF event subscriber failed", "camera", name, "error", err)
+			return
 		}
-		go sub.Run(ctx)
-		slog.Info("ONVIF event subscriber started", "camera", cam.Name)
-	}
+		go subscriber.Run(camCtx)
+		slog.Info("ONVIF event subscriber started", "camera", name)
+	})
 
 	// Process ONVIF events (doorbell presses), debouncing bouncy digital inputs.
 	debouncer := newDoorbellDebouncer()

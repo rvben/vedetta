@@ -39,10 +39,22 @@ var staticFiles embed.FS
 
 var startTime = time.Now()
 
-// MQTTPublisher is the subset of mqtt.Client used by the API server.
-type MQTTPublisher interface {
-	PublishSnapshot(cameraName, label string, jpegData []byte)
-	PublishDoorbell(cameraName, person string, jpegData []byte)
+// MQTTOwner is the API server's view of the process-wide MQTT client.
+//
+// The server does not publish; it reports broker connectivity in the settings
+// and health readouts, and asks for a reconnect when an operator saves new
+// broker settings. It deliberately holds no client of its own: the event loop,
+// the presence tickers and the disk-status publisher all read the same client
+// through this owner, so a second copy here would leave them publishing into a
+// connection the settings handler had already closed, which looks like a
+// working setup and delivers nothing.
+//
+// Connected is read on every request rather than cached, so a client that
+// appears later from the background reconnect shows up without the handler
+// being told.
+type MQTTOwner interface {
+	Connected() bool
+	Replace(cfg config.MQTTConfig) error
 }
 
 type Server struct {
@@ -61,7 +73,7 @@ type Server struct {
 	faceRecognizer       *detect.FaceRecognizer
 	objectEmbedder       objectEmbedder
 	ObjectMatchThreshold float64
-	mqttClient           MQTTPublisher
+	mqtt                 MQTTOwner
 	mqttEnabled          bool
 	configPath           string
 	mqttConfig           config.MQTTConfig
@@ -432,9 +444,16 @@ func (s *Server) SetUpdateChecker(checker *update.Checker) {
 	s.updateChecker = checker
 }
 
-func (s *Server) SetMQTT(publisher MQTTPublisher) {
-	s.mqttClient = publisher
-	s.mqttEnabled = true
+// SetMQTTOwner installs the process-wide MQTT client owner. It is called
+// unconditionally at startup, including when the broker is unreachable, so the
+// reconnect that installs a client minutes later is visible here too.
+func (s *Server) SetMQTTOwner(owner MQTTOwner) {
+	s.mqtt = owner
+}
+
+// mqttConnected reports whether a broker connection is live right now.
+func (s *Server) mqttConnected() bool {
+	return s.mqtt != nil && s.mqtt.Connected()
 }
 
 func (s *Server) SetMQTTEnabled(enabled bool) {

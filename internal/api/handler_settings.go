@@ -29,7 +29,7 @@ func resolveBrokerSecret(reqHost string, reqPort int, reqUser, submitted string,
 
 func (s *Server) GetMQTTSettings(w http.ResponseWriter, _ *http.Request) {
 	status := "disabled"
-	if s.mqttClient != nil {
+	if s.mqttConnected() {
 		status = "connected"
 	} else if s.mqttEnabled {
 		status = "disconnected"
@@ -88,7 +88,7 @@ func (s *Server) UpdateMQTTSettings(w http.ResponseWriter, r *http.Request) {
 	s.reconnectMQTT(mqttCfg)
 
 	status := "disabled"
-	if s.mqttClient != nil {
+	if s.mqttConnected() {
 		status = "connected"
 	} else if s.mqttEnabled {
 		status = "disconnected"
@@ -356,25 +356,19 @@ func (s *Server) GetAuthInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// reconnectMQTT applies newly saved broker settings to the one client the whole
+// process publishes through. The swap happens in the owner rather than here so
+// that the event loop and the status publishers move to the new connection with
+// it; a failed connect leaves MQTT off, which the readouts then report as
+// disconnected.
 func (s *Server) reconnectMQTT(cfg config.MQTTConfig) {
-	if s.mqttClient != nil {
-		if closer, ok := s.mqttClient.(interface{ Close() }); ok {
-			closer.Close()
-		}
-		s.mqttClient = nil
-	}
-
 	s.mqttConfig = cfg
 	s.mqttEnabled = cfg.Enabled
 
-	if !cfg.Enabled {
+	if s.mqtt == nil {
 		return
 	}
-
-	client, err := mqtt.New(cfg)
-	if err != nil {
+	if err := s.mqtt.Replace(cfg); err != nil {
 		slog.Warn("MQTT reconnect failed", "error", err)
-		return
 	}
-	s.mqttClient = client
 }

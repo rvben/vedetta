@@ -11,7 +11,9 @@ import (
 	"github.com/rvben/vedetta/internal/storage"
 )
 
-func runEventLoop(ctx context.Context, cfg *config.Config, db *storage.DB, sub *subsystems, server *api.Server, tracer trace.Tracer) {
+// runEventLoop starts the event processor and returns a channel that is closed
+// once the processor loop and every goroutine it detached have finished.
+func runEventLoop(ctx context.Context, cfg *config.Config, db *storage.DB, sub *subsystems, server *api.Server, tracer trace.Tracer) <-chan struct{} {
 	var runtimeServer eventprocessor.RuntimeServer
 	if server != nil {
 		runtimeServer = server
@@ -38,7 +40,7 @@ func runEventLoop(ctx context.Context, cfg *config.Config, db *storage.DB, sub *
 		DB:       db,
 		Recorder: recorder,
 		Publisher: func() eventprocessor.Publisher {
-			client := sub.mqttClient.Load()
+			client := sub.mqtt.Load()
 			if client == nil {
 				return nil
 			}
@@ -62,5 +64,10 @@ func runEventLoop(ctx context.Context, cfg *config.Config, db *storage.DB, sub *
 	if err != nil {
 		panic(err)
 	}
-	go processor.Run(ctx)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		processor.Run(ctx)
+	}()
+	return drained
 }

@@ -65,6 +65,61 @@ type notificationJob struct {
 	snapshotEventID string
 }
 
+// dropReason names why one user's notification was not delivered. The empty
+// value means delivered. Each reason appears verbatim as an attribute on the
+// dispatch log line, so an operator reads the same word the code branched on.
+type dropReason string
+
+const (
+	dropDelivered       dropReason = ""
+	dropMuted           dropReason = "muted"
+	dropDisabled        dropReason = "disabled"
+	dropCooldown        dropReason = "cooldown"
+	dropNoSubs          dropReason = "no_subscriptions"
+	dropEndpointBackoff dropReason = "endpoint_backoff"
+	dropStoreError      dropReason = "store_error"
+	dropSendFailed      dropReason = "send_failed"
+)
+
+// dropReasonOrder fixes the attribute order on the dispatch line. Ranging the
+// outcome map directly would reorder attributes between identical events and
+// make the log stream harder to diff.
+var dropReasonOrder = []dropReason{
+	dropMuted, dropDisabled, dropCooldown, dropNoSubs,
+	dropEndpointBackoff, dropStoreError, dropSendFailed,
+}
+
+// dispatchOutcome accumulates the per-user results of one job's fan-out so the
+// dispatcher can report what a notification actually did, rather than what it
+// was about to attempt.
+type dispatchOutcome struct {
+	delivered int
+	drops     map[dropReason]int
+}
+
+func (o *dispatchOutcome) record(reason dropReason) {
+	if reason == dropDelivered {
+		o.delivered++
+		return
+	}
+	if o.drops == nil {
+		o.drops = make(map[dropReason]int, 2)
+	}
+	o.drops[reason]++
+}
+
+// attrs renders the outcome as slog key/value pairs. Reasons that did not
+// occur are omitted: a line of permanent zeroes is as unreadable as no line.
+func (o *dispatchOutcome) attrs() []any {
+	attrs := []any{"delivered", o.delivered}
+	for _, reason := range dropReasonOrder {
+		if n := o.drops[reason]; n > 0 {
+			attrs = append(attrs, string(reason), n)
+		}
+	}
+	return attrs
+}
+
 // Options bundles dispatcher construction params. Zero values fall back to
 // documented defaults (see New).
 type Options struct {
@@ -270,9 +325,20 @@ func (d *NotificationDispatcher) handleJob(ctx context.Context, job notification
 		identity = "test"
 	}
 
-	// Debug: log per-event payload characteristics so production pushes
-	// can be inspected without adding a decrypted body to the log stream.
-	d.logger.Info("push dispatch",
+	var outcome dispatchOutcome
+	if job.test {
+		outcome.record(d.dispatchTestToUser(ctx, job.targetUser, payload))
+	} else {
+		for _, user := range users {
+			outcome.record(d.dispatchToUser(ctx, user, ev, identity, payload, job.immediate))
+		}
+	}
+
+	// One outcome line per job, written after fan-out. Logging before the
+	// gates made a dispatch that reached nobody read exactly like one that
+	// reached every device. Payload characteristics ride along so production
+	// pushes stay inspectable without a decrypted body in the log stream.
+	attrs := []any{
 		"event", ev.ID,
 		"activity", activityID,
 		"camera", ev.CameraName,
@@ -282,30 +348,37 @@ func (d *NotificationDispatcher) handleJob(ctx context.Context, job notification
 		"payload_bytes", len(payload),
 		"has_image_field", bytesContainsImageField(payload),
 		"users", len(users),
-	)
-	if job.test {
-		d.dispatchTestToUser(ctx, job.targetUser, payload)
-		return
 	}
+	d.logger.Log(ctx, d.dispatchLevel(outcome), "push dispatch", append(attrs, outcome.attrs()...)...)
+}
 
-	for _, user := range users {
-		d.dispatchToUser(ctx, user, ev, identity, payload, job.immediate)
+// dispatchLevel escalates a fan-out that delivered nothing while the process
+// has never delivered anything at all. Ordinary suppression cannot reach that
+// state: mute and preference gates are operator intent, and the cooldown gate
+// is armed only by a prior successful send. Sustained zero delivery from
+// startup instead means push is broken or switched off wholesale, which is the
+// failure that otherwise stays invisible until someone asks why their phone
+// has been quiet. A healthy install stops warning on its first delivery.
+func (d *NotificationDispatcher) dispatchLevel(outcome dispatchOutcome) slog.Level {
+	if outcome.delivered == 0 && d.metrics.EventsSent.Load() == 0 {
+		return slog.LevelWarn
 	}
+	return slog.LevelInfo
 }
 
 // dispatchTestToUser deliberately bypasses alert mute, preference, cooldown,
 // and endpoint backoff gates: an explicit delivery test must exercise every
 // registered device. Transport accounting and stale-subscription pruning stay
 // identical to production sends.
-func (d *NotificationDispatcher) dispatchTestToUser(ctx context.Context, user string, payload []byte) {
+func (d *NotificationDispatcher) dispatchTestToUser(ctx context.Context, user string, payload []byte) dropReason {
 	subs, err := d.store.ListPushSubscriptionsByUser(user)
 	if err != nil {
 		d.logger.Error("list test subscriptions", "user", user, "error", err)
-		return
+		return dropStoreError
 	}
 	if len(subs) == 0 {
 		d.metrics.EventsDisabled.Add(1)
-		return
+		return dropNoSubs
 	}
 	anySuccess := false
 	for _, sub := range subs {
@@ -330,7 +403,9 @@ func (d *NotificationDispatcher) dispatchTestToUser(ctx context.Context, user st
 	}
 	if anySuccess {
 		d.metrics.EventsSent.Add(1)
+		return dropDelivered
 	}
+	return dropSendFailed
 }
 
 // bytesContainsImageField returns true if the JSON payload includes a
@@ -351,43 +426,50 @@ func indexOfImageKey(s string) int {
 	return -1
 }
 
-func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string, ev camera.Event, identity string, payload []byte, bypassCooldown bool) {
+// dispatchToUser applies every gate for one recipient and returns why the
+// notification was not delivered, or dropDelivered if it was. The returned
+// reason is finer-grained than the metric each gate increments: a user with no
+// registered device and a user who switched notifications off share the
+// EventsDisabled counter, and the /metrics contract keeps them merged, but the
+// log distinguishes them.
+func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string, ev camera.Event, identity string, payload []byte, bypassCooldown bool) dropReason {
 	// 1. Mute check.
 	if muted, _, _ := d.store.GetKV("notify:" + user + ":muted"); muted == "1" {
 		d.metrics.EventsMuted.Add(1)
-		return
+		return dropMuted
 	}
 	// 2. Pref check (wildcard-aware via storage layer).
 	enabled, err := d.store.IsNotificationEnabled(user, ev.CameraName, ev.Label)
 	if err != nil {
 		d.logger.Error("pref check", "user", user, "error", err)
-		return
+		return dropStoreError
 	}
 	if !enabled {
 		d.metrics.EventsDisabled.Add(1)
-		return
+		return dropDisabled
 	}
 	// 3. Cooldown check.
 	key := user + ":" + identity
 	if !bypassCooldown && d.cooldown.Check(key) {
 		d.metrics.EventsCooldown.Add(1)
-		return
+		return dropCooldown
 	}
 	// 4. Load subscriptions.
 	subs, err := d.store.ListPushSubscriptionsByUser(user)
 	if err != nil {
 		d.logger.Error("list subs", "user", user, "error", err)
-		return
+		return dropStoreError
 	}
 	if len(subs) == 0 {
 		d.metrics.EventsDisabled.Add(1)
-		return
+		return dropNoSubs
 	}
 
 	// 5/6. Send to each subscription. Mark cooldown only if >=1 success —
 	// a total failure (all 5xx or timeout) should not suppress the retry
 	// opportunity on the next event.
 	anySuccess := false
+	attempted := false
 
 	for _, sub := range subs {
 		// Per-endpoint 60s backoff. 429s set this key so subsequent events
@@ -395,6 +477,7 @@ func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string
 		if d.backoff.Check(sub.Endpoint) {
 			continue
 		}
+		attempted = true
 		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		result := d.sender.Send(sendCtx, Subscription{
 			Endpoint: sub.Endpoint,
@@ -419,7 +502,12 @@ func (d *NotificationDispatcher) dispatchToUser(ctx context.Context, user string
 			d.cooldown.Mark(key)
 		}
 		d.metrics.EventsSent.Add(1)
+		return dropDelivered
 	}
+	if !attempted {
+		return dropEndpointBackoff
+	}
+	return dropSendFailed
 }
 
 func (d *NotificationDispatcher) recordResult(r SendResult, endpoint string) {

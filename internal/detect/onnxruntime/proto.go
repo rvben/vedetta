@@ -125,6 +125,17 @@ func readPackedFloat32(data []byte) []float32 {
 	return result
 }
 
+// readPackedFloat64 reads a packed repeated double field.
+func readPackedFloat64(data []byte) []float64 {
+	n := len(data) / 8
+	result := make([]float64, n)
+	for i := range n {
+		bits := binary.LittleEndian.Uint64(data[i*8:])
+		result[i] = math.Float64frombits(bits)
+	}
+	return result
+}
+
 // readPackedInt64 reads a packed repeated int64 (varint-encoded) field.
 func readPackedInt64(data []byte) ([]int64, error) {
 	r := newProtoReader(data)
@@ -135,6 +146,36 @@ func readPackedInt64(data []byte) ([]int64, error) {
 			return nil, err
 		}
 		result = append(result, int64(v))
+	}
+	return result, nil
+}
+
+// readPackedInt32 reads a packed repeated int32 (varint-encoded) field.
+// Negative values arrive sign-extended to 64 bits, so the low 32 bits carry
+// the value.
+func readPackedInt32(data []byte) ([]int32, error) {
+	r := newProtoReader(data)
+	var result []int32
+	for r.remaining() > 0 {
+		v, err := r.readVarint()
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, int32(v))
+	}
+	return result, nil
+}
+
+// readPackedUint64 reads a packed repeated uint64 (varint-encoded) field.
+func readPackedUint64(data []byte) ([]uint64, error) {
+	r := newProtoReader(data)
+	var result []uint64
+	for r.remaining() > 0 {
+		v, err := r.readVarint()
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, v)
 	}
 	return result, nil
 }

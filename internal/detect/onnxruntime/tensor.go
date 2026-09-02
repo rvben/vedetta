@@ -1,7 +1,12 @@
 // Package onnxruntime provides a pure Go ONNX model inference engine.
-// It supports the subset of ONNX operators needed for object detection models
-// (YOLOv8, SSD MobileNet, EfficientDet) and uses Apple Accelerate for
-// hardware-optimized matrix multiplication on macOS.
+// It supports the subset of ONNX operators needed by the models vedetta runs:
+// YOLOv8 object detection, SCRFD face detection, FaceNet face embedding and
+// OSNet object re-identification. On macOS it uses Apple Accelerate for
+// hardware-optimized matrix multiplication.
+//
+// The engine is generic over the operators it implements, but the callers in
+// package detect decode model output for those specific architectures and
+// reject any other output shape.
 package onnxruntime
 
 import (

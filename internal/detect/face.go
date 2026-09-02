@@ -152,11 +152,9 @@ func (fr *FaceRecognizer) DetectAndEmbed(frame *image.RGBA, personBox [4]int, cr
 			continue
 		}
 
-		// Translate landmarks from crop coordinates to full frame coordinates
-		var frameLandmarks [5][2]float32
-		for i := range face.landmarks {
-			frameLandmarks[i][0] = face.landmarks[i][0] + float32(personBox[0])
-			frameLandmarks[i][1] = face.landmarks[i][1] + float32(personBox[1])
+		frameBox, frameLandmarks, ok := faceInFrame(face, crop, frame.Bounds())
+		if !ok {
+			continue
 		}
 
 		// Align face using landmarks in full frame coordinates
@@ -166,14 +164,6 @@ func (fr *FaceRecognizer) DetectAndEmbed(frame *image.RGBA, personBox [4]int, cr
 		embedding := fr.computeEmbedding(aligned)
 		if embedding == nil {
 			continue
-		}
-
-		// Translate face box from crop coordinates to frame coordinates
-		frameBox := [4]int{
-			face.box[0] + personBox[0],
-			face.box[1] + personBox[1],
-			face.box[2] + personBox[0],
-			face.box[3] + personBox[1],
 		}
 
 		result := FaceResult{
@@ -193,6 +183,33 @@ func (fr *FaceRecognizer) DetectAndEmbed(frame *image.RGBA, personBox [4]int, cr
 	}
 
 	return results
+}
+
+// faceInFrame maps a face detected inside a person crop back to frame
+// coordinates and clamps the box to the frame. It reports false when the box
+// covers no pixel of the frame, which leaves nothing to align, embed or draw.
+//
+// The offset is the crop's own origin. SCRFD reads the crop as an image
+// starting at (0,0), and cropRegion clamps the requested person box to the
+// frame, so a person box reaching outside the frame yields a crop that starts
+// somewhere other than where the box asked.
+func faceInFrame(face scrfdFace, crop *image.RGBA, frame image.Rectangle) ([4]int, [5][2]float32, bool) {
+	origin := crop.Bounds().Min
+
+	var landmarks [5][2]float32
+	for i := range face.landmarks {
+		landmarks[i][0] = face.landmarks[i][0] + float32(origin.X)
+		landmarks[i][1] = face.landmarks[i][1] + float32(origin.Y)
+	}
+
+	box, ok := clampBoxToRect([4]int{
+		face.box[0] + origin.X,
+		face.box[1] + origin.Y,
+		face.box[2] + origin.X,
+		face.box[3] + origin.Y,
+	}, frame)
+
+	return box, landmarks, ok
 }
 
 // scrfdFace holds intermediate face detection results from SCRFD.

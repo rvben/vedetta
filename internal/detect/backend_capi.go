@@ -124,6 +124,13 @@ static void ort_ReleaseTensorTypeAndShapeInfo(const OrtApi* api,
 // On malloc failure, returns a pointer to the static fallback string.
 static const char* ort_oom_msg = "ORT error (out of memory copying message)";
 
+// ort_oom_sentinel hands the fallback pointer to Go. cgo can call a static
+// function but cannot bind a static variable, which has no external linkage, so
+// referring to ort_oom_msg directly from Go fails at link time.
+static const char* ort_oom_sentinel(void) {
+	return ort_oom_msg;
+}
+
 static const char* ort_check(const OrtApi* api, OrtStatus* status) {
 	if (status == NULL) return NULL;
 	const char* msg = api->GetErrorMessage(status);
@@ -363,7 +370,7 @@ func (b *CAPIBackend) check(status *C.OrtStatus) error {
 	}
 	goMsg := C.GoString(msg)
 	// Don't free the static OOM fallback string.
-	if msg != C.ort_oom_msg {
+	if msg != C.ort_oom_sentinel() {
 		C.free(unsafe.Pointer(msg))
 	}
 	return fmt.Errorf("%s", goMsg)

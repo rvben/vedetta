@@ -2,6 +2,7 @@ package detect
 
 import (
 	"image"
+	"log/slog"
 	"math"
 	"sort"
 )
@@ -10,6 +11,9 @@ const (
 	modelInputSize = 640
 	numClasses     = 80
 	numDetections  = 8400 // YOLOv8 outputs 8400 candidate detections
+	// yoloOutputSize is the element count of the (1, 84, 8400) YOLOv8 head:
+	// 4 box coordinates plus one score per class, for every candidate.
+	yoloOutputSize = (4 + numClasses) * numDetections
 )
 
 // prepareInput converts an RGBA image to a float32 tensor in CHW format
@@ -117,7 +121,19 @@ func prepareInputFromRGB24Into(buf []float32, data []byte, w, h int) ([]float32,
 
 // processOutput extracts detections from the raw YOLOv8 output tensor.
 // The output shape is (1, 84, 8400): 4 bbox coords + 80 class scores per detection.
-func processOutput(output []float32, scoreThreshold float32, scale, padX, padY float64) []Detection {
+// frameW and frameH are the dimensions of the frame the boxes are mapped back
+// onto; boxes are clamped to it and empty ones are dropped.
+//
+// An output of any other size belongs to a different architecture that this
+// decoder cannot read, so it yields no detections instead of indexing past the
+// end of the tensor.
+func processOutput(output []float32, scoreThreshold float32, scale, padX, padY float64, frameW, frameH int) []Detection {
+	if len(output) != yoloOutputSize {
+		slog.Error("unexpected model output size, expected the YOLOv8 (1,84,8400) layout",
+			"got", len(output), "want", yoloOutputSize)
+		return nil
+	}
+
 	var detections []Detection
 
 	for i := 0; i < numDetections; i++ {
@@ -155,6 +171,11 @@ func processOutput(output []float32, scoreThreshold float32, scale, padX, padY f
 		x2 = (x2 - padX) / scale
 		y2 = (y2 - padY) / scale
 
+		box, ok := clampBox([4]int{int(x1), int(y1), int(x2), int(y2)}, frameW, frameH)
+		if !ok {
+			continue
+		}
+
 		label := "unknown"
 		if maxClass < len(CocoLabels) {
 			label = CocoLabels[maxClass]
@@ -163,7 +184,7 @@ func processOutput(output []float32, scoreThreshold float32, scale, padX, padY f
 		detections = append(detections, Detection{
 			Label: label,
 			Score: maxScore,
-			Box:   [4]int{int(x1), int(y1), int(x2), int(y2)},
+			Box:   box,
 		})
 	}
 

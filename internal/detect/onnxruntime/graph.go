@@ -54,11 +54,11 @@ func NewSession(modelData []byte) (*Session, error) {
 
 	// Load initializers (model weights)
 	for _, init := range model.Graph.Initializers {
-		data, err := init.ToFloat32()
+		t, err := tensorFromProto(init)
 		if err != nil {
 			return nil, fmt.Errorf("load initializer %q: %w", init.Name, err)
 		}
-		s.initializers[init.Name] = NewTensor(init.Dims, data)
+		s.initializers[init.Name] = t
 	}
 
 	// Collect input/output names
@@ -78,7 +78,11 @@ func NewSession(modelData []byte) (*Session, error) {
 	s.cachedAttrs = make([]*Attributes, len(s.execOrder))
 	s.nodeFuncs = make([]OpFunc, len(s.execOrder))
 	for i, node := range s.execOrder {
-		s.cachedAttrs[i] = nodeAttrsToAttributes(node.Attrs)
+		attrs, err := nodeAttrsToAttributes(node.Attrs)
+		if err != nil {
+			return nil, fmt.Errorf("node %q (%s): %w", node.Name, node.OpType, err)
+		}
+		s.cachedAttrs[i] = attrs
 		fn, ok := Registry[node.OpType]
 		if !ok {
 			return nil, fmt.Errorf("unsupported operator %q", node.OpType)
@@ -373,7 +377,7 @@ func fuseGraph(nodes []*NodeProto) []*NodeProto {
 }
 
 // nodeAttrsToAttributes converts ONNX proto attributes to our Attributes type.
-func nodeAttrsToAttributes(protoAttrs []*AttributeProto) *Attributes {
+func nodeAttrsToAttributes(protoAttrs []*AttributeProto) (*Attributes, error) {
 	attrs := NewAttributes()
 	for _, a := range protoAttrs {
 		switch {
@@ -385,10 +389,11 @@ func nodeAttrsToAttributes(protoAttrs []*AttributeProto) *Attributes {
 			attrs.Strings[a.Name] = string(a.S)
 		case a.Type == attrTensor:
 			if a.T != nil {
-				data, err := a.T.ToFloat32()
-				if err == nil {
-					attrs.Tensors[a.Name] = NewTensor(a.T.Dims, data)
+				t, err := tensorFromProto(a.T)
+				if err != nil {
+					return nil, fmt.Errorf("attribute %q: %w", a.Name, err)
 				}
+				attrs.Tensors[a.Name] = t
 			}
 		case a.Type == attrFloats:
 			attrs.FloatLists[a.Name] = a.Floats
@@ -396,5 +401,20 @@ func nodeAttrsToAttributes(protoAttrs []*AttributeProto) *Attributes {
 			attrs.IntLists[a.Name] = a.Ints
 		}
 	}
-	return attrs
+	return attrs, nil
+}
+
+// tensorFromProto decodes a TensorProto and checks that its data fills the shape
+// it declares. A tensor short of its declared element count loads without
+// complaint and then indexes out of range during inference, which surfaces as a
+// recovered panic on every frame rather than as a model that fails to load.
+func tensorFromProto(tp *TensorProto) (*Tensor, error) {
+	data, err := tp.ToFloat32()
+	if err != nil {
+		return nil, err
+	}
+	if want := tp.ElementCount(); int64(len(data)) != want {
+		return nil, fmt.Errorf("shape %v needs %d elements, data holds %d", tp.Dims, want, len(data))
+	}
+	return NewTensor(tp.Dims, data), nil
 }

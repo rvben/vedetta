@@ -106,7 +106,8 @@ func (d *Detector) Detect(img *image.RGBA) (result []Detection) {
 		return nil
 	}
 
-	return d.filterLabels(processOutput(output, d.config.ScoreThreshold, scale, padX, padY))
+	bounds := img.Bounds()
+	return d.filterLabels(processOutput(output, d.config.ScoreThreshold, scale, padX, padY, bounds.Dx(), bounds.Dy()))
 }
 
 // DetectRGB24 runs object detection directly on RGB24 frame data,
@@ -139,7 +140,7 @@ func (d *Detector) DetectRGB24(data []byte, w, h int) (result []Detection) {
 		return nil
 	}
 
-	return d.filterLabels(processOutput(output, d.config.ScoreThreshold, scale, padX, padY))
+	return d.filterLabels(processOutput(output, d.config.ScoreThreshold, scale, padX, padY, w, h))
 }
 
 // SetScoreThreshold updates the score threshold for detection. Thread-safe.

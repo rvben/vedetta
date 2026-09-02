@@ -38,7 +38,33 @@ func NewGoBackend(modelData []byte) (*GoBackend, error) {
 		outputKey: outputNames[0],
 		inputMap:  map[string]*onnxruntime.Tensor{inputKey: nil},
 	}
+
+	if err := b.warmUp(); err != nil {
+		return nil, err
+	}
 	return b, nil
+}
+
+// warmUp runs one inference on a blank frame so that a model this detector
+// cannot use is rejected while the backend is being built. A model that loads
+// but cannot run otherwise fails once per frame inside the panic recovery in
+// Detect, where it reads as a camera that simply sees nothing.
+func (b *GoBackend) warmUp() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("model warm-up panicked: %v", r)
+		}
+	}()
+
+	output, err := b.Run(make([]float32, inputTensorSize))
+	if err != nil {
+		return fmt.Errorf("model warm-up: %w", err)
+	}
+	if len(output) != yoloOutputSize {
+		return fmt.Errorf("model warm-up: output has %d elements, want %d for the YOLOv8 (1,84,8400) layout",
+			len(output), yoloOutputSize)
+	}
+	return nil
 }
 
 // Run executes inference using the pure Go ONNX runtime.

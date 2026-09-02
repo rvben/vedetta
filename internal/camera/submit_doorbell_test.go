@@ -1,7 +1,6 @@
 package camera
 
 import (
-	"context"
 	"image"
 	"image/color"
 	"testing"
@@ -13,10 +12,10 @@ func TestSubmitDoorbellPress(t *testing.T) {
 	events := make(chan Event, 4)
 
 	m := &Manager{
-		cameras:     make(map[string]*Camera),
-		cancelFuncs: make(map[string]context.CancelFunc),
-		order:       []string{},
-		events:      events,
+		cameras: make(map[string]*Camera),
+		running: make(map[string]*runningCamera),
+		order:   []string{},
+		events:  events,
 	}
 
 	cam := NewTestCamera("front_door")
@@ -62,9 +61,9 @@ func TestSubmitDoorbellPress(t *testing.T) {
 func TestSubmitDoorbellPressPrefersMainStreamFrame(t *testing.T) {
 	events := make(chan Event, 1)
 	m := &Manager{
-		cameras:     make(map[string]*Camera),
-		cancelFuncs: make(map[string]context.CancelFunc),
-		events:      events,
+		cameras: make(map[string]*Camera),
+		running: make(map[string]*runningCamera),
+		events:  events,
 	}
 
 	cam := NewTestCamera("front_door")

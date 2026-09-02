@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
@@ -67,6 +68,30 @@ type Client struct {
 	client         pahomqtt.Client
 	topic          string
 	publishTimeout time.Duration
+
+	// onConnect runs after every successful connection, including reconnects.
+	// Home Assistant discovery is retained broker state, so a broker restart
+	// drops it and only a republish restores the entities.
+	onConnect atomic.Pointer[func()]
+}
+
+// SetOnConnect registers a callback that runs after each successful connection
+// to the broker. It replaces any previous callback. The callback runs on its
+// own goroutine so a slow announcement cannot delay paho's connection
+// handling.
+func (c *Client) SetOnConnect(fn func()) {
+	if fn == nil {
+		c.onConnect.Store(nil)
+		return
+	}
+	c.onConnect.Store(&fn)
+}
+
+// runOnConnect invokes the registered connection callback, if any.
+func (c *Client) runOnConnect() {
+	if fn := c.onConnect.Load(); fn != nil {
+		go (*fn)()
+	}
 }
 
 // waitPublish bounds the wait for an in-flight publish so a wedged broker
@@ -122,6 +147,7 @@ func New(cfg config.MQTTConfig) (*Client, error) {
 	opts.SetOnConnectHandler(func(_ pahomqtt.Client) {
 		slog.Info("MQTT connected, publishing availability")
 		c.publishAvailability("online")
+		c.runOnConnect()
 	})
 
 	opts.SetConnectionLostHandler(func(_ pahomqtt.Client, err error) {
@@ -608,7 +634,14 @@ func (c *Client) PublishDiskDiscovery() {
 	}
 }
 
+// Close announces the process as offline and disconnects. It runs on teardown
+// paths that cannot know whether the connection was ever established, so a
+// client without a live handle returns instead of panicking: a panic here would
+// abort shutdown and leave every camera's open recording segment unfinalized.
 func (c *Client) Close() {
+	if c == nil || c.client == nil {
+		return
+	}
 	c.publishAvailability("offline")
 	c.client.Disconnect(1000)
 }

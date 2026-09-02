@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -20,6 +21,15 @@ import (
 const (
 	emitWaitTimeout       = 5 * time.Second
 	activitySweepInterval = 5 * time.Second
+
+	// pendingEndTTL bounds how long an event end that arrived before its event
+	// is held. Beyond this the begin is never coming and holding the end only
+	// grows the map.
+	pendingEndTTL = 2 * time.Minute
+
+	// maxPendingEnds caps the parked-end map so a camera emitting ends for
+	// events that never begin cannot grow it without limit.
+	maxPendingEnds = 1024
 )
 
 // Inputs contains the event streams consumed by a Processor. EventEnds is
@@ -57,7 +67,27 @@ type Processor struct {
 	mqttDispatcher *mqttPublishDispatcher
 
 	objectCounts map[string]map[string]int
-	cooldowns    map[string]time.Time
+	// objectCountGate orders the publishes of objectCounts. The tally itself is
+	// always right; only the publishes can arrive out of order.
+	objectCountGate *objectCountGate
+	cooldowns       map[string]time.Time
+
+	// pendingEnds holds ends whose event has not been accepted yet. Events and
+	// ends arrive on separate channels with no ordering between them, so under
+	// load the end can be serviced first.
+	pendingEnds map[string]pendingEnd
+
+	// background counts the goroutines the processor detaches. Those goroutines
+	// use the recorder, the MQTT client, the object embedder and the hub, so
+	// Run waits for them before returning and the caller closes those
+	// subsystems only after Run has returned.
+	background sync.WaitGroup
+}
+
+// pendingEnd is an event end parked until its event arrives.
+type pendingEnd struct {
+	endTime  time.Time
+	parkedAt time.Time
 }
 
 type activeEvent struct {
@@ -86,11 +116,13 @@ func NewProcessor(options Options) (*Processor, error) {
 		return nil, fmt.Errorf("event processor: all input channels are required")
 	}
 	processor := &Processor{
-		options:      options,
-		active:       make(map[string]*activeEvent),
-		timeout:      make(chan string, 100),
-		objectCounts: make(map[string]map[string]int),
-		cooldowns:    make(map[string]time.Time),
+		options:         options,
+		active:          make(map[string]*activeEvent),
+		timeout:         make(chan string, 100),
+		objectCounts:    make(map[string]map[string]int),
+		objectCountGate: newObjectCountGate(),
+		cooldowns:       make(map[string]time.Time),
+		pendingEnds:     make(map[string]pendingEnd),
 	}
 	if options.Publisher != nil {
 		processor.mqttDispatcher = newMQTTPublishDispatcher(options.Publisher, options.Tracer)
@@ -98,11 +130,13 @@ func NewProcessor(options Options) (*Processor, error) {
 	return processor, nil
 }
 
-// Run processes events until ctx is cancelled. It blocks for the lifetime of
-// the processor so callers can wait for a clean shutdown.
+// Run processes events until ctx is cancelled. It returns once the loop has
+// stopped and every goroutine the processor detached has finished, so a caller
+// can wait for it before closing the subsystems those goroutines use.
 func (p *Processor) Run(ctx context.Context) {
+	defer p.background.Wait()
 	if p.mqttDispatcher != nil {
-		go p.mqttDispatcher.run(ctx)
+		p.goBackground(func() { p.mqttDispatcher.run(ctx) })
 	}
 	activityTicker := time.NewTicker(activitySweepInterval)
 	defer activityTicker.Stop()
@@ -114,6 +148,7 @@ func (p *Processor) Run(ctx context.Context) {
 			return
 		case now := <-activityTicker.C:
 			p.finalizeActivities(now)
+			p.expirePendingEnds(now)
 		case submitted, ok := <-p.options.Inputs.Events:
 			if !ok {
 				p.stopActiveTimers()
@@ -128,6 +163,8 @@ func (p *Processor) Run(ctx context.Context) {
 			if active, exists := p.active[end.EventID]; exists {
 				p.finalizeEvent(ctx, active, end.EndTime)
 				delete(p.active, end.EventID)
+			} else {
+				p.parkEnd(end)
 			}
 		case eventID := <-p.timeout:
 			if active, exists := p.active[eventID]; exists {
@@ -180,10 +217,19 @@ func (p *Processor) acceptEvent(ctx context.Context, submitted camera.Event) {
 		"score", fmt.Sprintf("%.2f", submitted.Score))
 
 	eventCtx, rootSpan, saveErr := p.persistEvent(ctx, submitted)
-	if saveErr == nil {
-		p.publishActivityForEvent(submitted.ID, "activity_updated")
+	if saveErr != nil {
+		// The event does not exist, so nothing downstream may act as if it
+		// does: no object count, no recording, no timers, no clip. Doing that
+		// work anyway writes files and starts recorders that nothing
+		// references, which is exactly the wrong response to a database that
+		// is already failing.
+		rootSpan.End()
+		slog.Error("event dropped, not persisted", "camera", submitted.CameraName,
+			"label", submitted.Label, "event", submitted.ID, "error", saveErr)
+		return
 	}
-	if saveErr == nil && submitted.Kind == camera.EventKindDoorbell && p.options.Server != nil {
+	p.publishActivityForEvent(submitted.ID, "activity_updated")
+	if submitted.Kind == camera.EventKindDoorbell && p.options.Server != nil {
 		p.options.Server.RecordDoorbellPress(submitted.CameraName)
 		p.options.Server.BroadcastDoorbellSSE(submitted.CameraName, submitted.ID, submitted.SubLabel)
 	}
@@ -194,24 +240,25 @@ func (p *Processor) acceptEvent(ctx context.Context, submitted camera.Event) {
 			p.objectCounts[submitted.CameraName] = make(map[string]int)
 		}
 		p.objectCounts[submitted.CameraName][submitted.Label]++
-		SpanPublish(eventCtx, p.options.Tracer, "mqtt.publish_object_count", func() error {
-			return publisher.PublishObjectCount(submitted.CameraName, submitted.Label,
-				p.objectCounts[submitted.CameraName][submitted.Label])
+		count := p.objectCounts[submitted.CameraName][submitted.Label]
+		seq := p.objectCountGate.reserve()
+		p.objectCountGate.publish(submitted.CameraName, submitted.Label, seq, func() {
+			SpanPublish(eventCtx, p.options.Tracer, "mqtt.publish_object_count", func() error {
+				return publisher.PublishObjectCount(submitted.CameraName, submitted.Label, count)
+			})
 		})
 	}
 
-	var emitDone chan struct{}
-	if saveErr == nil {
-		emitDone = make(chan struct{})
-		go func(eventCopy camera.Event, done chan struct{}) {
-			defer close(done)
-			EmitEventArtifacts(eventCtx, p.options.Tracer, p.options.Recorder, publisher,
-				p.options.Notifier, p.options.Config.Events.SnapshotQuality, eventCopy)
-		}(submitted, emitDone)
-	}
+	emitDone := make(chan struct{})
+	eventCopy := submitted
+	p.goBackground(func() {
+		defer close(emitDone)
+		EmitEventArtifacts(eventCtx, p.options.Tracer, p.options.Recorder, publisher,
+			p.options.Notifier, p.options.Config.Events.SnapshotQuality, eventCopy)
+	})
 
 	if p.options.ObjectEmbedder != nil && submitted.SnapshotImage != nil {
-		go p.recognizeObject(eventCtx, submitted)
+		p.goBackground(func() { p.recognizeObject(eventCtx, submitted) })
 	}
 
 	rootSpanCtx := rootSpan.SpanContext()
@@ -238,6 +285,19 @@ func (p *Processor) acceptEvent(ctx context.Context, submitted camera.Event) {
 		rootSpanCtx: rootSpanCtx, emitDone: emitDone,
 	}
 	p.active[eventID] = active
+
+	// The end may already have been serviced ahead of this begin. Adopting it
+	// here is what keeps the stored end time, the MQTT end publish and the clip
+	// window truthful instead of waiting out MaxEventDuration.
+	if parked, waiting := p.pendingEnds[eventID]; waiting {
+		delete(p.pendingEnds, eventID)
+		slog.Info("event end arrived before its event, finalizing now",
+			"event", eventID, "camera", submitted.CameraName,
+			"waited", time.Since(parked.parkedAt).Round(time.Millisecond))
+		p.finalizeEvent(ctx, active, parked.endTime)
+		delete(p.active, eventID)
+		return
+	}
 
 	if submitted.Kind == camera.EventKindDoorbell {
 		endTime := submitted.Timestamp.Add(DoorbellClipWindow(p.options.Config, submitted.CameraName))
@@ -283,6 +343,51 @@ func (p *Processor) persistEvent(ctx context.Context, submitted camera.Event) (c
 	return eventCtx, eventSpan, saveErr
 }
 
+// parkEnd holds an end whose event has not been accepted yet, so that
+// acceptEvent can adopt it. Without this the end is discarded and the event
+// stays open until MaxEventDuration, with a wrong stored end time, a wrong
+// clip window and no log line to say so.
+// goBackground runs fn on its own goroutine and counts it, so Run can wait for
+// it during shutdown.
+func (p *Processor) goBackground(fn func()) {
+	p.background.Add(1)
+	go func() {
+		defer p.background.Done()
+		fn()
+	}()
+}
+
+func (p *Processor) parkEnd(end camera.EventEnd) {
+	if len(p.pendingEnds) >= maxPendingEnds {
+		var oldestID string
+		var oldest time.Time
+		for id, parked := range p.pendingEnds {
+			if oldestID == "" || parked.parkedAt.Before(oldest) {
+				oldestID, oldest = id, parked.parkedAt
+			}
+		}
+		delete(p.pendingEnds, oldestID)
+		slog.Warn("pending event ends at capacity, dropping oldest",
+			"dropped_event", oldestID, "capacity", maxPendingEnds)
+	}
+	p.pendingEnds[end.EventID] = pendingEnd{endTime: end.EndTime, parkedAt: time.Now()}
+	slog.Debug("event end arrived before its event, parking it",
+		"event", end.EventID, "camera", end.CameraName)
+}
+
+// expirePendingEnds drops parked ends whose event never arrived. Each one is a
+// genuinely lost end, so it is logged rather than discarded quietly.
+func (p *Processor) expirePendingEnds(now time.Time) {
+	for eventID, parked := range p.pendingEnds {
+		if now.Sub(parked.parkedAt) < pendingEndTTL {
+			continue
+		}
+		delete(p.pendingEnds, eventID)
+		slog.Warn("event end discarded, its event never arrived",
+			"event", eventID, "parked_for", now.Sub(parked.parkedAt).Round(time.Second))
+	}
+}
+
 func (p *Processor) finalizeEvent(ctx context.Context, active *activeEvent, endTime time.Time) {
 	active.timer.Stop()
 	if active.endTimer != nil {
@@ -301,28 +406,32 @@ func (p *Processor) finalizeEvent(ctx context.Context, active *activeEvent, endT
 		p.publishActivityForEvent(event.ID, "activity_updated")
 	}
 
-	WaitForEmit(ctx, active.emitDone, emitWaitTimeout)
-	if publisher := p.publisher(endCtx); publisher != nil {
-		SpanPublish(endCtx, p.options.Tracer, "mqtt.publish_event_end", func() error {
-			if err := publisher.PublishEvent(event, nil); err != nil {
-				slog.Error("failed to publish event end", "event", event.ID, "error", err)
-				return err
+	// objectCounts belongs to the Run loop, so the decrement happens here and
+	// only the resulting value crosses to the publishing goroutine.
+	objectCount := -1
+	var objectCountSeq uint64
+	if event.Kind != camera.EventKindDoorbell {
+		if counts, exists := p.objectCounts[event.CameraName]; exists {
+			counts[event.Label]--
+			if counts[event.Label] < 0 {
+				counts[event.Label] = 0
 			}
-			return nil
-		})
-		if event.Kind != camera.EventKindDoorbell {
-			if counts, exists := p.objectCounts[event.CameraName]; exists {
-				counts[event.Label]--
-				if counts[event.Label] < 0 {
-					counts[event.Label] = 0
-				}
-				SpanPublish(endCtx, p.options.Tracer, "mqtt.publish_object_count", func() error {
-					return publisher.PublishObjectCount(event.CameraName, event.Label, counts[event.Label])
-				})
-			}
+			objectCount = counts[event.Label]
+			// Reserved here rather than at the publish: this is where the count
+			// changes, and the sequence has to record that order, not the order
+			// the background goroutines happen to finish waiting in.
+			objectCountSeq = p.objectCountGate.reserve()
 		}
 	}
-	endSpan.End()
+
+	// Waiting for the snapshot and notification goroutine used to happen on the
+	// Run loop, where a slow push endpoint stalled every other camera's begins
+	// and ends for up to emitWaitTimeout. The loop now does bookkeeping only.
+	publisher := p.publisher(endCtx)
+	emitDone := active.emitDone
+	p.goBackground(func() {
+		p.publishEventEnd(ctx, endCtx, endSpan, event, emitDone, publisher, objectCount, objectCountSeq)
+	})
 
 	slog.Info("event ended", "event", event.ID, "camera", event.CameraName,
 		"label", event.Label, "duration", endTime.Sub(event.Timestamp).Round(time.Second))
@@ -330,7 +439,7 @@ func (p *Processor) finalizeEvent(ctx context.Context, active *activeEvent, endT
 
 	if active.tempCancel != nil {
 		temporaryCancel := active.tempCancel
-		go func() {
+		p.goBackground(func() {
 			timer := time.NewTimer(p.options.Config.Recording.PostCapture + 5*time.Second)
 			defer timer.Stop()
 			select {
@@ -338,12 +447,43 @@ func (p *Processor) finalizeEvent(ctx context.Context, active *activeEvent, endT
 			case <-ctx.Done():
 			}
 			temporaryCancel()
-		}()
+		})
 	}
 
 	if p.options.Recorder != nil {
 		clipCtx := trace.ContextWithSpanContext(ctx, active.rootSpanCtx)
-		go p.extractClip(clipCtx, event)
+		p.goBackground(func() { p.extractClip(clipCtx, event) })
+	}
+}
+
+// publishEventEnd waits for the event's artifacts and then publishes the end,
+// off the Run loop. The snapshot must be out before the end publish so a
+// subscriber that reacts to the end can already fetch it, which is why the wait
+// stayed in front of the publish rather than being dropped.
+func (p *Processor) publishEventEnd(ctx, endCtx context.Context, endSpan trace.Span,
+	event camera.Event, emitDone <-chan struct{}, publisher Publisher, objectCount int, objectCountSeq uint64) {
+	defer endSpan.End()
+
+	WaitForEmit(ctx, emitDone, emitWaitTimeout)
+	if publisher == nil {
+		return
+	}
+	SpanPublish(endCtx, p.options.Tracer, "mqtt.publish_event_end", func() error {
+		if err := publisher.PublishEvent(event, nil); err != nil {
+			slog.Error("failed to publish event end", "event", event.ID, "error", err)
+			return err
+		}
+		return nil
+	})
+	// The wait above is why this needs the gate: it can outlast the next change
+	// to the same count, and the sensor is retained, so publishing a value the
+	// Run loop has already moved past leaves it wrong until the next event.
+	if objectCount >= 0 {
+		p.objectCountGate.publish(event.CameraName, event.Label, objectCountSeq, func() {
+			SpanPublish(endCtx, p.options.Tracer, "mqtt.publish_object_count", func() error {
+				return publisher.PublishObjectCount(event.CameraName, event.Label, objectCount)
+			})
+		})
 	}
 }
 

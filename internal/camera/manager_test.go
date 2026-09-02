@@ -8,11 +8,28 @@ import (
 	"github.com/rvben/vedetta/internal/config"
 )
 
+// markRunning registers name as started with a controllable stopped channel,
+// standing in for a camera whose goroutines are still live.
+func markRunning(m *Manager, name string, ctx context.Context, cancel context.CancelFunc, stopped <-chan struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.running == nil {
+		m.running = make(map[string]*runningCamera)
+	}
+	m.running[name] = &runningCamera{ctx: ctx, cancel: cancel, stopped: stopped}
+}
+
+func closedChan() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
 func TestStopCamera(t *testing.T) {
 	m := &Manager{
-		cameras:     make(map[string]*Camera),
-		cancelFuncs: make(map[string]context.CancelFunc),
-		order:       []string{"test-cam"},
+		cameras: make(map[string]*Camera),
+		running: make(map[string]*runningCamera),
+		order:   []string{"test-cam"},
 	}
 	m.cameras["test-cam"] = &Camera{config: config.CameraConfig{Name: "test-cam"}}
 
@@ -21,11 +38,11 @@ func TestStopCamera(t *testing.T) {
 	}
 
 	if err := m.StopCamera("test-cam"); err == nil {
-		t.Fatal("expected error for camera without cancel func")
+		t.Fatal("expected error for camera that was never started")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	m.cancelFuncs["test-cam"] = cancel
+	markRunning(m, "test-cam", ctx, cancel, closedChan())
 
 	if err := m.StopCamera("test-cam"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -37,12 +54,86 @@ func TestStopCamera(t *testing.T) {
 		t.Fatal("context not cancelled after StopCamera")
 	}
 
-	if _, ok := m.cancelFuncs["test-cam"]; ok {
-		t.Fatal("cancel func should be removed after StopCamera")
+	if _, ok := m.running["test-cam"]; ok {
+		t.Fatal("running entry should be removed after StopCamera")
 	}
 
 	if err := m.StopCamera("test-cam"); err == nil {
 		t.Fatal("expected error for already-stopped camera")
+	}
+}
+
+// A stop that returns before the camera's goroutines have finished lets the
+// caller restart the camera, or report it stopped, while the old RTSP consumer
+// is still attached to the hub.
+func TestStopCameraWaitsForTheCameraToFinish(t *testing.T) {
+	m := &Manager{
+		cameras: map[string]*Camera{"cam": {config: config.CameraConfig{Name: "cam"}}},
+		running: make(map[string]*runningCamera),
+		order:   []string{"cam"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stopped := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		time.Sleep(150 * time.Millisecond)
+		close(stopped)
+	}()
+	markRunning(m, "cam", ctx, cancel, stopped)
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		if err := m.StopCamera("cam"); err != nil {
+			t.Errorf("StopCamera: %v", err)
+		}
+	}()
+
+	select {
+	case <-returned:
+		t.Fatal("StopCamera returned while the camera goroutines were still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopCamera did not return after the camera finished")
+	}
+}
+
+// A camera wedged in a blocking read must not hold the stop forever: the caller
+// is usually an HTTP request, and the manager lock is shared with every other
+// operation.
+func TestStopCameraIsBoundedWhenTheCameraNeverFinishes(t *testing.T) {
+	m := &Manager{
+		cameras: map[string]*Camera{"cam": {config: config.CameraConfig{Name: "cam"}}},
+		running: make(map[string]*runningCamera),
+		order:   []string{"cam"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	markRunning(m, "cam", ctx, cancel, make(chan struct{}))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := m.StopCamera("cam"); err != nil {
+			t.Errorf("StopCamera: %v", err)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(cameraStopTimeout + 5*time.Second):
+		t.Fatal("StopCamera never returned for a camera that never finished")
+	}
+
+	// The manager must be usable again, not stuck behind the wedged camera.
+	if m.IsStopped("cam") != true {
+		t.Fatal("camera should report stopped after StopCamera returned")
 	}
 }
 
@@ -55,9 +146,9 @@ func TestManagerStartNotGatedByBlockingSnapshot(t *testing.T) {
 	cam1 := newTestCamera(config.CameraConfig{Name: "cam1", URL: "rtsp://localhost/1"}, nil)
 
 	m := &Manager{
-		cameras:     map[string]*Camera{"cam0": cam0, "cam1": cam1},
-		cancelFuncs: make(map[string]context.CancelFunc),
-		order:       []string{"cam0", "cam1"},
+		cameras: map[string]*Camera{"cam0": cam0, "cam1": cam1},
+		running: make(map[string]*runningCamera),
+		order:   []string{"cam0", "cam1"},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -78,21 +169,22 @@ func TestManagerStartNotGatedByBlockingSnapshot(t *testing.T) {
 
 func TestIsStopped(t *testing.T) {
 	m := &Manager{
-		cameras:     make(map[string]*Camera),
-		cancelFuncs: make(map[string]context.CancelFunc),
-		order:       []string{"cam1"},
+		cameras: make(map[string]*Camera),
+		running: make(map[string]*runningCamera),
+		order:   []string{"cam1"},
 	}
 	m.cameras["cam1"] = &Camera{config: config.CameraConfig{Name: "cam1"}}
 
 	if !m.IsStopped("cam1") {
-		t.Fatal("camera without cancel func should be stopped")
+		t.Fatal("camera that was never started should be stopped")
 	}
 
-	_, cancel := context.WithCancel(context.Background())
-	m.cancelFuncs["cam1"] = cancel
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	markRunning(m, "cam1", ctx, cancel, closedChan())
 
 	if m.IsStopped("cam1") {
-		t.Fatal("camera with cancel func should not be stopped")
+		t.Fatal("started camera should not be stopped")
 	}
 
 	if m.IsStopped("nonexistent") {
@@ -109,9 +201,9 @@ func TestIsStopped(t *testing.T) {
 func TestStoppedOnDemandCameraIsNotAlsoSleeping(t *testing.T) {
 	cfg := config.CameraConfig{Name: "battery-cam", OnDemand: true}
 	m := &Manager{
-		cameras:     map[string]*Camera{"battery-cam": {config: cfg}},
-		cancelFuncs: make(map[string]context.CancelFunc),
-		order:       []string{"battery-cam"},
+		cameras: map[string]*Camera{"battery-cam": {config: cfg}},
+		running: make(map[string]*runningCamera),
+		order:   []string{"battery-cam"},
 	}
 
 	statuses := m.CameraStatuses()
@@ -119,14 +211,15 @@ func TestStoppedOnDemandCameraIsNotAlsoSleeping(t *testing.T) {
 		t.Fatalf("expected 1 status, got %d", len(statuses))
 	}
 	if !statuses[0].Stopped {
-		t.Fatal("camera without a cancel func should report stopped")
+		t.Fatal("camera that was never started should report stopped")
 	}
 	if statuses[0].Sleeping {
 		t.Error("stopped on-demand camera reported sleeping: stopped and sleeping must be mutually exclusive")
 	}
 
-	_, cancel := context.WithCancel(context.Background())
-	m.cancelFuncs["battery-cam"] = cancel
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	markRunning(m, "battery-cam", ctx, cancel, closedChan())
 
 	statuses = m.CameraStatuses()
 	if statuses[0].Stopped {

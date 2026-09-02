@@ -112,13 +112,15 @@ func TestCoordinatorShutsComponentsDownInSafeOrder(t *testing.T) {
 		return nil
 	})
 	recorder := closeFunc(func() { order = append(order, "recorder") })
+	drain := func(context.Context) { order = append(order, "drain") }
 	ctx, cancelContext := context.WithCancel(context.Background())
 	stopBackground := func() {
 		order = append(order, "background")
 		cancelContext()
 	}
 	coordinator, err := lifecycle.New(lifecycle.Options{
-		Server: server, Recorder: recorder, StopBackground: stopBackground, ShutdownTimeout: time.Second,
+		Server: server, Recorder: recorder, StopBackground: stopBackground,
+		Drain: drain, ShutdownTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -128,7 +130,9 @@ func TestCoordinatorShutsComponentsDownInSafeOrder(t *testing.T) {
 	if err := coordinator.Await(ctx); err != nil {
 		t.Fatalf("Await: %v", err)
 	}
-	want := []string{"server", "background", "recorder"}
+	// Detached background work uses the recorder, so the drain has to complete
+	// before the recorder is closed.
+	want := []string{"server", "background", "drain", "recorder"}
 	if len(order) != len(want) {
 		t.Fatalf("shutdown order = %v, want %v", order, want)
 	}
@@ -170,4 +174,44 @@ type recordingCloser struct {
 
 func (c *recordingCloser) Close() {
 	close(c.closed)
+}
+
+// A drain that never completes must not wedge the process. The shutdown timeout
+// bounds it and the remaining components still close.
+func TestCoordinatorBoundsDrainAndStillClosesRecorder(t *testing.T) {
+	server := &recordingServer{shutdown: make(chan struct{})}
+	recorder := &recordingCloser{closed: make(chan struct{})}
+	drainDeadline := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	coordinator, err := lifecycle.New(lifecycle.Options{
+		Server:   server,
+		Recorder: recorder,
+		Drain: func(drainCtx context.Context) {
+			<-drainCtx.Done()
+			drainDeadline <- drainCtx.Err()
+		},
+		StopBackground:  cancel,
+		ShutdownTimeout: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cancel()
+
+	if err := coordinator.Await(ctx); err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+	select {
+	case drainErr := <-drainDeadline:
+		if !errors.Is(drainErr, context.DeadlineExceeded) {
+			t.Fatalf("drain context error = %v, want %v", drainErr, context.DeadlineExceeded)
+		}
+	default:
+		t.Fatal("drain was not given a bounded context")
+	}
+	select {
+	case <-recorder.closed:
+	default:
+		t.Fatal("recorder was not closed after the drain deadline")
+	}
 }

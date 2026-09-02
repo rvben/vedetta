@@ -13,10 +13,37 @@ import (
 	"github.com/rvben/vedetta/internal/safepath"
 )
 
+const (
+	// cameraStartStagger spaces camera startups so they do not all open their
+	// RTSP connections at the same moment.
+	cameraStartStagger = 2 * time.Second
+
+	// cameraStopTimeout bounds how long a stop waits for a camera to finish.
+	// A camera wedged in a blocking read must not hold up the caller, which is
+	// usually an HTTP request.
+	cameraStopTimeout = 5 * time.Second
+)
+
+// CameraStartHook runs when a camera starts, receiving that camera's own
+// context. Work started from it is cancelled when the camera is stopped.
+type CameraStartHook func(ctx context.Context, name string)
+
+// runningCamera is the live state of one started camera.
+type runningCamera struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	stopped <-chan struct{}
+}
+
 // Manager manages all camera streams.
 type Manager struct {
-	cameras         map[string]*Camera
-	cancelFuncs     map[string]context.CancelFunc
+	cameras map[string]*Camera
+	// running holds one entry per started camera. It carries the camera's own
+	// context so per-camera background work can be bound to that camera's
+	// lifetime, and a stopped channel so a stop can wait for the camera to
+	// have actually finished.
+	running         map[string]*runningCamera
+	startHooks      []CameraStartHook
 	order           []string // config-file order
 	detector        *detect.Detector
 	motionCfg       config.MotionConfig
@@ -38,7 +65,7 @@ type Manager struct {
 func NewManager(configs []config.CameraConfig, detector *detect.Detector, motion config.MotionConfig, events chan<- Event, eventEnds chan<- EventEnd, presenceEvents chan<- PresenceEvent, hub *rtsp.Hub, snapshotPath string, snapshotQuality int, recordingPath string, faceRecognizer *detect.FaceRecognizer, faceEvents chan<- FaceEvent, faceCropDir string, motionActivity chan<- MotionActivity, detections chan<- DetectionFrame) *Manager {
 	m := &Manager{
 		cameras:         make(map[string]*Camera),
-		cancelFuncs:     make(map[string]context.CancelFunc),
+		running:         make(map[string]*runningCamera),
 		detector:        detector,
 		motionCfg:       motion,
 		events:          events,
@@ -56,37 +83,49 @@ func NewManager(configs []config.CameraConfig, detector *detect.Detector, motion
 	}
 
 	for _, cfg := range configs {
-		if cfg.IsEnabled() {
-			cam := NewCamera(cfg, detector, motion, events, eventEnds, presenceEvents, hub, snapshotPath, snapshotQuality, recordingPath, faceRecognizer, faceEvents, faceCropDir, motionActivity, detections)
-			m.cameras[cfg.Name] = cam
-			m.order = append(m.order, cfg.Name)
+		if !cfg.IsEnabled() {
+			continue
 		}
+		// A duplicate name would overwrite the first camera while leaving a
+		// second entry in the start order, so the same camera would be started
+		// twice and the first configuration silently discarded.
+		if _, exists := m.cameras[cfg.Name]; exists {
+			slog.Error("duplicate camera name in configuration, ignoring the later entry", "name", cfg.Name)
+			continue
+		}
+		cam := NewCamera(cfg, detector, motion, events, eventEnds, presenceEvents, hub, snapshotPath, snapshotQuality, recordingPath, faceRecognizer, faceEvents, faceCropDir, motionActivity, detections)
+		m.cameras[cfg.Name] = cam
+		m.order = append(m.order, cfg.Name)
 	}
 
 	return m
 }
 
+// Start brings up every camera that is not marked stopped, staggering them so
+// they do not all open their RTSP connections at once.
 func (m *Manager) Start(ctx context.Context, stoppedCameras map[string]bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	order := append([]string(nil), m.order...)
+	m.mu.RUnlock()
 
-	for i, name := range m.order {
+	started := 0
+	for _, name := range order {
 		if stoppedCameras[name] {
 			slog.Info("skipping stopped camera", "name", name)
 			continue
 		}
-		if i > 0 {
+		if started > 0 {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(2 * time.Second):
+			case <-time.After(cameraStartStagger):
 			}
 		}
-		if cam, ok := m.cameras[name]; ok {
-			camCtx, camCancel := context.WithCancel(ctx)
-			m.cancelFuncs[name] = camCancel
-			cam.Start(camCtx)
+		if err := m.StartCamera(ctx, name); err != nil {
+			slog.Error("camera failed to start", "name", name, "error", err)
+			continue
 		}
+		started++
 	}
 }
 
@@ -111,7 +150,7 @@ func (m *Manager) RunningCameraDetectURLs() []string {
 	defer m.mu.RUnlock()
 	urls := make([]string, 0, len(m.order))
 	for _, name := range m.order {
-		if _, running := m.cancelFuncs[name]; !running {
+		if _, running := m.running[name]; !running {
 			continue
 		}
 		if cam, ok := m.cameras[name]; ok {
@@ -130,7 +169,7 @@ func (m *Manager) CameraStatuses() []CameraStatus {
 	for _, name := range m.order {
 		if cam, ok := m.cameras[name]; ok {
 			st := cam.Status()
-			_, running := m.cancelFuncs[name]
+			_, running := m.running[name]
 			st.Stopped = !running
 			// Stopped and Sleeping are mutually exclusive. Camera.Status sets
 			// Sleeping from OnDemand plus the absence of frames, which a stopped
@@ -153,6 +192,7 @@ func (m *Manager) AddCamera(cfg config.CameraConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, exists := m.cameras[cfg.Name]; exists {
+		slog.Warn("camera already exists, not adding it again", "name", cfg.Name)
 		return
 	}
 	cam := NewCamera(cfg, m.detector, m.motionCfg, m.events, m.eventEnds, m.presenceEvents,
@@ -162,39 +202,86 @@ func (m *Manager) AddCamera(cfg config.CameraConfig) {
 	m.order = append(m.order, cfg.Name)
 }
 
-// StartCamera starts the named camera with its own derived context.
+// StartCamera starts the named camera with its own derived context and runs
+// every registered start hook against it.
 func (m *Manager) StartCamera(ctx context.Context, name string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	cam, ok := m.cameras[name]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("camera %q not found", name)
 	}
-	if _, running := m.cancelFuncs[name]; running {
+	if _, alreadyRunning := m.running[name]; alreadyRunning {
+		m.mu.Unlock()
 		return fmt.Errorf("camera %q is already running", name)
 	}
 
 	camCtx, camCancel := context.WithCancel(ctx)
-	m.cancelFuncs[name] = camCancel
-	cam.Start(camCtx)
+	stopped := cam.Start(camCtx)
+	m.running[name] = &runningCamera{ctx: camCtx, cancel: camCancel, stopped: stopped}
+	hooks := append([]CameraStartHook(nil), m.startHooks...)
+	m.mu.Unlock()
+
+	// Hooks run outside the lock: they start per-camera background work that
+	// may call back into the manager.
+	for _, hook := range hooks {
+		hook(camCtx, name)
+	}
 	return nil
 }
 
-// StopCamera cancels the context for the named camera, stopping its goroutine.
+// OnCameraStart registers fn to run each time a camera starts, with that
+// camera's own context. Background work started from fn is therefore cancelled
+// when that camera is stopped, instead of living until the process exits.
+// Cameras that are already running when fn is registered get an immediate call,
+// so registration order does not decide whether a camera is covered.
+func (m *Manager) OnCameraStart(fn CameraStartHook) {
+	if fn == nil {
+		return
+	}
+	m.mu.Lock()
+	m.startHooks = append(m.startHooks, fn)
+	type startedCamera struct {
+		name string
+		ctx  context.Context
+	}
+	existing := make([]startedCamera, 0, len(m.running))
+	for name, run := range m.running {
+		existing = append(existing, startedCamera{name: name, ctx: run.ctx})
+	}
+	m.mu.Unlock()
+
+	for _, cam := range existing {
+		fn(cam.ctx, cam.name)
+	}
+}
+
+// StopCamera cancels the named camera and waits, bounded, for its goroutines
+// to finish. Returning before the camera has stopped would let a caller restart
+// it, or report it stopped, while its old RTSP consumer is still attached.
 func (m *Manager) StopCamera(name string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if _, ok := m.cameras[name]; !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("camera %q not found", name)
 	}
-	cancel, ok := m.cancelFuncs[name]
+	run, ok := m.running[name]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("camera %q is already stopped", name)
 	}
-	cancel()
-	delete(m.cancelFuncs, name)
+	delete(m.running, name)
+	m.mu.Unlock()
+
+	// The wait happens outside the lock so one unresponsive camera cannot block
+	// every other manager operation while it drains.
+	run.cancel()
+	select {
+	case <-run.stopped:
+	case <-time.After(cameraStopTimeout):
+		slog.Warn("camera did not stop within the timeout, continuing",
+			"camera", name, "timeout", cameraStopTimeout)
+	}
 	return nil
 }
 
@@ -206,7 +293,7 @@ func (m *Manager) IsStopped(name string) bool {
 	if _, exists := m.cameras[name]; !exists {
 		return false
 	}
-	_, running := m.cancelFuncs[name]
+	_, running := m.running[name]
 	return !running
 }
 

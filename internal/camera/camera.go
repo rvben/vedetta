@@ -7,7 +7,6 @@ import (
 	"image/jpeg"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -347,6 +346,12 @@ func (c *Camera) Name() string {
 	return c.config.Name
 }
 
+// DoorbellEnabled reports whether this camera is configured as a doorbell, so
+// callers can decide whether to start doorbell-specific background work.
+func (c *Camera) DoorbellEnabled() bool {
+	return c.config.Doorbell.Enabled
+}
+
 func (c *Camera) DetectURL() string {
 	return c.config.URL
 }
@@ -494,21 +499,15 @@ func (c *Camera) saveCachedSnapshot() {
 	if path == "" {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// The shared writer replaces the file by rename, so a reader holding this
+	// path sees the previous capture or the new one and never a half-encoded
+	// frame. Report a failed write and leave the throttle alone: advancing it
+	// would suppress the next capture for a full interval, so a transient error
+	// would silently freeze the snapshot instead of costing one frame.
+	if err := snapshot.SaveSnapshot(img, path, 80); err != nil {
+		slog.Warn("failed to save cached snapshot", "camera", c.config.Name, "path", path, "error", err)
 		return
 	}
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return
-	}
-	if err := jpeg.Encode(f, img, &jpeg.Options{Quality: 80}); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return
-	}
-	f.Close()
-	os.Rename(tmp, path)
 
 	c.mu.Lock()
 	c.lastSnapshotSave = time.Now()
@@ -516,16 +515,36 @@ func (c *Camera) saveCachedSnapshot() {
 }
 
 // Start begins reading frames from the RTSP stream via the Hub.
-func (c *Camera) Start(ctx context.Context) {
+// Start begins frame processing for the camera. It returns a channel that is
+// closed once every goroutine it started has returned, so a caller that
+// cancels ctx can wait for the camera to have actually stopped instead of
+// assuming it has.
+func (c *Camera) Start(ctx context.Context) <-chan struct{} {
 	slog.Info("starting camera", "name", c.config.Name, "url", rtsp.SanitizeURL(c.config.URL))
+
+	var running sync.WaitGroup
+	running.Add(2)
 
 	// Load the cached snapshot off the start path. Manager.Start calls
 	// Camera.Start synchronously inside initSubsystems before the API is
 	// marked ready, so a blocking read here (stalled recordings volume)
 	// would gate the entire NVR's readiness on one camera's disk I/O.
-	go c.loadCachedSnapshot()
+	go func() {
+		defer running.Done()
+		c.loadCachedSnapshot()
+	}()
 
-	go c.readFrames(ctx)
+	go func() {
+		defer running.Done()
+		c.readFrames(ctx)
+	}()
+
+	stopped := make(chan struct{})
+	go func() {
+		running.Wait()
+		close(stopped)
+	}()
+	return stopped
 }
 
 // readFrames connects to the RTSP stream via the Hub and processes detection frames.

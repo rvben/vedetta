@@ -12,10 +12,12 @@ func TestRunningCameraDetectURLs(t *testing.T) {
 	camB.config.URL = "rtsp://192.0.2.61:554/b_sub"
 
 	m := &Manager{
-		cameras:     map[string]*Camera{"a": camA, "b": camB},
-		cancelFuncs: map[string]context.CancelFunc{"a": func() {}}, // only "a" running
-		order:       []string{"a", "b"},
+		cameras: map[string]*Camera{"a": camA, "b": camB},
+		running: make(map[string]*runningCamera),
+		order:   []string{"a", "b"},
 	}
+	// Only "a" is running.
+	markRunning(m, "a", context.Background(), func() {}, closedChan())
 
 	got := m.RunningCameraDetectURLs()
 	if len(got) != 1 || got[0] != "rtsp://192.0.2.60:554/a_sub" {

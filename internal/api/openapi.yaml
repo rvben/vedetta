@@ -922,7 +922,7 @@ paths:
             type: string
         - name: since
           in: query
-          description: Only return events after this timestamp
+          description: Only return events strictly after this timestamp, so a poller passing the timestamp of its newest event does not receive that event again
           schema:
             type: string
             format: date-time

@@ -55,14 +55,16 @@ func (s *Server) ListEvents(w http.ResponseWriter, r *http.Request, params ListE
 	}
 
 	// since is part of the SQL WHERE clause: filtering after the LIMIT would
-	// shorten the page and leave total counting rows the caller excluded.
+	// shorten the page and leave total counting rows the caller excluded. It
+	// binds to Since, the exclusive bound, because a poller passes the
+	// timestamp of the newest event it holds and must not be handed it again.
 	filters := storage.EventFilters{
 		Camera: cameraFilter,
 		Label:  labelFilter,
 		Zone:   zoneFilter,
 		Object: objectFilter,
 		Kind:   kindFilter,
-		After:  sinceTime,
+		Since:  sinceTime,
 	}
 	events, err := s.db.QueryEventsFiltered(filters, limit, offset)
 	if err != nil {

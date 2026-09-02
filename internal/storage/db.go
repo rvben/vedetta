@@ -218,8 +218,13 @@ type EventFilters struct {
 	Category string // "alert" or "detection"; empty matches all
 	Kind     string // "object" or "doorbell"; empty matches all
 	Search   string // free-text LIKE across camera, label, object_name, sub_label
-	After    time.Time
-	Before   time.Time
+	// After is an inclusive lower bound on the timestamp: a range that starts
+	// at midnight has to contain an event at midnight. Since is the exclusive
+	// form, for a caller polling with the timestamp of the newest event it
+	// already holds, which must not come back again on every poll.
+	After  time.Time
+	Since  time.Time
+	Before time.Time
 }
 
 // QueryEvents returns events matching the given filters.
@@ -316,13 +321,20 @@ func eventFilterClause(f EventFilters) (string, []any) {
 		clauses = append(clauses, "(camera LIKE ? OR label LIKE ? OR IFNULL(object_name,'') LIKE ? OR IFNULL(sub_label,'') LIKE ?)")
 		args = append(args, like, like, like, like)
 	}
+	// Every timestamp bind goes through utc(): the column holds canonical UTC
+	// text, so a time.Time carrying a zone offset would be serialized with
+	// that offset and compared as a different string.
 	if !f.After.IsZero() {
 		clauses = append(clauses, "timestamp >= ?")
-		args = append(args, f.After)
+		args = append(args, utc(f.After))
+	}
+	if !f.Since.IsZero() {
+		clauses = append(clauses, "timestamp > ?")
+		args = append(args, utc(f.Since))
 	}
 	if !f.Before.IsZero() {
 		clauses = append(clauses, "timestamp < ?")
-		args = append(args, f.Before)
+		args = append(args, utc(f.Before))
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
 }

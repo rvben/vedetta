@@ -54,7 +54,7 @@ func TestListEvents_SinceFiltersBeforePaging(t *testing.T) {
 		}
 	}
 	if out.Total != 2 {
-		t.Errorf("total=%d, want 2 (only events at or after since)", out.Total)
+		t.Errorf("total=%d, want 2 (only events after since)", out.Total)
 	}
 	if out.HasMore {
 		t.Error("has_more=true but both matching events are on this page")
@@ -95,5 +95,35 @@ func TestListEvents_SincePaginatesWithoutGaps(t *testing.T) {
 	}
 	if out.Total != 2 {
 		t.Errorf("total=%d, want 2", out.Total)
+	}
+}
+
+// A poller passes the timestamp of the newest event it holds and polls again.
+// An inclusive bound hands that event back every time, so the client sees a
+// permanent duplicate and any "new since last check" badge never clears.
+func TestListEvents_SinceExcludesTheEventAtThatTimestamp(t *testing.T) {
+	s, db := newTestServer(t)
+	newest := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	seedEvent(t, db, "newest", "cam", "person", 0.9, newest)
+
+	params := ListEventsParams{Since: &newest}
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	w := httptest.NewRecorder()
+	s.ListEvents(w, req, params)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Items) != 0 || out.Total != 0 {
+		t.Fatalf("since=%s returned %d items (total %d), want none: the event at exactly that timestamp is already held", newest, len(out.Items), out.Total)
 	}
 }

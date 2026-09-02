@@ -2365,3 +2365,68 @@ func TestBackfillClipSizes(t *testing.T) {
 		t.Errorf("second pass examined = %d, want 0", examined)
 	}
 }
+
+// Timestamps are stored in the driver's canonical UTC text form, so a
+// timestamp predicate compares text. Binding a time.Time that carries a zone
+// offset serializes it with that offset and compares it against UTC text, which
+// is a different string: the filter then silently returns the wrong rows. Every
+// timestamp bind has to be normalized with utc() first.
+func TestQueryEventsFiltered_TimeWindowIgnoresCallerTimezone(t *testing.T) {
+	db := newTestDB(t)
+
+	base := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	for i, name := range []string{"before", "inside", "after"} {
+		ev := makeEvent(name, "cam", "person", 0.9, base.Add(time.Duration(i)*time.Hour))
+		if err := db.SaveEvent(ev); err != nil {
+			t.Fatalf("SaveEvent(%s): %v", name, err)
+		}
+	}
+
+	// The same instants, expressed in a zone a browser or an API caller would
+	// plausibly send. Only the text representation differs.
+	east := time.FixedZone("UTC+9", 9*3600)
+	window := EventFilters{
+		After:  base.Add(30 * time.Minute).In(east),
+		Before: base.Add(90 * time.Minute).In(east),
+	}
+
+	events, err := db.QueryEventsFiltered(window, 100, 0)
+	if err != nil {
+		t.Fatalf("QueryEventsFiltered: %v", err)
+	}
+	if len(events) != 1 || events[0].ID != "inside" {
+		got := make([]string, len(events))
+		for i, e := range events {
+			got[i] = e.ID
+		}
+		t.Fatalf("window [12:30, 13:30) expressed in %s returned %v, want [inside]", east, got)
+	}
+}
+
+// A poller passes the timestamp of the newest event it already holds, so that
+// event must not come back on the next poll. The range bound is the opposite:
+// a window starting at midnight contains an event at midnight.
+func TestQueryEventsFiltered_SinceIsExclusiveAfterIsInclusive(t *testing.T) {
+	db := newTestDB(t)
+
+	ts := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	if err := db.SaveEvent(makeEvent("boundary", "cam", "person", 0.9, ts)); err != nil {
+		t.Fatalf("SaveEvent: %v", err)
+	}
+
+	since, err := db.QueryEventsFiltered(EventFilters{Since: ts}, 10, 0)
+	if err != nil {
+		t.Fatalf("QueryEventsFiltered(Since): %v", err)
+	}
+	if len(since) != 0 {
+		t.Errorf("Since=%s returned the event at exactly that timestamp: a poller re-receives its newest event forever", ts)
+	}
+
+	after, err := db.QueryEventsFiltered(EventFilters{After: ts}, 10, 0)
+	if err != nil {
+		t.Fatalf("QueryEventsFiltered(After): %v", err)
+	}
+	if len(after) != 1 {
+		t.Errorf("After=%s returned %d events, want 1: a range starting at midnight must contain an event at midnight", ts, len(after))
+	}
+}

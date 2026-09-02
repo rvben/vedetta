@@ -297,6 +297,25 @@ func TestSetupFlow_EndToEnd(t *testing.T) {
 	ts := httptest.NewServer(server.mux)
 	defer ts.Close()
 
+	// The wizard carries the one-time setup code printed at startup.
+	code := server.setupHandler.setupCode()
+	do := func(method, path, body string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(method, ts.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("NewRequest %s %s: %v", method, path, err)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Header.Set(setupCodeHeader, code)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		return resp
+	}
+
 	// 1. Non-setup API routes should be blocked (403)
 	resp, _ := http.Get(ts.URL + "/api/events")
 	if resp.StatusCode != http.StatusForbidden {
@@ -310,13 +329,7 @@ func TestSetupFlow_EndToEnd(t *testing.T) {
 	}
 
 	// 3. Create admin account
-	body := strings.NewReader(`{"username":"admin","password":"test1234"}`)
-	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/setup", body)
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, _ = http.DefaultClient.Do(req)
+	resp = do(http.MethodPost, "/api/setup", `{"username":"admin","password":"test1234"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("setup failed: %d", resp.StatusCode)
 	}
@@ -341,13 +354,13 @@ func TestSetupFlow_EndToEnd(t *testing.T) {
 	}
 
 	// 4. Discovery should work (returns 200, may have empty cameras)
-	resp, _ = http.Get(ts.URL + "/api/discover")
+	resp = do(http.MethodGet, "/api/discover", "")
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("discover should return 200, got %d", resp.StatusCode)
 	}
 
 	// 5. Signal complete (skip cameras)
-	resp, _ = http.Post(ts.URL+"/api/setup/complete", "", nil)
+	resp = do(http.MethodPost, "/api/setup/complete", "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("complete failed: %d", resp.StatusCode)
 	}

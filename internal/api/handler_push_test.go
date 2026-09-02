@@ -200,9 +200,9 @@ func TestPushEndpoints_RejectMissingPrincipal(t *testing.T) {
 
 // TestPushEndpoints_AcceptProxyPrincipal verifies that push endpoints
 // accept the proxy-kind principal Vedetta produces when authenticated
-// upstream by a trusted reverse proxy (Authelia + Caddy). This is the
-// deployment pattern in the vedetta.am8.nl homelab setup: without proxy
-// acceptance, the PWA would get 403 on every push API call.
+// upstream by a trusted reverse proxy (Authelia + Caddy). That is the common
+// deployment for a remotely reachable install: without proxy acceptance, the
+// PWA would get 403 on every push API call.
 func TestPushEndpoints_AcceptProxyPrincipal(t *testing.T) {
 	srv, db := newTestServerWithUser(t, "alice")
 	srv.SetNotifier(newNoopDispatcherForTest(t, db))

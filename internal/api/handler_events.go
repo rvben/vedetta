@@ -54,12 +54,15 @@ func (s *Server) ListEvents(w http.ResponseWriter, r *http.Request, params ListE
 		kindFilter = *params.Kind
 	}
 
+	// since is part of the SQL WHERE clause: filtering after the LIMIT would
+	// shorten the page and leave total counting rows the caller excluded.
 	filters := storage.EventFilters{
 		Camera: cameraFilter,
 		Label:  labelFilter,
 		Zone:   zoneFilter,
 		Object: objectFilter,
 		Kind:   kindFilter,
+		After:  sinceTime,
 	}
 	events, err := s.db.QueryEventsFiltered(filters, limit, offset)
 	if err != nil {
@@ -67,22 +70,15 @@ func (s *Server) ListEvents(w http.ResponseWriter, r *http.Request, params ListE
 		return
 	}
 
-	// Apply since filter in memory (DB query doesn't support it directly)
-	if !sinceTime.IsZero() {
-		filtered := events[:0]
-		for _, e := range events {
-			if e.Timestamp.After(sinceTime) {
-				filtered = append(filtered, e)
-			}
-		}
-		events = filtered
-	}
-
 	if events == nil {
 		events = []camera.Event{}
 	}
 
-	total, _ := s.db.CountEventsFiltered(filters)
+	total, err := s.db.CountEventsFiltered(filters)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
 	hasMore := offset+len(events) < total
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -224,15 +220,34 @@ func (s *Server) ReextractClip(w http.ResponseWriter, r *http.Request, id string
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "event": id})
 }
 
-func (s *Server) GetEventCounts(w http.ResponseWriter, _ *http.Request, params GetEventCountsParams) {
+// GetEventCounts reports event totals. A count that cannot be read is an error,
+// never a zero: "the database is unreachable" and "nothing happened" must not
+// render the same.
+func (s *Server) GetEventCounts(w http.ResponseWriter, r *http.Request, params GetEventCountsParams) {
 	kind := ""
 	if params.Kind != nil {
 		kind = *params.Kind
 	}
-	total, _ := s.db.CountEvents(kind)
-	today, _ := s.db.CountEventsToday(kind)
-	byLabel, _ := s.db.CountEventsByLabel(kind)
-	byCamera, _ := s.db.CountEventsByCamera(kind)
+	total, err := s.db.CountEvents(kind)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	today, err := s.db.CountEventsToday(kind)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	byLabel, err := s.db.CountEventsByLabel(kind)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	byCamera, err := s.db.CountEventsByCamera(kind)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total":     total,

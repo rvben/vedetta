@@ -18,6 +18,67 @@ import (
 
 // --- HTML partial handlers for htmx ---
 
+// partialFuncs are the template helpers shared by every partial. They close over
+// nothing request- or server-specific, so the whole set is built once and the
+// templates below can be parsed at package init.
+var partialFuncs = template.FuncMap{
+	"timeAgo": func(t time.Time) string {
+		d := time.Since(t)
+		switch {
+		case d < time.Minute:
+			return fmt.Sprintf("%ds ago", int(d.Seconds()))
+		case d < time.Hour:
+			return fmt.Sprintf("%dm ago", int(d.Minutes()))
+		case d < 24*time.Hour:
+			return fmt.Sprintf("%dh ago", int(d.Hours()))
+		default:
+			return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+		}
+	},
+	"scorePercent": func(s float32) string {
+		return fmt.Sprintf("%.0f%%", s*100)
+	},
+	"toFloat32": func(f float64) float32 { return float32(f) },
+	"formatTime": func(t time.Time) template.HTML {
+		iso := t.UTC().Format(time.RFC3339)
+		display := t.UTC().Format("2006-01-02 15:04:05 UTC")
+		return template.HTML(fmt.Sprintf(`<time datetime="%s">%s</time>`, iso, display))
+	},
+	"formatBytes": formatBytes,
+	"displayName": displayName,
+	"eventDuration": func(e camera.Event) string {
+		if e.EndTime.IsZero() {
+			return ""
+		}
+		d := e.EndTime.Sub(e.Timestamp)
+		if d < time.Second {
+			return ""
+		}
+		if d < time.Minute {
+			return fmt.Sprintf("%ds", int(d.Seconds()))
+		}
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	},
+}
+
+// activityFuncs render an activity. Like partialFuncs they are static, so the
+// two activity templates carry them from init.
+var activityFuncs = template.FuncMap{
+	"activityTitle":    activityTitle,
+	"activityDuration": activityDuration,
+	"activityFacets":   activityFacets,
+	"activityStateLabel": func(state storage.ActivityState) string {
+		if state == storage.ActivityStateOpen {
+			return "Collecting evidence"
+		}
+		return "Finalized"
+	},
+}
+
+// statUnavailable is what a stat card shows when the query behind it failed. A
+// count that could not be read is not a count of zero.
+const statUnavailable = "n/a"
+
 func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request) {
 	statuses := s.cameraStatuses()
 
@@ -72,30 +133,7 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
 		})
 	}
 
-	tmpl := template.Must(template.New("grid").Parse(`{{range .}}<div class="cam-card{{if .Stopped}} cam-stopped{{end}}" data-camera-name="{{.Name}}" data-action-click="location.href='/camera.html?name={{.Name}}'" role="listitem" aria-label="{{.DisplayName}} camera">
-  <div class="cam-preview">
-    <img src="/api/cameras/{{.Name}}/snapshot" alt="{{.DisplayName}} camera" loading="lazy">
-    <span class="cam-last-seen" data-ts="{{.LastSeen}}"></span>
-    <div class="cam-live-badge">
-      {{if .Stopped}}<span class="cam-live-dot stopped"></span>STOPPED{{else if .Online}}<span class="cam-live-dot"></span>LIVE{{else if .Sleeping}}<span class="cam-live-dot sleeping"></span>SLEEPING{{else}}<span class="cam-live-dot offline"></span>OFFLINE{{end}}
-    </div>
-    <button class="cam-toggle-btn" data-action-click="event.stopPropagation(); toggleCamera('{{.Name}}', {{.Stopped}}, this)" title="{{if .Stopped}}Start camera{{else}}Stop camera{{end}}" aria-label="{{if .Stopped}}Start{{else}}Stop{{end}} {{.DisplayName}}">
-      {{if .Stopped}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><polygon points="5 3 19 12 5 21 5 3"/></svg>{{else}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>{{end}}
-    </button>
-  </div>
-  <div class="cam-footer">
-    <span class="cam-name">{{.DisplayName}}</span>
-    {{if .Doorbell}}{{if .Stopped}}<span class="cam-doorbell-action is-disabled" aria-disabled="true" title="Start camera to open doorbell">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
-      <span>Open doorbell</span>
-    </span>{{else}}<a class="cam-doorbell-action" href="/doorbell-answer.html?camera={{.Name}}" data-action-click="event.stopPropagation()" aria-label="Open doorbell for {{.DisplayName}}">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
-      <span>Open doorbell</span>
-    </a>{{end}}{{end}}
-  </div>
-</div>{{end}}`))
-
-	if err := tmpl.Execute(w, cards); err != nil {
+	if err := cameraGridTmpl.Execute(w, cards); err != nil {
 		slog.Error("template error", "error", err)
 	}
 }
@@ -109,13 +147,20 @@ func (s *Server) handleDashboardStatsPartial(w http.ResponseWriter, _ *http.Requ
 		}
 	}
 
-	eventsToday, _ := s.db.CountEventsToday("")
+	// A count the database could not answer is rendered as unavailable. Falling
+	// back to 0 would claim the day had no events, which is a different fact.
+	eventsToday := statUnavailable
+	if count, err := s.db.CountEventsToday(""); err == nil {
+		eventsToday = strconv.Itoa(count)
+	} else {
+		slog.Error("dashboard stats: events today", "error", err)
+	}
 	stats := s.recorder.StorageStats()
 
 	type dashData struct {
 		CameraCount int
 		OnlineCount int
-		EventsToday int
+		EventsToday string
 		Storage     string
 	}
 
@@ -126,14 +171,8 @@ func (s *Server) handleDashboardStatsPartial(w http.ResponseWriter, _ *http.Requ
 		Storage:     formatBytes(stats.TotalBytes),
 	}
 
-	tmpl := template.Must(template.New("stats").Parse(
-		`<div class="stat-card"><div class="stat-label">Cameras</div><div class="stat-value">{{.CameraCount}}</div></div>` +
-			`<div class="stat-card"><div class="stat-label">Online</div><div class="stat-value green">{{.OnlineCount}}</div></div>` +
-			`<div class="stat-card"><div class="stat-label">Events<span class="stat-label-q"> Today</span></div><div class="stat-value">{{.EventsToday}}</div></div>` +
-			`<div class="stat-card"><div class="stat-label">Storage</div><div class="stat-value">{{.Storage}}</div></div>`))
-
 	w.Header().Set("Content-Type", "text/html")
-	if err := tmpl.Execute(w, data); err != nil {
+	if err := dashboardStatsTmpl.Execute(w, data); err != nil {
 		slog.Error("template error", "error", err)
 	}
 }
@@ -271,34 +310,7 @@ func (s *Server) handleActivitiesGalleryPartial(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	funcs := template.FuncMap{
-		"activityTitle":    activityTitle,
-		"activityDuration": activityDuration,
-		"activityFacets":   activityFacets,
-		"activityStateLabel": func(state storage.ActivityState) string {
-			if state == storage.ActivityStateOpen {
-				return "Collecting evidence"
-			}
-			return "Finalized"
-		},
-	}
-	tmpl := template.Must(template.New("activities").Funcs(s.funcMap).Funcs(funcs).Parse(
-		`{{range .}}` +
-			`<a class="event-card activity-card" href="/activity.html?id={{.ID}}" data-event-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}" data-activity-category="{{.Category}}" data-activity-state="{{.State}}">` +
-			`<div class="event-thumb activity-thumb">` +
-			`{{if .PrimaryEvent.SnapshotAvailable}}<img src="/api/events/{{.PrimaryEvent.ID}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}" loading="lazy">` +
-			`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}" loading="lazy">{{end}}` +
-			`{{if gt .EventCount 1}}<span class="activity-evidence-count">{{.EventCount}} events</span>{{end}}` +
-			`{{if eq .State "open"}}<span class="activity-state-badge">{{activityStateLabel .State}}</span>{{end}}` +
-			`{{if .MissedDoorbell}}<span class="event-missed-badge">missed ring</span>{{else if .HasDoorbell}}<span class="event-answered-badge">doorbell</span>{{end}}` +
-			`</div>` +
-			`<div class="event-card-footer">` +
-			`<div class="event-card-heading"><span class="event-card-title">{{activityTitle .}}</span><span class="event-time">{{timeAgo .StartTime}}</span></div>` +
-			`<div class="event-card-context"><span class="event-camera-name">{{displayName .CameraName}}</span><span>{{activityDuration .}}</span>` +
-			`{{with activityFacets .Zones}}<span>{{.}}</span>{{end}}` +
-			`{{if eq .Category "detection"}}<span class="event-tier">Low priority</span>{{end}}</div>` +
-			`</div></a>{{end}}`))
-	if err := tmpl.Execute(w, activities); err != nil {
+	if err := activitiesGalleryTmpl.Execute(w, activities); err != nil {
 		slog.Error("activity gallery template error", "error", err)
 		return
 	}
@@ -324,48 +336,21 @@ func (s *Server) handleActivityDetailPartial(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	funcs := template.FuncMap{
-		"activityTitle":    activityTitle,
-		"activityDuration": activityDuration,
-		"activityFacets":   activityFacets,
-		"activityStateLabel": func(state storage.ActivityState) string {
-			if state == storage.ActivityStateOpen {
-				return "Collecting evidence"
-			}
-			return "Finalized"
-		},
+	// activityEvidenceURL is the one helper that depends on this request, so the
+	// parsed template is cloned and the real function bound over the placeholder.
+	// Clone copies the already-parsed tree; it never re-parses.
+	tmpl, err := activityDetailTmpl.Clone()
+	if err != nil {
+		s.serverErrorText(w, r, err)
+		return
+	}
+	tmpl = tmpl.Funcs(template.FuncMap{
 		"activityEvidenceURL": func(eventID string) string {
 			params := r.URL.Query()
 			params.Set("activity", activity.ID)
 			return "/event.html?id=" + url.QueryEscape(eventID) + "&" + params.Encode()
 		},
-	}
-	tmpl := template.Must(template.New("activity-detail").Funcs(s.funcMap).Funcs(funcs).Parse(
-		`{{$activity := .}}<div class="activity-detail-root" data-activity-id="{{.ID}}" data-activity-state="{{.State}}" data-activity-camera="{{.CameraName}}" data-activity-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}">` +
-			`<div class="page-header activity-page-header"><div><h1>{{activityTitle .}}</h1><p>{{displayName .CameraName}} · {{formatTime .StartTime}}</p><span class="activity-detail-state {{.State}}">{{activityStateLabel .State}}{{if eq .State "open"}} · updates as evidence arrives{{end}}</span></div>` +
-			`<a class="btn btn-secondary" href="/events.html">Back to Activity</a></div>` +
-			`<div class="activity-review-layout"><section class="activity-primary" aria-label="Primary evidence">` +
-			`<div class="activity-primary-media">{{if .PrimaryEvent.ClipAvailable}}<video controls preload="metadata" poster="/api/events/{{.PrimaryEvent.ID}}/snapshot"><source src="/api/events/{{.PrimaryEvent.ID}}/clip" type="video/mp4"></video>` +
-			`{{else if .PrimaryEvent.SnapshotAvailable}}<img src="/api/events/{{.PrimaryEvent.ID}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}">` +
-			`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="Current view of {{displayName .CameraName}}">{{end}}</div>` +
-			`<div class="activity-summary" aria-label="Activity summary">` +
-			`<div><span>When</span><strong>{{formatTime .StartTime}}</strong></div><div><span>Camera</span><strong>{{displayName .CameraName}}</strong></div>` +
-			`<div><span>Status</span><strong>{{activityStateLabel .State}}</strong></div><div><span>Duration</span><strong>{{activityDuration .}}</strong></div><div><span>Evidence</span><strong>{{.EventCount}} {{if eq .EventCount 1}}event{{else}}events{{end}}</strong></div>` +
-			`{{with activityFacets .Zones}}<div><span>Zones</span><strong>{{.}}</strong></div>{{end}}` +
-			`{{with activityFacets .Labels}}<div><span>Detected</span><strong>{{.}}</strong></div>{{end}}</div></section>` +
-			`<aside class="activity-evidence" aria-labelledby="evidence-title"><div class="activity-evidence-heading"><h2 id="evidence-title">Evidence</h2><p>Every detection included in this activity.</p></div>` +
-			`<div class="activity-grouping"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M12 11v5m0-8v.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><div><strong>Why these belong together</strong><span>{{.Grouping.Explanation}}</span></div></div>` +
-			`<div class="activity-evidence-list">{{range .Events}}<div class="activity-evidence-row"><a class="activity-evidence-item" href="{{activityEvidenceURL .ID}}">` +
-			`<div class="activity-evidence-thumb">{{if .SnapshotAvailable}}<img src="/api/events/{{.ID}}/snapshot" alt="{{displayName .Label}} evidence">{{else}}<span aria-hidden="true"></span>{{end}}</div>` +
-			`<div><strong>{{if .SubLabel}}{{.SubLabel}}{{else}}{{displayName .Label}}{{end}}</strong><span>{{formatTime .Timestamp}}{{with .ZoneName}} · {{displayName .}}{{end}}</span></div>` +
-			`<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></a>` +
-			`<button class="btn btn-ghost activity-evidence-correction" type="button" data-activity-evidence-action="exclude" data-event-id="{{.ID}}" aria-label="Exclude {{displayName .Label}} evidence from this activity" title="{{if eq $activity.EventCount 1}}An Activity must keep at least one evidence event{{else}}Keep the raw event, but remove it from this Activity{{end}}" {{if eq $activity.EventCount 1}}disabled{{end}}>Exclude</button></div>{{end}}</div>` +
-			`{{with .ExcludedEvidence}}<section class="activity-excluded" aria-labelledby="excluded-evidence-title"><div class="activity-excluded-heading"><h3 id="excluded-evidence-title">Excluded evidence</h3><p>Kept as raw evidence and available to restore.</p></div><div class="activity-excluded-list">{{range .}}<div class="activity-evidence-row is-excluded"><a class="activity-evidence-item" href="{{activityEvidenceURL .Event.ID}}">` +
-			`<div class="activity-evidence-thumb">{{if .Event.SnapshotAvailable}}<img src="/api/events/{{.Event.ID}}/snapshot" alt="Excluded {{displayName .Event.Label}} evidence">{{else}}<span aria-hidden="true"></span>{{end}}</div>` +
-			`<div><strong>{{if .Event.SubLabel}}{{.Event.SubLabel}}{{else}}{{displayName .Event.Label}}{{end}}</strong><span>{{.Reason}} · by {{.Actor}}</span></div>` +
-			`<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></a>` +
-			`<button class="btn btn-ghost activity-evidence-correction" type="button" data-activity-evidence-action="restore" data-event-id="{{.Event.ID}}" aria-label="Restore {{displayName .Event.Label}} evidence to this activity">Restore</button></div>{{end}}</div></section>{{end}}` +
-			`</aside></div></div>`))
+	})
 	if err := tmpl.Execute(w, activity); err != nil {
 		slog.Error("activity detail template error", "error", err)
 	}
@@ -415,27 +400,7 @@ func (s *Server) handleEventsGalleryPartial(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	tmpl := template.Must(template.New("gallery").Funcs(s.funcMap).Parse(
-		`{{range .}}` +
-			`<a class="event-card" href="/event.html?id={{.ID}}" role="listitem" data-event-time="{{.Timestamp.UTC.Format "2006-01-02T15:04:05Z"}}" data-event-category="{{.Category}}">` +
-			`<div class="event-thumb">` +
-			`{{if .SnapshotAvailable}}<img src="/api/events/{{.ID}}/snapshot" alt="{{.Label}} detected by {{displayName .CameraName}}" loading="lazy">` +
-			`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="{{.Label}} detected by {{displayName .CameraName}}" loading="lazy">{{end}}` +
-			`{{if eq .Kind "doorbell"}}{{if .AnsweredAt.IsZero}}<span class="event-missed-badge">missed</span>{{else}}<span class="event-answered-badge" title="answered by {{.AnsweredBy}}">answered</span>{{end}}{{end}}` +
-			`</div>` +
-			`<div class="event-card-footer">` +
-			`<div class="event-card-heading"><span class="event-card-title">{{if .SubLabel}}{{.SubLabel}}{{else}}{{displayName .Label}}{{end}}</span><span class="event-time">{{timeAgo .Timestamp}}</span></div>` +
-			`<div class="event-card-context">` +
-			`<span class="event-camera-name">{{displayName .CameraName}}</span>` +
-			`{{if .SubLabel}}<span>{{displayName .Label}}</span>{{end}}` +
-			`{{with eventDuration .}}<span>{{.}}</span>{{end}}` +
-			`{{if eq .Category "detection"}}<span class="event-tier">Low priority</span>{{end}}` +
-			`{{if lt .Score 0.7}}<span class="event-confidence{{if lt .Score 0.5}} low{{end}}" title="Detection confidence">{{scorePercent .Score}}</span>{{end}}` +
-			`</div>` +
-			`</div>` +
-			`</a>{{end}}`))
-
-	if err := tmpl.Execute(w, events); err != nil {
+	if err := eventsGalleryTmpl.Execute(w, events); err != nil {
 		slog.Error("template error", "error", err)
 	}
 
@@ -541,88 +506,8 @@ func (s *Server) handleEventDetailPartial(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	tmpl := template.Must(template.New("detail").Funcs(s.funcMap).Parse(
-		`<div class="event-detail-root" data-event-camera="{{.CameraName}}" data-event-label="{{.Label}}" data-event-time="{{.Timestamp.UTC.Format "2006-01-02 15:04:05 UTC"}}"></div>` +
-			`<div class="page-header"><h1>{{displayName .Label}} Detection</h1></div>` +
-			`<div class="event-detail-layout">` +
-			`<div class="event-media">` +
-			`{{if .SnapshotAvailable}}<div class="detection-overlay-wrap" id="detection-wrap">` +
-			`<img id="event-snapshot" src="/api/events/{{.ID}}/snapshot" alt="event snapshot" ` +
-			`data-box-x1="{{index .Box 0}}" data-box-y1="{{index .Box 1}}" ` +
-			`data-box-x2="{{index .Box 2}}" data-box-y2="{{index .Box 3}}" ` +
-			`data-label="{{.Label}}" data-sub-label="{{.SubLabel}}" ` +
-			`data-score="{{scorePercent .Score}}" data-event-id="{{.ID}}" ` +
-			`data-render-detection-overlay="true">` +
-			`</div>` +
-			`{{else}}<img id="event-snapshot" src="/api/cameras/{{.CameraName}}/snapshot" alt="event">{{end}}` +
-			// Prefer the pre-generated per-event clip (a plain MP4 file)
-			// over the HLS re-segmenter path when both are available. The
-			// clip plays natively in every browser including iOS Safari;
-			// the HLS path splits multi-track moofs into single-track for
-			// MSE/hls.js compatibility, which iOS's native HLS decoder
-			// rejects with a silent black-frame failure. For longer
-			// scrub-through-history viewing, the sidebar still offers
-			// "View in Recording" which opens the camera playback page.
-			`{{if .ClipAvailable}}<button type="button" class="play-overlay" id="play-overlay" aria-label="Play clip" data-action-click="playEventClip(this, '{{.ID}}')">` +
-			`<svg viewBox="0 0 24 24" fill="white" width="64" height="64" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>` +
-			`</button>{{else if .HasRecording}}<button type="button" class="play-overlay" id="play-overlay" aria-label="Play recording" data-action-click="playEventRecording(this, '{{.CameraName}}', '{{.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}')">` +
-			`<svg viewBox="0 0 24 24" fill="white" width="64" height="64" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>` +
-			`</button>{{end}}` +
-			`</div>` +
-			`<div class="event-sidebar">` +
-			`<div class="event-nav">` +
-			`{{if .PrevID}}<a href="{{.PrevURL}}" class="btn" data-prev-id="{{.PrevID}}">&#8592; Previous</a>{{else}}<button class="btn" disabled>&#8592; Previous</button>{{end}}` +
-			`{{if .NextID}}<a href="{{.NextURL}}" class="btn" data-next-id="{{.NextID}}">Next &#8594;</a>{{else}}<button class="btn" disabled>Next &#8594;</button>{{end}}` +
-			`</div>` +
-			`<div class="meta-card">` +
-			`<div class="meta-card-header">Details</div>` +
-			`<div class="meta-row"><span class="key">Camera</span><span class="val">{{.CameraName}}</span></div>` +
-			`<div class="meta-row"><span class="key">Label</span><span class="val">{{.Label}}</span></div>` +
-			`{{if .SubLabel}}<div class="meta-row"><span class="key">Identity</span><span class="val">{{.SubLabel}}</span></div>{{end}}` +
-			`<div class="meta-row"><span class="key">Confidence</span><span class="val">{{scorePercent .Score}}</span></div>` +
-			`<div class="meta-row"><span class="key">Time</span><span class="val">{{formatTime .Timestamp}} <span class="text-tertiary">({{timeAgo .Timestamp}})</span></span></div>` +
-			`{{if .Duration}}<div class="meta-row"><span class="key">Duration</span><span class="val">{{.Duration}}</span></div>{{end}}` +
-			`<div class="meta-row"><span class="key">Event ID</span><span class="val mono">{{.ID}}</span></div>` +
-			`</div>` +
-			`<div class="meta-card">` +
-			`<div class="meta-card-header">Downloads</div>` +
-			`{{if .ClipAvailable}}<a href="/api/events/{{.ID}}/clip?download=1" download class="download-row">` +
-			`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>` +
-			` Download Clip</a>{{end}}` +
-			`{{if .SnapshotAvailable}}<a href="/api/events/{{.ID}}/snapshot?download=1" download class="download-row">` +
-			`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>` +
-			` Download Snapshot</a>{{end}}` +
-			`{{if not .ClipAvailable}}{{if not .SnapshotAvailable}}<div class="download-row disabled">No media available</div>{{end}}{{end}}` +
-			`{{if .HasRecording}}<a href="{{.RecordingURL}}" class="download-row">` +
-			`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>` +
-			` View in Recording</a>{{end}}` +
-			`</div>` +
-			`{{if .Sightings}}<div class="meta-card">` +
-			`<div class="meta-card-header">Recognized</div>` +
-			`{{range .Sightings}}<div class="meta-row"><span class="key">{{.ObjectName}}</span><span class="val">{{scorePercent (toFloat32 .Similarity)}}</span></div>{{end}}` +
-			`</div>{{end}}` +
-			`{{if .SnapshotAvailable}}<div class="meta-card">` +
-			`{{if .SubLabel}}<div class="meta-card-header">Tracked</div>` +
-			`<div class="tracked-row">` +
-			`<img src="/api/events/{{.ID}}/detection-crop" alt="detection" class="detect-crop-thumb detect-crop-thumb--tracked">` +
-			`<span class="tracked-name">{{.SubLabel}}</span>` +
-			`</div>` +
-			`{{else}}<div class="meta-card-header">Identify</div>` +
-			`<div class="identify-row">` +
-			`<img src="/api/events/{{.ID}}/detection-crop" alt="detection" class="detect-crop-thumb detect-crop-thumb--identify">` +
-			`<label for="identify-search" class="sr-only">Search or add {{.Label}} identity</label>` +
-			`<input type="text" id="identify-search" class="person-name-input" placeholder="Search or add new {{.Label}}..." ` +
-			`data-action-input="filterIdentifyResults(this.value)" ` +
-			`data-identify-enter-id="{{.ID}}" data-identify-enter-label="{{.Label}}">` +
-			`</div>` +
-			`<div id="identify-grid" data-event-id="{{.ID}}" data-label="{{.Label}}"></div>` +
-			`{{end}}` +
-			`</div>{{end}}` +
-			`</div>` +
-			`</div>`))
-
 	w.Header().Set("Content-Type", "text/html")
-	if err := tmpl.Execute(w, data); err != nil {
+	if err := eventDetailTmpl.Execute(w, data); err != nil {
 		slog.Error("template error", "error", err)
 	}
 }
@@ -643,12 +528,8 @@ func (s *Server) handleSystemStatusPartial(w http.ResponseWriter, _ *http.Reques
 
 	data := topnavData{Total: len(statuses), Online: onlineCount}
 
-	tmpl := template.Must(template.New("sysstatus").Parse(
-		`<span class="topnav-stat"><span class="value">{{.Total}}</span> cameras</span>` +
-			`<span class="topnav-stat"><span class="value green">{{.Online}}</span> online</span>`))
-
 	w.Header().Set("Content-Type", "text/html")
-	if err := tmpl.Execute(w, data); err != nil {
+	if err := systemStatusTmpl.Execute(w, data); err != nil {
 		slog.Error("template error", "error", err)
 	}
 }
@@ -741,10 +622,8 @@ func (s *Server) handleSystemPartial(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	tmpl := template.Must(template.New("system").Funcs(s.funcMap).Parse(systemPartialTemplate))
-
 	w.Header().Set("Content-Type", "text/html")
-	if err := tmpl.Execute(w, data); err != nil {
+	if err := systemTmpl.Execute(w, data); err != nil {
 		slog.Error("template error", "error", err)
 	}
 }

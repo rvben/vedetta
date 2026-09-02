@@ -290,10 +290,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/auth/change-password:
+  /api/auth/password:
     post:
       operationId: changePassword
       summary: Change the current user's password
+      description: >
+        Requires the admin scope. This is the only password route; the former
+        /api/auth/change-password alias was undocumented by the scope policy and
+        so was reachable with a plain api:write token.
       tags: [auth]
       requestBody:
         required: true

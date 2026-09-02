@@ -243,7 +243,9 @@ func TestHandleSystemPartialIncludesCodecCard(t *testing.T) {
 	}
 }
 
-func TestSetupModeOpenH264RoutesRequireToken(t *testing.T) {
+// Setup mode has no accounts yet, so these routes take the one-time setup code
+// in place of a session or token.
+func TestSetupModeOpenH264RoutesRequireSetupCode(t *testing.T) {
 	withOpenH264APITestHooks(t,
 		func() media.OpenH264Status {
 			return media.OpenH264Status{
@@ -264,8 +266,11 @@ func TestSetupModeOpenH264RoutesRequireToken(t *testing.T) {
 	db := setupTestDB(t)
 	server := NewSetupMode(config.APIConfig{Host: "127.0.0.1", Port: 0}, db, t.TempDir()+"/config.yml", make(chan struct{}))
 
-	t.Run("status and install work without auth", func(t *testing.T) {
+	code := server.setupHandler.setupCode()
+
+	t.Run("status and install work with the setup code", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/setup/codecs/openh264", nil)
+		req.Header.Set(setupCodeHeader, code)
 		w := httptest.NewRecorder()
 		server.mux.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -273,6 +278,7 @@ func TestSetupModeOpenH264RoutesRequireToken(t *testing.T) {
 		}
 
 		req = httptest.NewRequest(http.MethodPost, "/api/setup/codecs/openh264/install", nil)
+		req.Header.Set(setupCodeHeader, code)
 		w = httptest.NewRecorder()
 		server.mux.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {

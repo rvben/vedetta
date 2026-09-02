@@ -922,24 +922,95 @@ func (p *Principal) Allows(method, path string) bool {
 	return p.HasAnyScope("api:write", "api:*", "*")
 }
 
-// isAdminPath reports whether method+path is a configuration-mutation endpoint
-// gated behind the admin scope. Only unsafe methods qualify; GETs on the same
-// paths remain ordinary reads.
+// isAdminPath reports whether method+path needs the admin scope. Every mutating
+// request does, unless the route is named in nonAdminWrites. Only unsafe methods
+// qualify; GETs on the same paths remain ordinary reads.
+//
+// The default is deny so that a route added tomorrow is admin-only until
+// somebody decides otherwise. The route-scope test in internal/api walks the
+// server's whole route list against this function, so a new POST/PUT/PATCH/
+// DELETE route fails the build rather than shipping open.
 func isAdminPath(method, path string) bool {
 	if isSafeMethod(method) {
 		return false
 	}
-	switch {
-	case path == "/api/cameras/manage" || strings.HasPrefix(path, "/api/cameras/manage/"):
-		return true
-	case strings.HasPrefix(path, "/api/settings/") && method == http.MethodPut:
-		return true
-	case path == "/api/system/codecs/openh264/install":
-		return true
-	case path == "/api/auth/password":
-		return true
+	return !isNonAdminWrite(method, path)
+}
+
+// nonAdminWrites are the mutating routes an ordinary api:write token may call:
+// each one neither rewrites server configuration nor destroys recorded data.
+// A "*" segment matches exactly one path segment.
+//
+// The entries are deliberate downgrades from the admin default. Deletions,
+// settings writes, camera lifecycle, zone edits and library-wide reprocessing
+// are all absent on purpose.
+var nonAdminWrites = []struct{ method, path string }{
+	// Ending your own session.
+	{http.MethodPost, "/api/auth/logout"},
+
+	// Live media and camera control: nothing stored changes.
+	{http.MethodPost, "/api/cameras/*/webrtc/offer"},
+	{http.MethodPost, "/api/cameras/*/talkback/offer"},
+	{http.MethodPost, "/api/cameras/*/ptz"},
+	{http.MethodPost, "/api/cameras/*/doorbell"},
+	{http.MethodPost, "/api/cameras/*/doorbell/*/answer"},
+
+	// Curating what the recorder already captured: labels, identities, crops.
+	{http.MethodPost, "/api/activities/*/evidence/*/exclude"},
+	{http.MethodPost, "/api/activities/*/evidence/*/restore"},
+	{http.MethodPost, "/api/events/*/assign-person"},
+	{http.MethodPost, "/api/events/*/identify"},
+	{http.MethodPost, "/api/events/*/track-person"},
+	{http.MethodPost, "/api/events/*/clip"},
+	{http.MethodPut, "/api/faces/*/assign"},
+	{http.MethodPost, "/api/faces/*/ignore"},
+	{http.MethodPost, "/api/objects"},
+	{http.MethodPut, "/api/objects/*"},
+	{http.MethodPost, "/api/objects/*/references"},
+	{http.MethodPost, "/api/objects/*/thumbnail"},
+	{http.MethodPost, "/api/cameras/*/objects"},
+	{http.MethodPut, "/api/people/*"},
+
+	// Per-client self service and connectivity checks.
+	{http.MethodPost, "/api/push/subscriptions"},
+	{http.MethodDelete, "/api/push/subscriptions/*"},
+	{http.MethodPut, "/api/push/prefs"},
+	{http.MethodPost, "/api/push/test"},
+	{http.MethodPost, "/api/settings/mqtt/test"},
+	{http.MethodPost, "/api/cameras/test-rtsp"},
+	{http.MethodPost, "/api/updates/dismiss"},
+}
+
+func isNonAdminWrite(method, path string) bool {
+	for _, allowed := range nonAdminWrites {
+		if allowed.method == method && segmentsMatch(allowed.path, path) {
+			return true
+		}
 	}
 	return false
+}
+
+// segmentsMatch compares a route pattern with a concrete path segment by
+// segment. "*" stands for exactly one non-empty segment, so a pattern can never
+// match a longer or shorter path than it describes.
+func segmentsMatch(pattern, path string) bool {
+	pat := strings.Split(strings.Trim(pattern, "/"), "/")
+	got := strings.Split(strings.Trim(path, "/"), "/")
+	if len(pat) != len(got) {
+		return false
+	}
+	for i := range pat {
+		if got[i] == "" {
+			return false
+		}
+		if pat[i] == "*" {
+			continue
+		}
+		if pat[i] != got[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func IsLoopback(addr string) bool {

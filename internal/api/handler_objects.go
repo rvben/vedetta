@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"image"
+	"io/fs"
 	"log/slog"
 	"math"
 	"net/http"
@@ -270,12 +272,22 @@ func (s *Server) DeleteObject(w http.ResponseWriter, r *http.Request, id int64) 
 		return
 	}
 
-	if obj.CropPath != "" {
-		os.Remove(obj.CropPath)
-	}
+	// Drop the row first. The row is what the UI reads, so if the two steps
+	// cannot both succeed, an orphaned crop file costs disk space while a
+	// surviving row pointing at a deleted file breaks every page that renders
+	// the object.
 	if err := s.db.DeleteKnownObject(id); err != nil {
 		s.serverError(w, r, err)
 		return
+	}
+	if obj.CropPath != "" {
+		// A crop that is already gone is the outcome this asked for. Anything
+		// else leaves a file nothing references, which no later pass will
+		// collect, so report it rather than failing a delete that has already
+		// taken effect.
+		if err := os.Remove(obj.CropPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("failed to remove object crop", "object", id, "path", obj.CropPath, "error", err)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

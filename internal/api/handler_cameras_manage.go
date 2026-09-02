@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -83,6 +84,10 @@ func (s *Server) AddCameraManage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := config.AppendCamera(s.configPath, cam, ""); err != nil {
+		if errors.Is(err, config.ErrDuplicateCameraName) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 		slog.Error("failed to add camera", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save camera"})
 		return
@@ -147,6 +152,10 @@ func (s *Server) UpdateCameraManage(w http.ResponseWriter, r *http.Request) {
 	cam.Record = req.Record
 
 	if err := config.UpdateCamera(s.configPath, index, cam); err != nil {
+		if errors.Is(err, config.ErrDuplicateCameraName) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 		slog.Error("failed to update camera", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save camera"})
 		return

@@ -19,6 +19,7 @@ import (
 	"github.com/rvben/vedetta/internal/auth"
 	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/config"
+	"github.com/rvben/vedetta/internal/netguard"
 	"github.com/rvben/vedetta/internal/rtsp"
 	"github.com/rvben/vedetta/internal/storage"
 )
@@ -31,6 +32,10 @@ type SetupHandler struct {
 	mu         sync.Mutex
 	thumbnails map[string][]byte // IP -> JPEG
 	completed  bool
+	// code is the one-time setup code. It is set by enableSetupCode, which only
+	// the setup-mode server calls; an empty code means the guard refuses every
+	// request rather than falling open. See setup_code.go.
+	code string
 }
 
 // NewSetupHandler creates a handler for the setup/onboarding API.
@@ -200,9 +205,8 @@ func (h *SetupHandler) HandleProbe(w http.ResponseWriter, r *http.Request) {
 
 	var results []probeResult
 	for _, cam := range req.Cameras {
-		addr, err := netip.ParseAddr(cam.IP)
-		if err != nil || !setupProbeAddrAllowed(addr) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "probe target must be a private, loopback, or link-local IP address"})
+		if err := checkDiscoveryTarget(r.Context(), cam.IP); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		port := cam.Port
@@ -272,8 +276,7 @@ func (h *SetupHandler) HandleProbe(w http.ResponseWriter, r *http.Request) {
 // HandleThumbnail serves a cached camera thumbnail JPEG.
 func (h *SetupHandler) HandleThumbnail(w http.ResponseWriter, r *http.Request) {
 	ip := r.PathValue("ip")
-	addr, err := netip.ParseAddr(ip)
-	if err != nil || !setupProbeAddrAllowed(addr) {
+	if err := checkDiscoveryTarget(r.Context(), ip); err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -396,11 +399,38 @@ func (h *SetupHandler) AdminConfigured() bool {
 	return false
 }
 
-func setupProbeAddrAllowed(addr netip.Addr) bool {
-	return addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast()
+// checkDiscoveryTarget decides whether a discovery target may be contacted. The
+// decision is netguard's and only netguard's, so the setup wizard cannot admit
+// an address the RTSP and MQTT test endpoints refuse: the wizard used to accept
+// link-local, which is the cloud metadata range netguard exists to block.
+//
+// The target still has to be an IP literal. That is a shape check on a field the
+// discovery UI fills with a scanned address, not a second admission policy, and
+// it keeps CheckHost's answer about a concrete address from being invalidated by
+// a later name lookup.
+func checkDiscoveryTarget(ctx context.Context, host string) error {
+	if _, err := netip.ParseAddr(host); err != nil {
+		return fmt.Errorf("probe target must be an IP address")
+	}
+	return netguard.CheckHost(ctx, host)
 }
 
 // HandleTestRTSP dials an RTSP URL during setup and reports stream capabilities.
+// HandleVerifySetupCode does nothing beyond having been reached: requireSetupCode
+// is the endpoint. A caller that gets here has proven it holds the code this
+// start issued, and the guard has stored that code in a cookie, so the wizard
+// can trade a typed code for an authorized session without creating an account
+// at the same time.
+//
+// That separation is what makes setup survivable across a restart. Restarting
+// part-way through issues a new code but leaves the admin account in place, and
+// creating the account is the only other way to present a code, which now
+// answers 409. Without this endpoint the operator's only route back into the
+// wizard is deleting the database.
+func (h *SetupHandler) HandleVerifySetupCode(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *SetupHandler) HandleTestRTSP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	defer r.Body.Close()

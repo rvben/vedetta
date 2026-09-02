@@ -252,6 +252,13 @@ func (s *Server) UpdateRecordingSettings(w http.ResponseWriter, r *http.Request)
 	rec.PostCapture = postCap
 	rec.MaxStorage = req.MaxStorage
 
+	// The loader validates these values at startup. Running the same check here
+	// keeps the form from writing a config file the next start refuses to load.
+	if err := config.ValidateRecording(rec); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
 	if err := config.UpdateRecording(s.configPath, rec); err != nil {
 		slog.Error("failed to write recording config", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save config"})

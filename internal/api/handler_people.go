@@ -39,11 +39,21 @@ func (s *Server) ListPeople(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]personResponse, 0, len(people))
 	for _, p := range people {
-		faces, _ := s.db.ListFacesByPerson(p.ID, 0)
+		// Faces are loaded in full because the thumbnail is the
+		// highest-confidence one; the appearance count is a COUNT so the page
+		// never loads every event a person appears in just to measure it.
+		faces, err := s.db.ListFacesByPerson(p.ID, 0)
+		if err != nil {
+			s.serverError(w, r, err)
+			return
+		}
 		var appearanceCount int
 		if p.Name != "" {
-			events, _ := s.db.QueryEventsFiltered(storage.EventFilters{Object: p.Name}, 0, 0)
-			appearanceCount = len(events)
+			appearanceCount, err = s.db.CountEventsFiltered(storage.EventFilters{Object: p.Name})
+			if err != nil {
+				s.serverError(w, r, err)
+				return
+			}
 		}
 		// Pick highest-confidence face for thumbnail
 		var bestFaceID int64
@@ -84,7 +94,11 @@ func (s *Server) GetPerson(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "person not found"})
 		return
 	}
-	faces, _ := s.db.ListFacesByPerson(id, 20)
+	faces, err := s.db.ListFacesByPerson(id, 20)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
 
 	type faceResponse struct {
 		ID         int64     `json:"id"`

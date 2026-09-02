@@ -41,7 +41,7 @@ func TestOpenAPISpecIsValid(t *testing.T) {
 		"/api/auth/login",
 		"/api/auth/logout",
 		"/api/auth/me",
-		"/api/auth/change-password",
+		"/api/auth/password",
 
 		// Tokens
 		"/api/tokens",

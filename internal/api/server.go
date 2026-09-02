@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io/fs"
 	"log/slog"
 	"mime"
@@ -92,7 +91,6 @@ type Server struct {
 	activeHandler swappableHandler
 
 	mux          *http.ServeMux
-	funcMap      template.FuncMap
 	ready        atomic.Bool
 	setupHandler *SetupHandler
 	setupMode    bool
@@ -153,46 +151,6 @@ func New(cfg config.APIConfig, authChecker *auth.Checker, db *storage.DB) *Serve
 		objectRematchPending: make(map[int64]bool),
 	}
 
-	s.funcMap = template.FuncMap{
-		"timeAgo": func(t time.Time) string {
-			d := time.Since(t)
-			switch {
-			case d < time.Minute:
-				return fmt.Sprintf("%ds ago", int(d.Seconds()))
-			case d < time.Hour:
-				return fmt.Sprintf("%dm ago", int(d.Minutes()))
-			case d < 24*time.Hour:
-				return fmt.Sprintf("%dh ago", int(d.Hours()))
-			default:
-				return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-			}
-		},
-		"scorePercent": func(s float32) string {
-			return fmt.Sprintf("%.0f%%", s*100)
-		},
-		"toFloat32": func(f float64) float32 { return float32(f) },
-		"formatTime": func(t time.Time) template.HTML {
-			iso := t.UTC().Format(time.RFC3339)
-			display := t.UTC().Format("2006-01-02 15:04:05 UTC")
-			return template.HTML(fmt.Sprintf(`<time datetime="%s">%s</time>`, iso, display))
-		},
-		"formatBytes": formatBytes,
-		"displayName": displayName,
-		"eventDuration": func(e camera.Event) string {
-			if e.EndTime.IsZero() {
-				return ""
-			}
-			d := e.EndTime.Sub(e.Timestamp)
-			if d < time.Second {
-				return ""
-			}
-			if d < time.Minute {
-				return fmt.Sprintf("%ds", int(d.Seconds()))
-			}
-			return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
-		},
-	}
-
 	s.registerRoutes()
 
 	return s
@@ -215,17 +173,35 @@ func NewSetupMode(cfg config.APIConfig, db *storage.DB, configPath string, setup
 	sh := NewSetupHandler(configPath, db, setupDone)
 	s.setupHandler = sh
 
-	s.mux.HandleFunc("POST /api/setup", sh.HandleSetup)
-	s.mux.HandleFunc("GET /api/setup/codecs/openh264", sh.HandleOpenH264Status)
-	s.mux.HandleFunc("POST /api/setup/codecs/openh264/install", sh.HandleInstallOpenH264)
-	s.mux.HandleFunc("GET /api/discover", sh.HandleDiscover)
-	s.mux.HandleFunc("POST /api/discover/probe", sh.HandleProbe)
-	s.mux.HandleFunc("GET /api/discover/thumbnail/{ip}", sh.HandleThumbnail)
-	s.mux.HandleFunc("POST /api/setup/test-rtsp", sh.HandleTestRTSP)
-	s.mux.HandleFunc("POST /api/cameras", sh.HandleAddCameras)
-	s.mux.HandleFunc("POST /api/setup/complete", sh.HandleComplete)
+	// Setup mode has no credentials to check yet, so the one-time code printed
+	// at startup is the only thing standing between an open port and a stranger
+	// creating the admin account. Everything that changes state or scans the
+	// network is behind it; only the status probe and the wizard page itself
+	// stay open, because the browser needs them before the operator can type
+	// anything.
+	sh.enableSetupCode()
+	guard := sh.requireSetupCode
+
+	s.mux.HandleFunc("POST /api/setup", guard(sh.HandleSetup))
+	s.mux.HandleFunc("GET /api/setup/codecs/openh264", guard(sh.HandleOpenH264Status))
+	s.mux.HandleFunc("POST /api/setup/codecs/openh264/install", guard(sh.HandleInstallOpenH264))
+	s.mux.HandleFunc("GET /api/discover", guard(sh.HandleDiscover))
+	s.mux.HandleFunc("POST /api/discover/probe", guard(sh.HandleProbe))
+	s.mux.HandleFunc("GET /api/discover/thumbnail/{ip}", guard(sh.HandleThumbnail))
+	s.mux.HandleFunc("POST /api/setup/test-rtsp", guard(sh.HandleTestRTSP))
+	s.mux.HandleFunc("POST /api/cameras", guard(sh.HandleAddCameras))
+	s.mux.HandleFunc("POST /api/setup/complete", guard(sh.HandleComplete))
+	s.mux.HandleFunc("POST /api/setup/verify", guard(sh.HandleVerifySetupCode))
 	s.mux.HandleFunc("GET /api/setup/status", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "setup", "admin_configured": sh.AdminConfigured()})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":           "setup",
+			"admin_configured": sh.AdminConfigured(),
+			// Whether the caller already holds this start's code decides which
+			// screen the wizard opens on. A restart part-way through setup
+			// leaves the account configured but invalidates the code, and the
+			// page has to know that to offer the field for the new one.
+			"setup_code_valid": sh.setupCodeValid(r),
+		})
 	})
 
 	// Serve setup.html as default page
@@ -314,7 +290,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/updates/check", s.CheckForUpdates)
 	s.mux.HandleFunc("POST /api/updates/dismiss", s.DismissUpdate)
 	s.mux.HandleFunc("GET /api/auth/info", s.GetAuthInfo)
-	s.mux.HandleFunc("POST /api/auth/password", s.ChangePassword)
+	// POST /api/auth/password comes from the OpenAPI spec, not from here. A
+	// hand-registered second route to the same handler is a route the scope
+	// policy does not know about.
 	s.mux.HandleFunc("GET /api/system/codecs/openh264", s.GetOpenH264Status)
 	s.mux.HandleFunc("POST /api/system/codecs/openh264/install", s.InstallOpenH264)
 
@@ -536,17 +514,15 @@ const warmReconcileInterval = 5 * time.Second
 
 // startWarmHLSReconcile keeps each running camera's live-HLS sub-stream consumer
 // warm so the first viewer (notably iOS native HLS) gets a ready playlist
-// instead of the multi-second cold start. Bounded by both the app context and
-// the HLS manager lifetime, so it stops at shutdown regardless of which startup
-// path set s.ctx (the setup-transition path runs SetSubsystems before
-// SetContext).
+// instead of the multi-second cold start. The loop is bounded by both the app
+// context and the HLS manager lifetime, so either one ending stops it.
 func (s *Server) startWarmHLSReconcile() {
 	if s.hub == nil || s.cameras == nil || s.hls == nil {
 		return
 	}
-	// s.ctx is nil in the setup-mode transition path: NewSetupMode does not set
-	// it and that path calls SetSubsystems before SetContext. Fall back to a
-	// background context; the loop still stops at shutdown via s.hls.Done().
+	// Both startup paths call SetContext before SetSubsystems, so s.ctx is set
+	// here in production. A server assembled without one (tests) still gets a
+	// loop that stops at shutdown, via s.hls.Done().
 	ctx := s.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -754,7 +730,7 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 
 		attrs := []any{
 			"method", r.Method,
-			"uri", r.URL.RequestURI(),
+			"uri", loggedRequestURI(r),
 			"status", status,
 			"remote", r.RemoteAddr,
 			"dur_ms", elapsed.Milliseconds(),
@@ -772,6 +748,33 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 		}
 		logger.Log(r.Context(), level, "http request", attrs...)
 	})
+}
+
+// loggedRequestURI is the request line with credentials taken out of the query.
+//
+// The setup code authorizes every setup endpoint, and suppliedSetupCode accepts
+// it as a query parameter so a link can carry it. Logging the request line
+// verbatim would copy that working credential into the access log, which is
+// retained long after setup is over, shipped to whatever log sink is configured,
+// and readable by anyone who can read logs.
+//
+// The prefilter is not an optimization: it keeps every ordinary request line
+// byte-for-byte as the client sent it, since re-encoding a query normalizes
+// ordering and escaping and would quietly rewrite the record of what was asked.
+func loggedRequestURI(r *http.Request) string {
+	uri := r.URL.RequestURI()
+	if !strings.Contains(uri, setupCodeQuery+"=") {
+		return uri
+	}
+	query := r.URL.Query()
+	if _, ok := query[setupCodeQuery]; !ok {
+		// A different parameter whose name merely ends in the one we redact.
+		return uri
+	}
+	query.Set(setupCodeQuery, "redacted")
+	redacted := *r.URL
+	redacted.RawQuery = query.Encode()
+	return redacted.RequestURI()
 }
 
 // requestLogLevel grades one completed request. Failure outranks everything, so

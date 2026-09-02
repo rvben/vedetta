@@ -2003,21 +2003,42 @@ func TestPerDayCameraSegmentBytes(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now().UTC()
 
+	// Every timestamp is anchored to midday so the segments a day is
+	// supposed to hold stay on that day whatever hour the suite runs at.
+	// Taking the time of day from the clock instead puts the "one hour
+	// later" segment on the next date for the hour before midnight UTC,
+	// which is a suite that fails for one hour out of every twenty-four.
+	// The newest day is yesterday, so no segment is dated in the future.
+	newest := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
+
 	// Three distinct UTC days inside the 30-day window, plus one segment
 	// well outside it. Segments are written through the production path
 	// (SaveSegment -> utc()), so start_time is stored exactly as it is in
 	// production with the modernc.org/sqlite driver.
-	twoDaysAgo := now.AddDate(0, 0, -2)
-	yesterday := now.AddDate(0, 0, -1)
-	mustSaveSegment(t, db, makeSegment("cam1", "/cam1/d2.mp4", twoDaysAgo, twoDaysAgo.Add(time.Minute), 1000))
-	mustSaveSegment(t, db, makeSegment("cam1", "/cam1/d1a.mp4", yesterday, yesterday.Add(time.Minute), 3000))
-	mustSaveSegment(t, db, makeSegment("cam1", "/cam1/d1b.mp4", yesterday.Add(time.Hour), yesterday.Add(time.Hour+time.Minute), 2000))
-	mustSaveSegment(t, db, makeSegment("cam1", "/cam1/d0.mp4", now, now.Add(time.Minute), 5000))
-	// 40 days old: outside the 30-day window, must be excluded.
-	old := now.AddDate(0, 0, -40)
+	twoDaysBefore := newest.AddDate(0, 0, -2)
+	oneDayBefore := newest.AddDate(0, 0, -1)
+	mustSaveSegment(t, db, makeSegment("cam1", "/cam1/d2.mp4", twoDaysBefore, twoDaysBefore.Add(time.Minute), 1000))
+	mustSaveSegment(t, db, makeSegment("cam1", "/cam1/d1a.mp4", oneDayBefore, oneDayBefore.Add(time.Minute), 3000))
+	mustSaveSegment(t, db, makeSegment("cam1", "/cam1/d1b.mp4", oneDayBefore.Add(time.Hour), oneDayBefore.Add(time.Hour+time.Minute), 2000))
+	mustSaveSegment(t, db, makeSegment("cam1", "/cam1/d0.mp4", newest, newest.Add(time.Minute), 5000))
+	// 40 days before the newest day: outside the 30-day window, must be excluded.
+	old := newest.AddDate(0, 0, -40)
 	mustSaveSegment(t, db, makeSegment("cam1", "/cam1/old.mp4", old, old.Add(time.Minute), 9999))
 	// Different camera, same recent day: must not leak into cam1 totals.
-	mustSaveSegment(t, db, makeSegment("cam2", "/cam2/x.mp4", now, now.Add(time.Minute), 7777))
+	mustSaveSegment(t, db, makeSegment("cam2", "/cam2/x.mp4", newest, newest.Add(time.Minute), 7777))
+
+	// The three days the query must report have to be genuinely distinct,
+	// or the row-count assertion below would pass on a single merged day.
+	for _, pair := range [][2]time.Time{{twoDaysBefore, oneDayBefore}, {oneDayBefore, newest}} {
+		if pair[0].Format("2006-01-02") == pair[1].Format("2006-01-02") {
+			t.Fatalf("test dates collapsed onto one day: %s", pair[0].Format("2006-01-02"))
+		}
+	}
+	// The excluded segment has to fall outside the window the query uses,
+	// which is measured from the moment of the call, not from newest.
+	if !old.Before(now.AddDate(0, 0, -30)) {
+		t.Fatalf("the %q segment is inside the 30-day window, so excluding it proves nothing", old.Format("2006-01-02"))
+	}
 
 	rows, err := db.PerDayCameraSegmentBytes("cam1", 30)
 	if err != nil {
@@ -2042,9 +2063,9 @@ func TestPerDayCameraSegmentBytes(t *testing.T) {
 	}
 
 	want := map[string]int64{
-		twoDaysAgo.Format("2006-01-02"): 1000,
-		yesterday.Format("2006-01-02"):  5000,
-		now.Format("2006-01-02"):        5000,
+		twoDaysBefore.Format("2006-01-02"): 1000,
+		oneDayBefore.Format("2006-01-02"):  5000,
+		newest.Format("2006-01-02"):        5000,
 	}
 	for _, r := range rows {
 		if w, ok := want[r.Date]; !ok {

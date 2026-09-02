@@ -386,6 +386,13 @@ func refTrafForWindow(frag *fragment, videoTrackID uint32) *trafEntry {
 // The index is therefore backed up to the newest preceding fragment that does
 // open on a sync sample. The cost is at most one GOP of extra lead-in, and the
 // requested window is still covered because the end bound is untouched.
+//
+// When no preceding fragment opens on a sync sample the overlapping fragment is
+// returned unchanged. Such a file has no decodable start point anywhere before
+// the window, so backing up further buys no decodability and costs the whole
+// file ahead of it. SegmentWriter will not open a file on a non-keyframe, so
+// reaching this case means the input was written by something else or was
+// truncated ahead of its first GOP.
 func firstFragmentForStart(fragments []fragment, videoTrackID uint32, timeScales map[uint32]uint32, start time.Duration) int {
 	overlap := -1
 	for i := range fragments {

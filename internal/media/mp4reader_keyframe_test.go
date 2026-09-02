@@ -175,3 +175,44 @@ func TestTrimMP4_AlignedStartKeepsTheRequestedWindow(t *testing.T) {
 		t.Errorf("trimmed clip has %d fragments, want 2: the request already started on a keyframe, so nothing should be prepended", len(fragments))
 	}
 }
+
+// A recording with no keyframe at all before the requested window is
+// undecodable wherever the clip starts, so backing up further buys nothing and
+// costs the whole file. The lower bound must stay at the overlapping fragment.
+//
+// This is not a hypothetical shape for the reader to encounter: it is what a
+// stream that stopped emitting keyframes produces once capPendingPart has
+// force-flushed partial GOPs for the whole segment. SegmentWriter will not open
+// a file on a non-keyframe, so a fragment 0 that is not a sync sample means the
+// file was written by something else or was truncated ahead of its first GOP.
+func TestTrimMP4_NoKeyframeAnywhereKeepsTheRequestedWindow(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.mp4")
+	out := filepath.Join(dir, "out.mp4")
+
+	const frameDuration = 90000
+	// No entry is a sync sample, so there is nothing to back up to.
+	writeGOPFMP4(t, in, 8, frameDuration, map[int]bool{})
+	if firstFragmentIsSync(t, in) {
+		t.Fatal("fixture is wrong: this test needs a source with no keyframe at all")
+	}
+
+	if err := TrimMP4(in, out, 6*time.Second, 2*time.Second); err != nil {
+		t.Fatalf("TrimMP4: %v", err)
+	}
+
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatalf("open out: %v", err)
+	}
+	defer f.Close()
+	_, fragments, _, err := indexFile(f)
+	if err != nil {
+		t.Fatalf("index out: %v", err)
+	}
+	// Fragments 6 and 7 cover [6s, 8s). Falling back to index 0 would copy all
+	// eight, prepending six seconds of equally undecodable video.
+	if len(fragments) != 2 {
+		t.Errorf("trimmed clip has %d fragments, want 2: with no keyframe to back up to, the window itself is the lower bound", len(fragments))
+	}
+}

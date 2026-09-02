@@ -5,20 +5,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/rvben/vedetta/internal/netguard"
 )
 
 // The setup wizard's discovery endpoints must admit exactly the addresses
-// netguard admits, because they hand the address to a dialer. A second, looser
-// predicate inside the wizard is how the cloud metadata address
+// checkDiscoveryTarget admits, because they hand the address to a dialer. A
+// second, looser predicate inside the wizard is how the cloud metadata address
 // (169.254.169.254) reaches an RTSP dial that every other endpoint refuses.
 //
-// The expectation is computed from netguard rather than hard-coded, so the two
-// cannot drift: if netguard's policy changes, this test follows it.
-func TestDiscoveryThumbnailPolicyMatchesNetguard(t *testing.T) {
+// The expectation is computed from the shared predicate rather than hard-coded,
+// so the two cannot drift: if the admission policy changes, this test follows
+// it. What the policy itself must be is asserted in TestCheckDiscoveryTarget_LocalOnly.
+func TestDiscoveryThumbnailPolicyMatchesTheSharedPredicate(t *testing.T) {
 	thumb := []byte{0xff, 0xd8, 0xff, 0xe0, 't', 'h', 'u', 'm', 'b'}
 
+	var served, refused int
 	for _, tc := range []struct{ name, ip string }{
 		{"cloud metadata", "169.254.169.254"},
 		{"ipv4 link-local", "169.254.0.1"},
@@ -38,16 +38,28 @@ func TestDiscoveryThumbnailPolicyMatchesNetguard(t *testing.T) {
 			w := httptest.NewRecorder()
 			h.HandleThumbnail(w, req)
 
-			blocked := netguard.CheckHost(context.Background(), tc.ip) != nil
-			served := w.Code == http.StatusOK
+			blocked := checkDiscoveryTarget(context.Background(), tc.ip) != nil
+			ok := w.Code == http.StatusOK
 
-			if blocked && served {
-				t.Fatalf("discovery served %s, an address netguard blocks (status=%d)", tc.ip, w.Code)
+			if blocked && ok {
+				t.Fatalf("discovery served %s, an address the shared predicate refuses (status=%d)", tc.ip, w.Code)
 			}
-			if !blocked && !served {
-				t.Fatalf("discovery refused %s, an address netguard allows (status=%d)", tc.ip, w.Code)
+			if !blocked && !ok {
+				t.Fatalf("discovery refused %s, an address the shared predicate allows (status=%d)", tc.ip, w.Code)
+			}
+			if ok {
+				served++
+			} else {
+				refused++
 			}
 		})
+	}
+
+	// Both outcomes have to occur, or a predicate that answered the same way
+	// for everything would satisfy every case above without the handler ever
+	// consulting it.
+	if served == 0 || refused == 0 {
+		t.Fatalf("the table exercised only one outcome: %d served, %d refused", served, refused)
 	}
 }
 

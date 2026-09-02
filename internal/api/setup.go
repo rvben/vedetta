@@ -399,20 +399,33 @@ func (h *SetupHandler) AdminConfigured() bool {
 	return false
 }
 
-// checkDiscoveryTarget decides whether a discovery target may be contacted. The
-// decision is netguard's and only netguard's, so the setup wizard cannot admit
-// an address the RTSP and MQTT test endpoints refuse: the wizard used to accept
-// link-local, which is the cloud metadata range netguard exists to block.
+// checkDiscoveryTarget decides whether a discovery target may be contacted.
+// Two conditions, both required. The address has to be one the local network
+// could plausibly hold, because this endpoint probes whatever the discovery UI
+// puts in front of it and a public address turns first-run setup into a port
+// scanner aimed at the internet. It then has to satisfy netguard as well, which
+// subtracts the ranges a private-address check still admits: the wizard used to
+// accept link-local, which is where the cloud metadata service lives.
 //
-// The target still has to be an IP literal. That is a shape check on a field the
-// discovery UI fills with a scanned address, not a second admission policy, and
-// it keeps CheckHost's answer about a concrete address from being invalidated by
-// a later name lookup.
+// The target must also be an IP literal. That is a shape check on a field the
+// discovery UI fills with a scanned address, not a third admission policy, and
+// it keeps the answer about a concrete address from being invalidated by a
+// later name lookup.
 func checkDiscoveryTarget(ctx context.Context, host string) error {
-	if _, err := netip.ParseAddr(host); err != nil {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
 		return fmt.Errorf("probe target must be an IP address")
 	}
-	return netguard.CheckHost(ctx, host)
+	// netguard first: it names the ranges that are dangerous rather than
+	// merely remote, so an operator who typed the metadata address is told
+	// what it is instead of being told it is not on their LAN.
+	if err := netguard.CheckHost(ctx, host); err != nil {
+		return err
+	}
+	if addr = addr.Unmap(); !addr.IsPrivate() && !addr.IsLoopback() {
+		return fmt.Errorf("probe target must be a private or loopback IP address")
+	}
+	return nil
 }
 
 // HandleTestRTSP dials an RTSP URL during setup and reports stream capabilities.

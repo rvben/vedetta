@@ -285,3 +285,85 @@ func TestRecordingConsumer_StalledCreate_SingleOutstandingAttempt(t *testing.T) 
 		t.Fatal("SegmentCreatePending() = false while a create is stalled in the kernel")
 	}
 }
+
+// A volume slow enough to overrun the queue keeps overrunning it, so the
+// discontinuity marker is raised again between every processed packet. Closing
+// the segment on each one turns a slow disk into a create/delete storm: each
+// packet finalizes a file, deletes it because it holds nothing yet, retracts
+// its DB row, and opens the next. Rotation at a gap has to be bounded.
+func TestRecordingConsumer_SustainedDrops_DoNotThrashSegments(t *testing.T) {
+	dir := t.TempDir()
+	stub := newSegmentRecorderStub()
+	rc := NewRecordingConsumer(dir, "test-cam", time.Minute, reliabilityVideoTrack(), nil, testDiskNoFloor(t), stub.save)
+	rc.SetSegmentRemovedHook(stub.delete)
+	defer rc.Close()
+
+	// Set before the first packet: processLoop only reads newWriter after a
+	// receive, so the channel send establishes happens-before.
+	var writers atomic.Int64
+	realWriter := rc.newWriter
+	rc.newWriter = func(path string, video, audio *rtsp.TrackInfo) (*SegmentWriter, error) {
+		writers.Add(1)
+		return realWriter(path, video, audio)
+	}
+
+	// Packets are dispatched inline rather than queued: a drop has to land
+	// between two processed packets for this to be a sustained overrun, and
+	// the queue would reorder that.
+	rc.dispatch(rtpMsg{pkt: h264TestPacket(1, 0, 0x65), video: true})
+	if rc.CurrentSegmentPath() == "" {
+		t.Fatal("consumer never opened a segment")
+	}
+
+	const packets = 200
+	for i := 0; i < packets; i++ {
+		// Keyframes keep arriving through the overrun, so each fresh segment
+		// takes media and becomes eligible to rotate all over again.
+		nal := byte(0x41)
+		if i%10 == 0 {
+			nal = 0x65
+		}
+		rc.noteDrop()
+		rc.dispatch(rtpMsg{pkt: h264TestPacket(uint16(2+i), uint32(3000*(i+1)), nal), video: true})
+	}
+
+	if n := rc.DroppedPackets(); n < packets {
+		t.Fatalf("DroppedPackets() = %d, want >= %d: the drops under test were not recorded", n, packets)
+	}
+	if n := writers.Load(); n > 3 {
+		t.Fatalf("%d segment writers created for %d packets after a keyframe: the discontinuity rotation is per-packet, so a slow volume churns files and DB rows", n, packets)
+	}
+	if n := len(stub.removed); n > 2 {
+		t.Fatalf("%d segments were created and deleted again: %v", n, stub.removed)
+	}
+}
+
+// A segment that has not taken its opening keyframe yet holds no media, so
+// closing it at a gap deletes an empty file and retracts the DB row written
+// when it was created, only to open an identical one. The gap is already where
+// the next segment would start; there is nothing to split.
+func TestRecordingConsumer_DropBeforeFirstKeyframe_KeepsSegment(t *testing.T) {
+	dir := t.TempDir()
+	stub := newSegmentRecorderStub()
+	rc := NewRecordingConsumer(dir, "test-cam", time.Minute, reliabilityVideoTrack(), nil, testDiskNoFloor(t), stub.save)
+	rc.SetSegmentRemovedHook(stub.delete)
+	defer rc.Close()
+
+	// A P-frame opens the file but is not written: the writer waits for a
+	// keyframe, so the segment carries no media.
+	rc.dispatch(rtpMsg{pkt: h264TestPacket(1, 0, 0x41), video: true})
+	path := rc.CurrentSegmentPath()
+	if path == "" {
+		t.Fatal("consumer never opened a segment")
+	}
+
+	rc.noteDrop()
+	rc.dispatch(rtpMsg{pkt: h264TestPacket(2, 3000, 0x41), video: true})
+
+	if got := rc.CurrentSegmentPath(); got != path {
+		t.Fatalf("segment rotated from %s to %s at a gap that arrived before the first keyframe", path, got)
+	}
+	if n := len(stub.removed); n != 0 {
+		t.Fatalf("empty segment was created and deleted again at the gap: %v", stub.removed)
+	}
+}

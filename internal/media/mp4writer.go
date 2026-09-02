@@ -365,6 +365,15 @@ func (sw *SegmentWriter) StartTime() time.Time {
 	return sw.startTime
 }
 
+// HasMedia reports whether a video sample has been accepted into the segment.
+// A writer that is still waiting for its opening keyframe holds no media, so
+// closing it would produce an empty file rather than preserve anything.
+func (sw *SegmentWriter) HasMedia() bool {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return !sw.firstSampleTime.IsZero()
+}
+
 // FlushedDuration returns the video media time that has actually reached the
 // file. It lags the writer's total whenever a flush fails, which lets a caller
 // describe a truncated segment without claiming coverage that was never

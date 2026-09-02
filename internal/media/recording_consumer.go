@@ -23,6 +23,15 @@ const diskPauseRetryInterval = 30 * time.Second
 // enough to overrun the queue overruns it thousands of times a minute.
 const dropLogInterval = time.Minute
 
+// dropRotateInterval bounds how often a packet-drop gap may rotate the segment.
+// The same slow volume that overruns the queue keeps overrunning it, so the
+// discontinuity marker is raised again between consecutive packets; rotating on
+// each one would create and immediately delete a segment (and its DB row) per
+// packet, which costs far more than the hole it is trying to isolate. Beyond
+// the first rotation the stream is understood to be degraded, and the drop
+// counter is what reports it.
+const dropRotateInterval = 5 * time.Second
+
 // segmentWriterCreateTimeout bounds segment-file creation. A stalled storage
 // volume makes os.Create block forever in the kernel; without this bound the
 // single processLoop goroutine wedges under rc.mu and recording never
@@ -88,6 +97,8 @@ type RecordingConsumer struct {
 	discontinuous atomic.Bool
 	// lastDropLog is the unix nano timestamp of the last drop warning.
 	lastDropLog atomic.Int64
+	// lastDropRotate is when a drop last rotated the segment. Guarded by mu.
+	lastDropRotate time.Time
 
 	mu              sync.Mutex
 	writer          *SegmentWriter
@@ -276,21 +287,36 @@ func (rc *RecordingConsumer) dispatch(msg rtpMsg) {
 		rc.handlePaused()
 		return
 	}
-	if rc.discontinuous.Swap(false) && rc.writer != nil {
-		// Packets were dropped while this segment was open. Close it here so
-		// the file ends at the last frame that was actually written and the
-		// next one starts from a keyframe, rather than splicing post-gap
-		// frames onto a reference frame they were not coded against.
-		slog.Warn("closing segment at a packet-drop discontinuity",
-			"camera", rc.camera, "path", rc.segPath,
-			"dropped_total", rc.droppedPackets.Load())
-		rc.closeCurrentSegment()
+	if rc.discontinuous.Swap(false) {
+		rc.rotateAtDiscontinuity()
 	}
 	if msg.video {
 		rc.processVideo(msg.pkt)
 	} else {
 		rc.processAudio(msg.pkt)
 	}
+}
+
+// rotateAtDiscontinuity closes the open segment at a packet-drop gap so the
+// file ends at the last frame actually written and the next one starts from a
+// keyframe, rather than splicing post-gap frames onto a reference frame they
+// were not coded against. Two conditions bound it, because the marker is
+// raised once per dropped packet and cleared once per processed packet: a
+// segment holding no media yet has nothing to splice onto and is already where
+// the next one would start, and beyond dropRotateInterval the rotation buys
+// less than the churn it costs. Called with rc.mu held.
+func (rc *RecordingConsumer) rotateAtDiscontinuity() {
+	if rc.writer == nil || !rc.writer.HasMedia() {
+		return
+	}
+	if !rc.lastDropRotate.IsZero() && time.Since(rc.lastDropRotate) < dropRotateInterval {
+		return
+	}
+	rc.lastDropRotate = time.Now()
+	slog.Warn("closing segment at a packet-drop discontinuity",
+		"camera", rc.camera, "path", rc.segPath,
+		"dropped_total", rc.droppedPackets.Load())
+	rc.closeCurrentSegment()
 }
 
 // discardWriterAfterPanic drops the current segment writer after a panic so a

@@ -669,7 +669,7 @@ func (m *MSEManager) getOrCreateConsumer(cameraName, rtspURL string) *mseConsume
 
 	source := m.hub.GetOrCreate(rtspURL)
 	if c, ok := m.consumers[rtspURL]; ok {
-		if c.isAttachedTo(source) {
+		if c.isAttachedTo(source, c) {
 			return c
 		}
 		c.detachFromSource(c)

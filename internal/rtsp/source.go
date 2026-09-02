@@ -259,6 +259,21 @@ func (s *Source) RemoveConsumer(c Consumer) {
 	}
 }
 
+// HasConsumer reports whether c is currently registered. A consumer can be
+// removed without its owner asking: a panic inside a callback detaches it (see
+// deliver), so the owner has to be able to ask the source rather than trust its
+// own record of the attachment.
+func (s *Source) HasConsumer(c Consumer) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, existing := range s.consumers {
+		if existing == c {
+			return true
+		}
+	}
+	return false
+}
+
 // ConsumerCount returns the number of active consumers.
 func (s *Source) ConsumerCount() int {
 	s.mu.RLock()

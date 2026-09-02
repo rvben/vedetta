@@ -10,8 +10,14 @@ type sourceAttachment struct {
 	source *rtsp.Source
 }
 
-func (a *sourceAttachment) isAttachedTo(source *rtsp.Source) bool {
-	return a.source == source
+// isAttachedTo reports whether consumer is joined to source through this
+// attachment. Both halves have to agree: the attachment records which Source
+// was joined, and the Source is asked whether the registration is still there.
+// A consumer that panics is detached by the Source itself, and an owner that
+// only consulted its own record would keep handing out a consumer that can
+// never receive another packet.
+func (a *sourceAttachment) isAttachedTo(source *rtsp.Source, consumer rtsp.Consumer) bool {
+	return a.source != nil && a.source == source && source.HasConsumer(consumer)
 }
 
 func (a *sourceAttachment) attachToSource(source *rtsp.Source, consumer rtsp.Consumer) {

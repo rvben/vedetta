@@ -649,7 +649,7 @@ func (m *HLSManager) getOrCreate(rtspURL string) *hlsConsumer {
 func (m *HLSManager) createOrCurrentLocked(rtspURL string) *hlsConsumer {
 	source := m.hub.GetOrCreate(rtspURL)
 	if c, ok := m.consumers[rtspURL]; ok {
-		if c.isAttachedTo(source) {
+		if c.isAttachedTo(source, c) {
 			c.touch()
 			return c
 		}
@@ -698,7 +698,7 @@ func (m *HLSManager) SetWarmURLs(desired []string) {
 	// Add new, or refresh those whose source was recreated.
 	for u := range want {
 		if cancel, warm := m.warm[u]; warm {
-			if c, ok := m.consumers[u]; ok && !c.isAttachedTo(m.hub.Get(u)) {
+			if c, ok := m.consumers[u]; ok && !c.isAttachedTo(m.hub.Get(u), c) {
 				cancel()
 				m.startWarmLocked(u)
 			}

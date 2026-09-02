@@ -31,12 +31,19 @@ type cameraStream struct {
 	stream   *gortsplib.ServerStream
 }
 
+// rtpStreamWriter is the part of gortsplib.ServerStream the consumer uses. It
+// is an interface so a test can observe the packets that are actually published
+// rather than reconstruct them.
+type rtpStreamWriter interface {
+	WritePacketRTP(*description.Media, *rtp.Packet) error
+}
+
 // rtspServerConsumer implements rtsp.Consumer and writes RTP into a gortsplib ServerStream.
 // Video packets are depacketized and re-packetized to ensure proper RTP sizing,
 // since some cameras (Tapo C200) send oversized RTP packets over TCP that exceed
 // gortsplib's server-side MaxPacketSize (1472 bytes).
 type rtspServerConsumer struct {
-	stream     *gortsplib.ServerStream
+	stream     rtpStreamWriter
 	videoMedia *description.Media
 	audioMedia *description.Media
 	videoPT    uint8 // expected payload type for video
@@ -49,12 +56,18 @@ type rtspServerConsumer struct {
 }
 
 func (c *rtspServerConsumer) writeRTP(media *description.Media, pkt *rtp.Packet, expectedPT uint8) {
-	// Rewrite payload type if upstream differs from what we declared in our SDP.
-	if pkt.PayloadType != expectedPT {
-		clone := *pkt
-		clone.PayloadType = expectedPT
-		pkt = &clone
-	}
+	// Always write from a copy. gortsplib stamps its own SSRC into the packet it
+	// is handed, and rtsp.Source hands every consumer one shared clone that the
+	// recorder, the detector and the GOP cache read from their own goroutines,
+	// so writing into it is both a data race and a corruption of the cached GOP.
+	// The copy also carries the payload type this server declared in its SDP,
+	// which can differ from what the camera sent.
+	//
+	// A shallow copy suffices: gortsplib marshals the packet into its own buffer
+	// and mutates nothing but the header fields this copy already owns.
+	clone := *pkt
+	clone.PayloadType = expectedPT
+	pkt = &clone
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -111,8 +124,10 @@ func (c *rtspServerConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	}
 
 	for _, outPkt := range pkts {
-		outPkt.PayloadType = c.videoPT
-		c.stream.WritePacketRTP(c.videoMedia, outPkt)
+		// Through writeRTP so a panic inside gortsplib is contained here. The
+		// RTSP source recovers consumer panics too, but by detaching the
+		// consumer, which would silence the republished stream permanently.
+		c.writeRTP(c.videoMedia, outPkt, c.videoPT)
 	}
 }
 

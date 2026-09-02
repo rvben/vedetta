@@ -1125,7 +1125,7 @@ func (sm *StreamManager) getOrCreateConsumer(cameraName, rtspURL string) *webrtc
 
 	source := sm.hub.GetOrCreate(rtspURL)
 	if c, ok := sm.consumers[rtspURL]; ok {
-		if c.isAttachedTo(source) {
+		if c.isAttachedTo(source, c) {
 			// Fill cameraName if the consumer was created without one (belt-and-suspenders).
 			if c.cameraName == "" {
 				c.cameraName = cameraName

@@ -20,6 +20,25 @@ jobs:
 
       - run: make check
 
+  # Dependency vulnerability scan. A separate job on purpose: its verdict turns
+  # on advisories published upstream rather than on anything in this tree, so a
+  # newly disclosed CVE must be able to report itself without blocking a
+  # release. It is absent from the release job's needs for that reason. A
+  # finding here is real and worth a dependency bump, it just is not a reason
+  # to refuse to publish code that was already written.
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: make vulncheck-install
+
+      - run: make vulncheck
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -78,10 +97,21 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # Refuse to publish a build that cannot name itself. This runs before
+      # anything is pushed, so a missing -X flag stops the release instead of
+      # shipping an image and binaries that report the wrong version and nag
+      # every user about an update they already have.
+      - run: make verify-version VERSION=${{ github.ref_name }}
+
+      # VERSION is the tag being released. Passing it explicitly rather than
+      # letting the image derive one keeps a shallow runner checkout from
+      # publishing an image that calls itself "dev".
       - uses: docker/build-push-action@v6
         with:
           push: true
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/rvben/vedetta:${{ github.ref_name }}
             ghcr.io/rvben/vedetta:latest
@@ -94,20 +124,19 @@ jobs:
           push: true
           file: Dockerfile.hwaccel
           platforms: linux/amd64
+          build-args: |
+            VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/rvben/vedetta:${{ github.ref_name }}-hwaccel
             ghcr.io/rvben/vedetta:hwaccel
 
-      - name: Build release binaries
-        run: |
-          GOOS=linux GOARCH=amd64 go build -o vedetta-linux-amd64 ./cmd/vedetta
-          GOOS=linux GOARCH=arm64 go build -o vedetta-linux-arm64 ./cmd/vedetta
+      - run: make build-release VERSION=${{ github.ref_name }}
 
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            vedetta-linux-amd64
-            vedetta-linux-arm64
+            build/vedetta-linux-amd64
+            build/vedetta-linux-arm64
           generate_release_notes: true
 
       - uses: actions/setup-python@v5

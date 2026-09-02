@@ -23,7 +23,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 go build -tags hwaccel -o /vedetta ./cmd/vedetta
+
+# The version the image reports. See the note in Dockerfile.
+ARG VERSION=dev
+RUN CGO_ENABLED=1 go build -tags hwaccel -ldflags "-X main.Version=${VERSION}" -o /vedetta ./cmd/vedetta
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -53,6 +56,10 @@ WORKDIR /data
 EXPOSE 5050
 
 VOLUME ["/data", "/config"]
+
+# See the note in Dockerfile.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["vedetta", "healthcheck", "-config", "/config/config.yml"]
 
 ENTRYPOINT ["vedetta"]
 CMD ["-config", "/config/config.yml"]

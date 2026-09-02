@@ -1,0 +1,42 @@
+version: 2
+
+updates:
+  # Go modules. `make check` runs govulncheck, so a security bump lands with
+  # proof that the vulnerability it fixes is no longer reachable. Minor and
+  # patch bumps arrive as one grouped pull request; a major bump arrives on its
+  # own because it is an API change that needs reading.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # GitHub Actions used by the workflows.
+  #
+  # Actions that only run in the release job (docker login and build-push, the
+  # release publisher, the Python setup for PyPI) are never exercised by a
+  # normal CI run, so a bump to one of them passes every check and can still
+  # fail after the tag is pushed. Review those against the action's release
+  # notes before merging rather than trusting a green pipeline.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: ci

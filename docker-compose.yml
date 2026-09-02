@@ -19,12 +19,17 @@ services:
     environment:
       - TZ=${TZ:-UTC}
 
+    # The binary probes itself. The runtime image ships no wget or curl, and
+    # /api/health requires authentication; /api/health/live is the endpoint
+    # that answers unauthenticated and before the readiness gate opens. The
+    # subcommand reads the same config as the server, so a non-default
+    # api.port or TLS setting is followed rather than assumed.
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5050/api/health"]
+      test: ["CMD", "vedetta", "healthcheck", "-config", "/config/config.yml"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 60s
 
 volumes:
   vedetta-data:

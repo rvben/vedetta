@@ -5,10 +5,14 @@ Run this once before merging PWA-related changes, and once after any change to
 
 ## Setup
 
-1. On the development Mac: `make deploy` to push the latest binary to mac-mini.
+1. On the development Mac: `make deploy` to push the latest binary to the
+   deployment host (`DEPLOY_HOST` in your `Makefile.local`, referred to below as
+   `$HOST`).
 2. On an iPhone running iOS 16.4 or later: open Safari and navigate to
-   `https://vedetta.am8.nl`.
-3. Log in. The Remember-me checkbox is checked by default — keep it checked.
+   the HTTPS URL your Vedetta instance is served on, referred to below as
+   `$BASE_URL`. Push notifications need a secure context, so plain HTTP over an
+   IP address will not work.
+3. Log in. The Remember-me checkbox is checked by default, so keep it checked.
    Without it, sessions expire after 30 minutes and notification thumbnails /
    deep links will silently 401.
 4. Tap Share → Add to Home Screen. Confirm the icon appears.
@@ -64,7 +68,7 @@ intact.
 
 ## Snapshot-missing
 
-20. SSH to mac-mini, `chmod 000 ~/vedetta/snapshots` to force SaveSnapshot to
+20. SSH to `$HOST`, `chmod 000 ~/vedetta/snapshots` to force SaveSnapshot to
     fail. (Don't do this on production.)
 21. Trigger a detection. A notification arrives **without** a thumbnail.
 22. Tap: lands on the Activity view, which uses its current-camera fallback
@@ -92,7 +96,7 @@ intact.
 
 Run only on staging.
 
-30. Stop vedetta (`ssh mac-mini launchctl unload ~/Library/LaunchAgents/com.vedetta.plist`).
+30. Stop vedetta (`ssh $HOST launchctl unload ~/Library/LaunchAgents/com.vedetta.plist`).
 31. Run the rekey SQL (see below). This atomically:
     - Deletes both `notify:vapid_public_key` and `notify:vapid_private_key` rows.
     - Truncates `push_subscriptions`.
@@ -104,7 +108,7 @@ Run only on staging.
 
 ### VAPID rekey SQL
 
-Against the vedetta SQLite DB (`~/vedetta/vedetta.db` on mac-mini):
+Against the vedetta SQLite DB (`~/vedetta/vedetta.db` on `$HOST`):
 
 ```sql
 BEGIN;
@@ -121,7 +125,7 @@ cycle.
 
 ## Metrics sanity
 
-35. `curl -s https://vedetta.am8.nl/metrics | grep vedetta_notify` should
+35. `curl -s $BASE_URL/metrics | grep vedetta_notify` should
     return all notify counters: `events_received_total`,
     `events_sent_total{result="..."}`, `push_send_total{status="..."}`,
     `subscriptions_gauge`, `queue_depth_gauge`.

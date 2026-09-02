@@ -1,4 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Vedetta launchd agent template for macOS.
+
+  Replace YOUR_USERNAME with the account that runs Vedetta, or replace the
+  paths outright if the install lives elsewhere. Every path below must be
+  absolute: launchd does not expand ~ or read the login shell environment.
+
+  Install:
+    sed 's/YOUR_USERNAME/'"$USER"'/g' deploy/com.vedetta.plist \
+      > ~/Library/LaunchAgents/com.vedetta.plist
+    mkdir -p ~/Library/Logs/vedetta
+    launchctl load ~/Library/LaunchAgents/com.vedetta.plist
+
+  StandardOutPath and StandardErrorPath capture crash output only. Vedetta
+  writes and rotates its own log when logging.file is set in config.yml, so
+  point these at a separate file rather than the one Vedetta rotates: two
+  writers on one path fight over truncation.
+-->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -6,20 +24,20 @@
     <string>com.vedetta</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/ruben/vedetta/Vedetta.app/Contents/MacOS/vedetta</string>
+        <string>/Users/YOUR_USERNAME/vedetta/vedetta</string>
         <string>-config</string>
-        <string>/Users/ruben/vedetta/config.yml</string>
+        <string>/Users/YOUR_USERNAME/vedetta/config.yml</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/ruben/vedetta</string>
+    <string>/Users/YOUR_USERNAME/vedetta</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/ruben/Library/Logs/vedetta/vedetta.log</string>
+    <string>/Users/YOUR_USERNAME/Library/Logs/vedetta/vedetta.stderr.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/ruben/Library/Logs/vedetta/vedetta.log</string>
+    <string>/Users/YOUR_USERNAME/Library/Logs/vedetta/vedetta.stderr.log</string>
     <key>ProcessType</key>
     <string>Interactive</string>
 </dict>

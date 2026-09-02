@@ -1,0 +1,13 @@
+# Deployment settings for `make deploy`. Copy this file to Makefile.local in the
+# repository root and fill in your own values. Makefile.local is untracked, so
+# the signing certificate and host name stay off the public repository.
+#
+#   cp deploy/Makefile.local.example Makefile.local
+#
+# CODESIGN_IDENTITY is the certificate name shown by `security find-identity -v
+# -p codesigning`. CODESIGN_IDENTIFIER is the bundle identifier to sign under.
+# DEPLOY_HOST is anything ssh accepts, so an ~/.ssh/config alias works.
+
+CODESIGN_IDENTITY := Apple Development: you@example.com (XXXXXXXXXX)
+CODESIGN_IDENTIFIER := com.example.vedetta
+DEPLOY_HOST := vedetta-host

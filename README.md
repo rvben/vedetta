@@ -22,7 +22,7 @@ before choosing cameras or hardware for a production installation.
   recording streams, ONVIF discovery and PTZ, immediate image-rich doorbell
   alerts, manual doorbell entry from the camera grid, a dedicated answer view,
   ONVIF Profile T talkback, and on-demand handling for sleeping battery cameras.
-- **Local intelligence:** motion-gated YOLOv8 detection, Hungarian object
+- **Local intelligence:** motion-gated YOLOv8 detection, greedy IoU object
   tracking, zones and presence, face recognition, and object re-identification.
 - **Operations:** guided setup, an installable web app, Prometheus metrics,
   optional OpenTelemetry traces and logs, health probes, and recording-gap and
@@ -182,6 +182,10 @@ scrape `/metrics` without access to recordings, snapshots, or identities.
 
 - `/api/health/live` reports process liveness.
 - `/api/health/ready` reports whether the service is ready for traffic.
+- `vedetta healthcheck` probes liveness on the port the config declares and
+  exits non-zero when the server does not answer. The container images use it
+  as their `HEALTHCHECK`, so no HTTP client is needed in the runtime image.
+- `vedetta --version` prints the build identity to quote in a bug report.
 - `/metrics` exposes authenticated Prometheus metrics.
 - Optional OTLP export covers HTTP/event traces and structured logs.
 - The OpenAPI contract lives at [`internal/api/openapi.yaml`](internal/api/openapi.yaml).
@@ -199,8 +203,15 @@ make test           # JavaScript unit tests and Go tests
 make test-browser   # Playwright browser tests
 make bench          # detector benchmarks
 make lint           # golangci-lint
-make check          # lint, JavaScript tests, and race-enabled Go tests
+make vet            # go vet
+make vulncheck      # govulncheck, reachable vulnerabilities only
+make check          # lint, vet, and both test suites, offline
 ```
+
+`make check` is the pre-push gate and runs offline. `make vulncheck` is
+separate because it downloads the Go vulnerability database and its result
+changes when an advisory is published rather than when the code changes. CI
+runs it as its own job. Run it before proposing a dependency bump.
 
 Start with [Contributing](CONTRIBUTING.md), then read the
 [architecture](docs/ARCHITECTURE.md) and [architecture decisions](docs/adr/README.md).

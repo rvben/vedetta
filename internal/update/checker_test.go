@@ -36,13 +36,45 @@ func TestIsNewer(t *testing.T) {
 		{"v0.2.0", "v0.3.0", true},
 		{"v0.3.0", "v0.3.0", false},
 		{"v0.4.0", "v0.3.0", false},
-		{"dev", "v0.1.0", true},
-		{"dev", "v999.0.0", true},
+		// A build whose version is not a release is unordered against every
+		// release, so it must never announce an update: the banner would be
+		// permanent and undismissable for the whole life of the build.
+		{"dev", "v0.1.0", false},
+		{"dev", "v999.0.0", false},
+		{"abc123def456", "v999.0.0", false},
+		{"abc123def456-dirty", "v999.0.0", false},
+		{"v0.7.17-2-gd09776e", "v999.0.0", false},
+		// An unparseable latest is equally unordered. A malformed tag on the
+		// releases API must not be read as "you are behind".
+		{"v0.2.0", "latest", false},
 	}
 	for _, tt := range tests {
 		got := isNewer(tt.current, tt.latest)
 		if got != tt.want {
 			t.Errorf("isNewer(%q, %q) = %v, want %v", tt.current, tt.latest, got, tt.want)
+		}
+	}
+}
+
+func TestParseSemver(t *testing.T) {
+	tests := []struct {
+		in   string
+		want [3]int
+		ok   bool
+	}{
+		{"v0.7.17", [3]int{0, 7, 17}, true},
+		{"0.7.17", [3]int{0, 7, 17}, true},
+		{"v0.0.0", [3]int{0, 0, 0}, true},
+		{"dev", [3]int{}, false},
+		{"v0.7", [3]int{}, false},
+		{"v0.7.17-2-gd09776e", [3]int{}, false},
+		{"v0.7.17.1", [3]int{}, false},
+		{"", [3]int{}, false},
+	}
+	for _, tt := range tests {
+		got, ok := parseSemver(tt.in)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("parseSemver(%q) = %v, %v; want %v, %v", tt.in, got, ok, tt.want, tt.ok)
 		}
 	}
 }

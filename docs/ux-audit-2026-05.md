@@ -83,7 +83,7 @@ Scores are out of 10. Mobile was the systematic weak side.
 
 ## Verification
 
-- Desktop: verified live on vedetta.am8.nl (contrast, badge fix, storage gauge,
+- Desktop: verified live on a running instance (contrast, badge fix, storage gauge,
   events confidence colors + humanized names + deduped chips, recordings inline
   player open/play/close).
 - Mobile: verified on a real iPhone via the LAN direct port (2-col dashboard,

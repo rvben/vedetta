@@ -24,6 +24,9 @@ snapshots/
 # Scripts (local/deploy)
 scripts/
 
+# Deploy settings: signing certificate and target host are personal
+Makefile.local
+
 # OS
 .DS_Store
 Thumbs.db

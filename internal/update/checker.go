@@ -167,34 +167,60 @@ func fetchLatestRelease() (*Release, error) {
 	}, nil
 }
 
+// isNewer reports whether latest is a strictly newer release than current.
+//
+// A current version that is not a release version is unordered against any
+// release, so it never reports an update. That covers a build with no injected
+// version ("dev"), a bare VCS revision, and a `git describe` string from a
+// commit after a tag. Announcing an update against such a build nags forever:
+// there is no release the operator can install that makes the comparison stop
+// being true, so the banner stops carrying information.
 func isNewer(current, latest string) bool {
-	if current == "dev" {
-		return true
+	cur, ok := parseSemver(current)
+	if !ok {
+		return false
 	}
-	return compareSemver(current, latest) < 0
+	lat, ok := parseSemver(latest)
+	if !ok {
+		return false
+	}
+	return compareParsed(cur, lat) < 0
 }
 
 func compareSemver(a, b string) int {
-	pa := parseSemver(a)
-	pb := parseSemver(b)
+	pa, _ := parseSemver(a)
+	pb, _ := parseSemver(b)
+	return compareParsed(pa, pb)
+}
+
+func compareParsed(a, b [3]int) int {
 	for i := 0; i < 3; i++ {
-		if pa[i] < pb[i] {
+		if a[i] < b[i] {
 			return -1
 		}
-		if pa[i] > pb[i] {
+		if a[i] > b[i] {
 			return 1
 		}
 	}
 	return 0
 }
 
-func parseSemver(s string) [3]int {
-	s = strings.TrimPrefix(s, "v")
-	parts := strings.SplitN(s, ".", 3)
+// parseSemver splits a MAJOR.MINOR.PATCH version, with an optional leading "v",
+// into its numeric components. The second return value distinguishes a version
+// that is genuinely 0.0.0 from a string that is not a release version at all,
+// which is the distinction isNewer depends on.
+func parseSemver(s string) ([3]int, bool) {
+	parts := strings.Split(strings.TrimPrefix(s, "v"), ".")
+	if len(parts) != 3 {
+		return [3]int{}, false
+	}
 	var v [3]int
-	for i := 0; i < len(parts) && i < 3; i++ {
-		n, _ := strconv.Atoi(parts[i])
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return [3]int{}, false
+		}
 		v[i] = n
 	}
-	return v
+	return v, true
 }

@@ -143,15 +143,42 @@ func suppliedSetupCode(r *http.Request) string {
 	return ""
 }
 
+// setupCodeBodyLimit bounds how much of a request body this function buffers
+// while looking for the field. It is not an admission limit: handlers impose
+// their own with http.MaxBytesReader, and a larger body is passed on whole so
+// that limit still sees its true size.
+const setupCodeBodyLimit = 1 << 20
+
+// bodyReadCloser rejoins the bytes already buffered with the rest of the
+// stream. A request body cannot be rewound, so this is how a body too large to
+// buffer is handed on unchanged.
+type bodyReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
 // setupCodeFromBody reads a setup_code field out of a JSON body and puts the
-// body back for the handler. Handlers wrap r.Body in their own MaxBytesReader,
-// so the cap here only bounds what this function itself reads.
+// body back for the handler.
+//
+// The body always reaches the handler exactly as it arrived. Buffering a prefix
+// and passing that on instead would turn an oversized request into a malformed
+// one: the handler's own size limit would see a body that fits and answer
+// "invalid JSON" for a request that is simply too large. Past the cap the field
+// is not looked for, and a request that carries its code only there is refused
+// like any request with no code, which is the safe direction for a guard.
 func setupCodeFromBody(r *http.Request) string {
 	if r.Body == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return ""
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// One byte past the cap is what distinguishes a whole body from a body
+	// larger than this function will hold.
+	raw, err := io.ReadAll(io.LimitReader(r.Body, setupCodeBodyLimit+1))
 	if err != nil {
+		return ""
+	}
+	if len(raw) > setupCodeBodyLimit {
+		rest := r.Body
+		r.Body = bodyReadCloser{Reader: io.MultiReader(bytes.NewReader(raw), rest), Closer: rest}
 		return ""
 	}
 	r.Body = io.NopCloser(bytes.NewReader(raw))

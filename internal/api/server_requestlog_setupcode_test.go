@@ -98,3 +98,35 @@ func TestRequestLogKeepsAParameterThatOnlyLooksLikeTheSetupCode(t *testing.T) {
 		t.Errorf("logged uri = %q, want %q", uri, target)
 	}
 }
+
+// A query parameter name can be percent-encoded, and Go decodes the name before
+// matching it: "setup%5Fcode" parses to the key "setup_code" and is accepted as
+// the credential. Deciding what to redact from the raw request line therefore
+// misses it, and the working code is logged in the clear. The test asserts the
+// credential is real before asserting it is redacted, so it cannot pass by the
+// parameter simply being ignored.
+func TestRequestLogRedactsAPercentEncodedSetupCodeName(t *testing.T) {
+	buf := captureLogsAt(t, slog.LevelDebug)
+
+	const code = "M4XV7BQZ2K"
+	const target = "/api/setup/status?setup%5Fcode=" + code
+
+	if got := suppliedSetupCode(httptest.NewRequest(http.MethodGet, target, nil)); got != code {
+		t.Fatalf("suppliedSetupCode = %q, want %q: the encoded name is not a credential, so there is nothing to redact", got, code)
+	}
+
+	h := requestLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
+
+	if got := buf.String(); strings.Contains(got, code) {
+		t.Fatalf("setup code %q reached the log through a percent-encoded parameter name:\n%s", code, got)
+	}
+
+	rec := findRequestLog(t, buf)
+	uri, _ := rec["uri"].(string)
+	if !strings.Contains(uri, setupCodeQuery+"=redacted") {
+		t.Errorf("logged uri does not record that a setup code was supplied: %q", uri)
+	}
+}

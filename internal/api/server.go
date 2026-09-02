@@ -777,17 +777,25 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 // retained long after setup is over, shipped to whatever log sink is configured,
 // and readable by anyone who can read logs.
 //
-// The prefilter is not an optimization: it keeps every ordinary request line
-// byte-for-byte as the client sent it, since re-encoding a query normalizes
-// ordering and escaping and would quietly rewrite the record of what was asked.
+// Rewriting is the exception, not the rule: every request line that carries no
+// setup code is returned byte-for-byte as the client sent it, since re-encoding
+// a query normalizes ordering and escaping and would quietly rewrite the record
+// of what was asked.
+//
+// Which requests carry one is decided on the parsed query, the same view
+// suppliedSetupCode reads the credential from, so the two cannot disagree about
+// what counts as a setup code. Matching the raw request line instead would miss
+// a percent-encoded parameter name: "setup%5Fcode" parses to setup_code and is
+// accepted as the credential, while the raw line holds no literal setup_code.
 func loggedRequestURI(r *http.Request) string {
 	uri := r.URL.RequestURI()
-	if !strings.Contains(uri, setupCodeQuery+"=") {
+	// A path with no query cannot carry the code. Parsing is skipped for speed
+	// only; the answer below is the same either way.
+	if r.URL.RawQuery == "" {
 		return uri
 	}
 	query := r.URL.Query()
 	if _, ok := query[setupCodeQuery]; !ok {
-		// A different parameter whose name merely ends in the one we redact.
 		return uri
 	}
 	query.Set(setupCodeQuery, "redacted")

@@ -15,6 +15,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -778,30 +779,68 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 // and readable by anyone who can read logs.
 //
 // Rewriting is the exception, not the rule: every request line that carries no
-// setup code is returned byte-for-byte as the client sent it, since re-encoding
-// a query normalizes ordering and escaping and would quietly rewrite the record
-// of what was asked.
-//
-// Which requests carry one is decided on the parsed query, the same view
-// suppliedSetupCode reads the credential from, so the two cannot disagree about
-// what counts as a setup code. Matching the raw request line instead would miss
-// a percent-encoded parameter name: "setup%5Fcode" parses to setup_code and is
-// accepted as the credential, while the raw line holds no literal setup_code.
+// setup code is returned byte-for-byte as the client sent it, and a line that
+// does carry one keeps every other parameter byte-for-byte too. Only the code's
+// own parameter is rewritten.
 func loggedRequestURI(r *http.Request) string {
 	uri := r.URL.RequestURI()
-	// A path with no query cannot carry the code. Parsing is skipped for speed
-	// only; the answer below is the same either way.
 	if r.URL.RawQuery == "" {
 		return uri
 	}
-	query := r.URL.Query()
-	if _, ok := query[setupCodeQuery]; !ok {
+	redactedQuery, found := redactSetupCodeInQuery(r.URL.RawQuery)
+	if !found {
 		return uri
 	}
-	query.Set(setupCodeQuery, "redacted")
 	redacted := *r.URL
-	redacted.RawQuery = query.Encode()
+	redacted.RawQuery = redactedQuery
 	return redacted.RequestURI()
+}
+
+// redactSetupCodeInQuery replaces the value of every setup_code parameter in a
+// raw query string and reports whether it found one, leaving every other byte
+// as the client sent it.
+//
+// It reads the raw string rather than a parsed url.Values because neither the
+// parsed query nor the raw bytes alone can see every setup code:
+//
+//   - Go decodes a parameter name before matching it, so "setup%5Fcode" is
+//     accepted as the credential while the raw line holds no literal setup_code.
+//     Searching the raw bytes for the name therefore misses it.
+//   - url.ParseQuery treats a ';' inside a pair as an error and drops that pair,
+//     so a code written as "setup_code=SECRET;step=cameras" is absent from the
+//     parsed query. Deciding from the map therefore misses it, and re-encoding
+//     the map would also delete the dropped pair from the logged line.
+//
+// Splitting on both separators and decoding each name catches both. Erring
+// towards redaction is safe: the worst case is a parameter that was never a
+// working credential being logged as "redacted".
+func redactSetupCodeInQuery(rawQuery string) (string, bool) {
+	var out strings.Builder
+	out.Grow(len(rawQuery))
+	found := false
+	for rest := rawQuery; rest != ""; {
+		pair := rest
+		sep := ""
+		if i := strings.IndexAny(rest, "&;"); i >= 0 {
+			pair, sep, rest = rest[:i], rest[i:i+1], rest[i+1:]
+		} else {
+			rest = ""
+		}
+		name, _, _ := strings.Cut(pair, "=")
+		// An undecodable name cannot be the credential: the credential is read
+		// through a decoder that would reject it too.
+		if decoded, err := url.QueryUnescape(name); err == nil && decoded == setupCodeQuery {
+			// The canonical spelling goes into the log whatever spelling
+			// arrived, so a reader searching for the parameter finds it.
+			out.WriteString(setupCodeQuery)
+			out.WriteString("=redacted")
+			found = true
+		} else {
+			out.WriteString(pair)
+		}
+		out.WriteString(sep)
+	}
+	return out.String(), found
 }
 
 // requestLogLevel grades one completed request. Failure outranks everything, so

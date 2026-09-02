@@ -13,12 +13,12 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
-	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/pion/rtp"
 
 	"github.com/rvben/vedetta/internal/auth"
 	"github.com/rvben/vedetta/internal/config"
+	"github.com/rvben/vedetta/internal/h264au"
 	"github.com/rvben/vedetta/internal/rtsp"
 )
 
@@ -84,20 +84,15 @@ func (c *rtspServerConsumer) OnVideoRTP(pkt *rtp.Packet) {
 		return
 	}
 
-	// Update SPS/PPS from in-band parameters.
-	var sps, pps []byte
-	for _, nalu := range au {
-		if len(nalu) == 0 {
-			continue
-		}
-		typ := h264.NALUType(nalu[0] & 0x1F)
-		switch typ {
-		case h264.NALUTypeSPS:
-			sps = nalu
-		case h264.NALUTypePPS:
-			pps = nalu
-		}
+	// Strip SEI so a client of the republished stream gets the same normalized
+	// bitstream as every other transport; see h264au.DropSEI.
+	au = h264au.DropSEI(au)
+	if len(au) == 0 {
+		return
 	}
+
+	// Update SPS/PPS from in-band parameters.
+	sps, pps, _ := h264au.TrackParameterSets(au, nil, nil)
 	if sps != nil || pps != nil {
 		curSPS, curPPS := c.h264Format.SafeParams()
 		if sps == nil {

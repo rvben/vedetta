@@ -1,4 +1,4 @@
-package stream
+package h264au
 
 import (
 	"bytes"
@@ -41,7 +41,7 @@ func minH264Level(frameMbs, fps, refFrames int) uint8 {
 	return h264LevelLimits[len(h264LevelLimits)-1].idc
 }
 
-// clampSPSLevel rewrites an SPS's level_idc down to the lowest H.264 level the
+// ClampSPSLevel rewrites an SPS's level_idc down to the lowest H.264 level the
 // stream actually requires for its resolution, frame rate and reference-frame
 // count.
 //
@@ -58,7 +58,7 @@ func minH264Level(frameMbs, fps, refFrames int) uint8 {
 // the input unchanged when the SPS cannot be parsed, or when the frame rate is
 // not declared (without it a lower level cannot be proven safe), so it never
 // produces an init segment that advertises constraints the stream exceeds.
-func clampSPSLevel(sps []byte) []byte {
+func ClampSPSLevel(sps []byte) []byte {
 	if len(sps) < 4 {
 		return sps
 	}
@@ -96,12 +96,12 @@ func clampSPSLevel(sps []byte) []byte {
 	return out
 }
 
-// replaceAccessUnitSPS makes an emitted keyframe agree with the SPS embedded
+// ReplaceSPS makes an emitted keyframe agree with the SPS embedded
 // in the fMP4 init segment. A normalized init paired with the camera's raw,
 // over-declared in-band SPS makes strict decoders (notably VideoToolbox)
 // reject the video track while continuing to advance the audio timeline.
 // The outer slice is copied lazily and NAL payloads are never mutated.
-func replaceAccessUnitSPS(au [][]byte, muxSPS []byte) [][]byte {
+func ReplaceSPS(au [][]byte, muxSPS []byte) [][]byte {
 	if len(muxSPS) == 0 {
 		return au
 	}

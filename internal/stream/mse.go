@@ -1,7 +1,6 @@
 package stream
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/rtp"
 
+	"github.com/rvben/vedetta/internal/h264au"
 	"github.com/rvben/vedetta/internal/rtsp"
 )
 
@@ -277,23 +277,15 @@ func (mc *mseConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 
-	// Update SPS/PPS from in-band parameters
-	spsChanged := false
-	for _, nalu := range au {
-		if len(nalu) == 0 {
-			continue
-		}
-		typ := h264.NALUType(nalu[0] & 0x1F)
-		switch typ {
-		case h264.NALUTypeSPS:
-			if !bytes.Equal(mc.videoSPS, nalu) {
-				mc.videoSPS = nalu
-				spsChanged = true
-			}
-		case h264.NALUTypePPS:
-			mc.videoPPS = nalu
-		}
+	// Strip SEI so the browser sees the same normalized bitstream native HLS
+	// and the recorder do; see h264au.DropSEI.
+	au = h264au.DropSEI(au)
+	if len(au) == 0 {
+		return
 	}
+
+	var spsChanged bool
+	mc.videoSPS, mc.videoPPS, spsChanged = h264au.TrackParameterSets(au, mc.videoSPS, mc.videoPPS)
 
 	// Generate or regenerate init segment
 	if mc.initSegment == nil || spsChanged {

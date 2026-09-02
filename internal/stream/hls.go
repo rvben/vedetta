@@ -1,7 +1,6 @@
 package stream
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,6 +18,7 @@ import (
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
 	"github.com/pion/rtp"
 
+	"github.com/rvben/vedetta/internal/h264au"
 	"github.com/rvben/vedetta/internal/rtsp"
 )
 
@@ -232,32 +232,6 @@ func (c *hlsConsumer) aacConfigForInit() *mpeg4audio.AudioSpecificConfig {
 	return nil
 }
 
-// dropSEINALs returns the access unit with all SEI NAL units (type 6) removed.
-// SEI is supplemental and never required to decode; some cameras inject
-// proprietary user-data SEI that strict decoders (iOS VideoToolbox) reject.
-// Returns a new slice when anything is dropped so the caller's backing array is
-// never mutated.
-func dropSEINALs(au [][]byte) [][]byte {
-	hasSEI := false
-	for _, nalu := range au {
-		if len(nalu) > 0 && h264.NALUType(nalu[0]&0x1F) == h264.NALUTypeSEI {
-			hasSEI = true
-			break
-		}
-	}
-	if !hasSEI {
-		return au
-	}
-	out := make([][]byte, 0, len(au))
-	for _, nalu := range au {
-		if len(nalu) > 0 && h264.NALUType(nalu[0]&0x1F) == h264.NALUTypeSEI {
-			continue
-		}
-		out = append(out, nalu)
-	}
-	return out
-}
-
 func (c *hlsConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	if c.h264Decoder == nil {
 		return
@@ -270,27 +244,14 @@ func (c *hlsConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	spsChanged := false
-	for _, nalu := range au {
-		if len(nalu) == 0 {
-			continue
-		}
-		switch h264.NALUType(nalu[0] & 0x1F) {
-		case h264.NALUTypeSPS:
-			if !bytes.Equal(c.videoSPS, nalu) {
-				c.videoSPS = nalu
-				spsChanged = true
-			}
-		case h264.NALUTypePPS:
-			c.videoPPS = nalu
-		}
-	}
+	var spsChanged bool
+	c.videoSPS, c.videoPPS, spsChanged = h264au.TrackParameterSets(au, c.videoSPS, c.videoPPS)
 
 	if c.initSegment == nil || spsChanged {
 		firstInit := c.initSegment == nil
 		// Clamp an over-declared H.264 level so iOS native HLS does not size a
 		// huge decode buffer and stall for seconds before playback starts.
-		c.muxVideoSPS = clampSPSLevel(c.videoSPS)
+		c.muxVideoSPS = h264au.ClampSPSLevel(c.videoSPS)
 		initSeg, err := buildFMP4Init(c.muxVideoSPS, c.videoPPS, c.aacConfigForInit(), c.audioTimeScale)
 		if err != nil {
 			slog.Error("HLS init build failed", "stream", c.label, "error", err)
@@ -341,18 +302,14 @@ func (c *hlsConsumer) OnVideoRTP(pkt *rtp.Packet) {
 		// works for cameras that advertise SPS/PPS only in the SDP.
 		c.vtimer.setParameterSets(c.muxVideoSPS, c.videoPPS)
 	}
-	// Strip SEI before muxing: cameras inject proprietary user-data SEI (e.g.
-	// TP-Link's "TPLINKMARKERBOX") that strict iOS VideoToolbox rejects as bad
-	// data (kVTVideoDecoderBadDataErr -8969), collapsing live HLS to a
-	// keyframe-only slideshow, while lenient decoders (browser MSE, VLC) ignore
-	// it. SEI is supplemental and never required to decode, so dropping it is
-	// safe and fixes playback for any camera that emits junk SEI.
-	au = dropSEINALs(au)
+	// Strip SEI before muxing so strict iOS VideoToolbox does not reject the
+	// stream; see h264au.DropSEI for the camera quirk behind it.
+	au = h264au.DropSEI(au)
 	// Keep in-band parameter sets byte-for-byte consistent with avcC in the
 	// init segment. Safari/VideoToolbox rejects the video track when the init
 	// advertises our safe normalized level but a keyframe reintroduces the
 	// camera's raw inflated level; audio then advances over a black picture.
-	au = replaceAccessUnitSPS(au, c.muxVideoSPS)
+	au = h264au.ReplaceSPS(au, c.muxVideoSPS)
 	if len(au) == 0 {
 		return
 	}

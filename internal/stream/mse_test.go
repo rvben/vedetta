@@ -39,13 +39,13 @@ func TestOriginAllowed_RejectsMismatchedOrigin(t *testing.T) {
 }
 
 func TestOriginAllowed_TrustedProxyHTTPS(t *testing.T) {
-	// Caddy-style reverse proxy: browser → Caddy (https://vedetta.am8.nl) → vedetta (plain HTTP).
+	// Caddy-style reverse proxy: browser to Caddy (https://nvr.example.com) to vedetta (plain HTTP).
 	// Caddy forwards the original Host header and sets X-Forwarded-Proto=https.
 	// Without trusted-proxy awareness, vedetta would treat the scheme as http and reject.
-	req := httptest.NewRequest("GET", "http://vedetta.am8.nl/api/cameras/front/mse/ws", nil)
-	req.Host = "vedetta.am8.nl"
+	req := httptest.NewRequest("GET", "http://nvr.example.com/api/cameras/front/mse/ws", nil)
+	req.Host = "nvr.example.com"
 	req.RemoteAddr = "203.0.113.10:43210"
-	req.Header.Set("Origin", "https://vedetta.am8.nl")
+	req.Header.Set("Origin", "https://nvr.example.com")
 	req.Header.Set("X-Forwarded-Proto", "https")
 
 	trusted := parseTrustedProxies([]string{"203.0.113.10/32"})
@@ -56,10 +56,10 @@ func TestOriginAllowed_TrustedProxyHTTPS(t *testing.T) {
 
 func TestOriginAllowed_UntrustedProxyCannotForgeScheme(t *testing.T) {
 	// A random client claiming X-Forwarded-Proto=https must not bypass the origin check.
-	req := httptest.NewRequest("GET", "http://vedetta.am8.nl/api/cameras/front/mse/ws", nil)
-	req.Host = "vedetta.am8.nl"
+	req := httptest.NewRequest("GET", "http://nvr.example.com/api/cameras/front/mse/ws", nil)
+	req.Host = "nvr.example.com"
 	req.RemoteAddr = "198.51.100.7:55555"
-	req.Header.Set("Origin", "https://vedetta.am8.nl")
+	req.Header.Set("Origin", "https://nvr.example.com")
 	req.Header.Set("X-Forwarded-Proto", "https")
 
 	trusted := parseTrustedProxies([]string{"203.0.113.10/32"})

@@ -1,4 +1,4 @@
-package stream
+package h264au
 
 import (
 	"bytes"
@@ -36,7 +36,7 @@ func TestClampSPSLevel_LowersInflatedLevel(t *testing.T) {
 		t.Fatalf("fixture should declare level 5.1 (0x33), got 0x%02x", in[3])
 	}
 
-	out := clampSPSLevel(in)
+	out := ClampSPSLevel(in)
 	if out[3] >= 0x33 {
 		t.Fatalf("level not lowered: 0x%02x", out[3])
 	}
@@ -80,7 +80,7 @@ func TestClampSPSLevel_LowersInflatedLevel(t *testing.T) {
 // caller's backing array (no allocation on the common path).
 func TestClampSPSLevel_LeavesMinimalUnchanged(t *testing.T) {
 	in := mustHex(t, garageSPSHex)
-	out := clampSPSLevel(in)
+	out := ClampSPSLevel(in)
 	if &out[0] != &in[0] {
 		t.Fatalf("already-minimal SPS was reallocated")
 	}
@@ -92,7 +92,7 @@ func TestClampSPSLevel_LeavesMinimalUnchanged(t *testing.T) {
 // A stream whose level is sufficient must never be raised.
 func TestClampSPSLevel_NeverRaisesLevel(t *testing.T) {
 	in := mustHex(t, garageSPSHex)
-	out := clampSPSLevel(in)
+	out := ClampSPSLevel(in)
 	if out[3] > in[3] {
 		t.Fatalf("level was raised: 0x%02x -> 0x%02x", in[3], out[3])
 	}
@@ -101,7 +101,7 @@ func TestClampSPSLevel_NeverRaisesLevel(t *testing.T) {
 // Garbage or truncated input must be passed through, never panic.
 func TestClampSPSLevel_BadInputReturnsInput(t *testing.T) {
 	for _, in := range [][]byte{nil, {}, {0x67}, {0x67, 0x64, 0x00}, {0x00, 0x01, 0x02, 0x03, 0x04}} {
-		out := clampSPSLevel(in)
+		out := ClampSPSLevel(in)
 		if len(out) != len(in) {
 			t.Fatalf("length changed for bad input %v -> %v", in, out)
 		}
@@ -152,12 +152,12 @@ func TestClampSPSLevel_RequiresKnownFrameRate(t *testing.T) {
 // track and advanced playback while rendering the contradictory video black.
 func TestReplaceAccessUnitSPSMatchesMuxInit(t *testing.T) {
 	raw := mustHex(t, frontDoorSPSHex)
-	mux := clampSPSLevel(raw)
+	mux := ClampSPSLevel(raw)
 	pps := []byte{0x68, 0xee, 0x3c, 0x80}
 	idr := []byte{0x65, 0x88, 0x84}
 	au := [][]byte{raw, pps, idr}
 
-	got := replaceAccessUnitSPS(au, mux)
+	got := ReplaceSPS(au, mux)
 	if !bytes.Equal(got[0], mux) {
 		t.Fatalf("keyframe SPS %x does not match mux SPS %x", got[0], mux)
 	}
@@ -170,9 +170,9 @@ func TestReplaceAccessUnitSPSMatchesMuxInit(t *testing.T) {
 }
 
 func TestReplaceAccessUnitSPSIsNoOpWhenAlreadyConsistent(t *testing.T) {
-	mux := clampSPSLevel(mustHex(t, frontDoorSPSHex))
+	mux := ClampSPSLevel(mustHex(t, frontDoorSPSHex))
 	au := [][]byte{mux, {0x65, 0x88, 0x84}}
-	got := replaceAccessUnitSPS(au, mux)
+	got := ReplaceSPS(au, mux)
 	if &got[0] != &au[0] {
 		t.Fatal("consistent access unit was unnecessarily copied")
 	}

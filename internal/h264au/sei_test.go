@@ -1,4 +1,4 @@
-package stream
+package h264au
 
 import "testing"
 
@@ -19,7 +19,7 @@ func auEqual(a, b [][]byte) bool {
 
 // A camera (e.g. Tapo C220) injects a proprietary user-data SEI NAL that strict
 // iOS VideoToolbox rejects as bad data (-8969), collapsing live HLS to a
-// keyframe-only slideshow. dropSEINALs must remove every SEI (type 6) while
+// keyframe-only slideshow. DropSEI must remove every SEI (type 6) while
 // preserving every other NAL in order.
 func TestDropSEINALs_StripsSEIPreservesOrder(t *testing.T) {
 	sps := []byte{nalHdr(7), 0x64, 0x00}
@@ -28,13 +28,13 @@ func TestDropSEINALs_StripsSEIPreservesOrder(t *testing.T) {
 	idr := []byte{nalHdr(5), 0x88, 0x99}
 	p := []byte{nalHdr(1), 0x41, 0x42}
 
-	got := dropSEINALs([][]byte{sps, sei, pps, idr})
+	got := DropSEI([][]byte{sps, sei, pps, idr})
 	if !auEqual(got, [][]byte{sps, pps, idr}) {
 		t.Fatalf("SEI not stripped or order changed: %v", got)
 	}
 
 	// SEI appearing alongside a P-frame must still be dropped.
-	got = dropSEINALs([][]byte{sei, p})
+	got = DropSEI([][]byte{sei, p})
 	if !auEqual(got, [][]byte{p}) {
 		t.Fatalf("SEI before P-frame not stripped: %v", got)
 	}
@@ -46,7 +46,7 @@ func TestDropSEINALs_NoSEIReturnsInput(t *testing.T) {
 	sps := []byte{nalHdr(7)}
 	idr := []byte{nalHdr(5)}
 	in := [][]byte{sps, idr}
-	out := dropSEINALs(in)
+	out := DropSEI(in)
 	if len(out) != 2 || &out[0] != &in[0] {
 		t.Fatalf("no-SEI AU must be returned without reallocation")
 	}
@@ -56,7 +56,7 @@ func TestDropSEINALs_NoSEIReturnsInput(t *testing.T) {
 // rather than push an empty sample.
 func TestDropSEINALs_SEIOnlyBecomesEmpty(t *testing.T) {
 	sei := []byte{nalHdr(6), 0x05}
-	if out := dropSEINALs([][]byte{sei}); len(out) != 0 {
+	if out := DropSEI([][]byte{sei}); len(out) != 0 {
 		t.Fatalf("SEI-only AU must become empty, got %v", out)
 	}
 }
@@ -66,20 +66,20 @@ func TestDropSEINALs_SEIOnlyBecomesEmpty(t *testing.T) {
 func TestDropSEINALs_HandlesEmptyNALs(t *testing.T) {
 	sei := []byte{nalHdr(6), 0x05}
 	idr := []byte{nalHdr(5), 0x01}
-	got := dropSEINALs([][]byte{nil, {}, sei, idr})
+	got := DropSEI([][]byte{nil, {}, sei, idr})
 	if len(got) != 3 || len(got[0]) != 0 || len(got[1]) != 0 || string(got[2]) != string(idr) {
 		t.Fatalf("unexpected result with empty NALs: %v", got)
 	}
 }
 
-// dropSEINALs must never mutate the caller's slice (it shares the RTP
+// DropSEI must never mutate the caller's slice (it shares the RTP
 // depacketizer's backing array with other consumers).
 func TestDropSEINALs_DoesNotMutateInput(t *testing.T) {
 	sps := []byte{nalHdr(7)}
 	sei := []byte{nalHdr(6), 0x05}
 	idr := []byte{nalHdr(5)}
 	in := [][]byte{sps, sei, idr}
-	_ = dropSEINALs(in)
+	_ = DropSEI(in)
 	if len(in) != 3 || string(in[0]) != string(sps) || string(in[1]) != string(sei) || string(in[2]) != string(idr) {
 		t.Fatalf("input slice was mutated: %v", in)
 	}

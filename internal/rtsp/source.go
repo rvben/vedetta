@@ -2,8 +2,10 @@ package rtsp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +38,9 @@ type Source struct {
 	// paramsReady is closed once videoTrack holds a usable SPS+PPS pair, so
 	// WaitForVideoParams can block on a notification instead of polling.
 	paramsReady chan struct{}
+
+	// consumerPanics counts consumer callbacks that panicked and were detached.
+	consumerPanics atomic.Int64
 
 	// reconnects counts how many times this source has lost an *established*
 	// connection and looped to reconnect. Failed initial attempts (offline
@@ -496,7 +501,7 @@ func (s *Source) notifyDisconnect() {
 	}
 
 	for _, c := range consumers {
-		c.OnDisconnect()
+		s.deliver(c, "OnDisconnect", c.OnDisconnect)
 	}
 }
 
@@ -639,11 +644,45 @@ func (s *Source) fanOutVideo(pkt *rtp.Packet) {
 	// AddConsumer/RemoveConsumer (a viewer attaching or detaching).
 	consumers := s.snapshotConsumers()
 	for _, c := range consumers {
-		c.OnVideoRTP(pkt)
+		s.deliver(c, "OnVideoRTP", func() { c.OnVideoRTP(pkt) })
 	}
 	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
 		slog.Warn("slow fanOutVideo", "url", SanitizeURL(s.url), "elapsed", elapsed, "consumers", len(consumers))
 	}
+}
+
+// deliver runs one consumer callback on the RTSP connection goroutine and
+// contains a panic inside that consumer. gortsplib does not recover, so an
+// unhandled panic here unwinds the whole process and stops recording for every
+// camera, not just this one.
+//
+// A consumer that panics is detached. Its internal state after a panic is
+// unknown, and every consumer is recreated when its viewer, recorder or
+// detector reattaches, so dropping it is recoverable where feeding it more
+// packets is not.
+func (s *Source) deliver(c Consumer, callback string, fn func()) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		s.consumerPanics.Add(1)
+		slog.Error("consumer panic, detaching consumer",
+			"url", SanitizeURL(s.url),
+			"consumer", fmt.Sprintf("%T", c),
+			"callback", callback,
+			"panic", r,
+			"stack", string(debug.Stack()))
+		s.RemoveConsumer(c)
+	}()
+	fn()
+}
+
+// ConsumerPanics reports how many consumer callbacks have panicked on this
+// source since it was created. A nonzero value means at least one consumer was
+// detached and is no longer receiving packets.
+func (s *Source) ConsumerPanics() int64 {
+	return s.consumerPanics.Load()
 }
 
 // SimulateVideoRTPForTest drives the real clone/cache/fan-out path without a
@@ -827,7 +866,7 @@ func (s *Source) fanOutAudio(pkt *rtp.Packet) {
 	start := time.Now()
 	consumers := s.snapshotConsumers()
 	for _, c := range consumers {
-		c.OnAudioRTP(pkt)
+		s.deliver(c, "OnAudioRTP", func() { c.OnAudioRTP(pkt) })
 	}
 	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
 		slog.Warn("slow fanOutAudio", "url", SanitizeURL(s.url), "elapsed", elapsed, "consumers", len(consumers))

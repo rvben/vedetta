@@ -19,6 +19,10 @@ import (
 // diskPauseRetryInterval is how often a paused consumer retries the disk check.
 const diskPauseRetryInterval = 30 * time.Second
 
+// dropLogInterval rate-limits the warning about dropped packets. A volume slow
+// enough to overrun the queue overruns it thousands of times a minute.
+const dropLogInterval = time.Minute
+
 // segmentWriterCreateTimeout bounds segment-file creation. A stalled storage
 // volume makes os.Create block forever in the kernel; without this bound the
 // single processLoop goroutine wedges under rc.mu and recording never
@@ -52,7 +56,17 @@ type RecordingConsumer struct {
 	segDir     string
 	disk       *DiskSpace
 
+	// onSegmentRemoved retracts the DB row written when a segment file was
+	// created, for the paths that delete the file again.
+	onSegmentRemoved func(path string)
+
+	// pktCh is never closed. rtsp.Source fans out synchronously on its
+	// connection goroutine, so a sender can already be past the closed check
+	// when Close runs; closing the channel under it would crash the process
+	// with "send on closed channel". processLoop is stopped via stop instead,
+	// and late sends land harmlessly in the buffer.
 	pktCh  chan rtpMsg
+	stop   chan struct{}
 	done   chan struct{}
 	closed atomic.Bool
 
@@ -60,6 +74,20 @@ type RecordingConsumer struct {
 	// hang in file creation can be bounded and tested. Defaults to
 	// NewSegmentWriter.
 	newWriter func(path string, video, audio *rtsp.TrackInfo) (*SegmentWriter, error)
+	// createTimeout bounds one newWriter call. Defaults to
+	// segmentWriterCreateTimeout; lowered by tests.
+	createTimeout time.Duration
+	// createPending is true while a newWriter call is still outstanding after
+	// its timeout. Only one may be in flight per consumer.
+	createPending atomic.Bool
+
+	// droppedPackets counts packets the nonblocking queue could not accept.
+	droppedPackets atomic.Int64
+	// discontinuous is set when a packet was dropped and cleared once the
+	// segment has been closed at that discontinuity.
+	discontinuous atomic.Bool
+	// lastDropLog is the unix nano timestamp of the last drop warning.
+	lastDropLog atomic.Int64
 
 	mu              sync.Mutex
 	writer          *SegmentWriter
@@ -91,8 +119,11 @@ func NewRecordingConsumer(segDir, camera string, segLen time.Duration, video, au
 		segDir:     segDir,
 		disk:       disk,
 		pktCh:      make(chan rtpMsg, 512),
+		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 		newWriter:  NewSegmentWriter,
+
+		createTimeout: segmentWriterCreateTimeout,
 	}
 
 	go rc.processLoop()
@@ -106,6 +137,32 @@ func (rc *RecordingConsumer) Paused() bool {
 	return rc.pausedAtomic.Load()
 }
 
+// SetSegmentRemovedHook registers a callback invoked with the path of a segment
+// file the consumer deletes after having registered it. The segment row is
+// written as soon as the file is created, so every removal path has to retract
+// it or the DB keeps pointing at a file that no longer exists.
+func (rc *RecordingConsumer) SetSegmentRemovedHook(fn func(path string)) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.onSegmentRemoved = fn
+}
+
+// DroppedPackets returns the number of RTP packets this consumer could not
+// queue. The queue is deliberately nonblocking, so a slow volume drops packets
+// rather than stalling the RTSP reader; a nonzero and growing count is the
+// signal that recorded video has holes.
+func (rc *RecordingConsumer) DroppedPackets() int64 {
+	return rc.droppedPackets.Load()
+}
+
+// SegmentCreatePending reports whether a segment-file creation is still
+// outstanding after having timed out, which means the storage volume is wedged
+// in the kernel. Recording stays paused and skips further create attempts while
+// this holds.
+func (rc *RecordingConsumer) SegmentCreatePending() bool {
+	return rc.createPending.Load()
+}
+
 // OnVideoRTP enqueues a video RTP packet for async processing.
 func (rc *RecordingConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	if rc.closed.Load() {
@@ -114,7 +171,7 @@ func (rc *RecordingConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	select {
 	case rc.pktCh <- rtpMsg{pkt: pkt, video: true}:
 	default:
-		// Drop packet if buffer full — better than blocking the RTSP reader
+		rc.noteDrop()
 	}
 }
 
@@ -126,6 +183,27 @@ func (rc *RecordingConsumer) OnAudioRTP(pkt *rtp.Packet) {
 	select {
 	case rc.pktCh <- rtpMsg{pkt: pkt, video: false}:
 	default:
+		rc.noteDrop()
+	}
+}
+
+// noteDrop records a packet the queue could not accept. The queue stays
+// nonblocking on purpose: rtsp.Source fans out synchronously on its connection
+// goroutine, so blocking here would stall the reader for every consumer on that
+// source. The drop is therefore not preventable at this point, but it must not
+// be silent. It is counted, warned about at a bounded rate, and marked so the
+// segment is closed at the discontinuity instead of writing a hole into the
+// middle of a file that still claims to be continuous (the decode errors that
+// follow a hole are swallowed by the writer, so the gap has no other tell).
+func (rc *RecordingConsumer) noteDrop() {
+	total := rc.droppedPackets.Add(1)
+	rc.discontinuous.Store(true)
+
+	now := time.Now().UnixNano()
+	last := rc.lastDropLog.Load()
+	if now-last >= int64(dropLogInterval) && rc.lastDropLog.CompareAndSwap(last, now) {
+		slog.Warn("recording queue full, dropping packets",
+			"camera", rc.camera, "dropped_total", total)
 	}
 }
 
@@ -137,9 +215,13 @@ func (rc *RecordingConsumer) OnDisconnect() {
 }
 
 // Close finalizes the current segment and stops the processing goroutine.
+// It is idempotent: repeated calls (teardown plus an OnDisconnect-driven path)
+// return without touching the already-finalized state.
 func (rc *RecordingConsumer) Close() {
-	rc.closed.Store(true)
-	close(rc.pktCh)
+	if !rc.closed.CompareAndSwap(false, true) {
+		return
+	}
+	close(rc.stop)
 	<-rc.done // wait for processLoop to finish
 
 	rc.mu.Lock()
@@ -150,8 +232,22 @@ func (rc *RecordingConsumer) Close() {
 func (rc *RecordingConsumer) processLoop() {
 	defer close(rc.done)
 
-	for msg := range rc.pktCh {
-		rc.dispatch(msg)
+	for {
+		select {
+		case msg := <-rc.pktCh:
+			rc.dispatch(msg)
+		case <-rc.stop:
+			// Drain what is already queued so the final GOP is written
+			// before the segment is finalized, then stop.
+			for {
+				select {
+				case msg := <-rc.pktCh:
+					rc.dispatch(msg)
+				default:
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -180,6 +276,16 @@ func (rc *RecordingConsumer) dispatch(msg rtpMsg) {
 		rc.handlePaused()
 		return
 	}
+	if rc.discontinuous.Swap(false) && rc.writer != nil {
+		// Packets were dropped while this segment was open. Close it here so
+		// the file ends at the last frame that was actually written and the
+		// next one starts from a keyframe, rather than splicing post-gap
+		// frames onto a reference frame they were not coded against.
+		slog.Warn("closing segment at a packet-drop discontinuity",
+			"camera", rc.camera, "path", rc.segPath,
+			"dropped_total", rc.droppedPackets.Load())
+		rc.closeCurrentSegment()
+	}
 	if msg.video {
 		rc.processVideo(msg.pkt)
 	} else {
@@ -195,11 +301,28 @@ func (rc *RecordingConsumer) discardWriterAfterPanic() {
 		return
 	}
 	_, _ = rc.writer.Close()
-	if rc.segPath != "" {
-		_ = os.Remove(rc.segPath)
-	}
+	rc.removeSegment()
 	rc.writer = nil
 	rc.currentPath = ""
+}
+
+// removeSegment deletes a segment file and retracts the row registered for it
+// when the file was created. Both have to go together: the row is written at
+// creation time so the segment is queryable before it rotates, so a removal
+// that only unlinks the file leaves the DB pointing at a path that no longer
+// exists, which fails every clip extraction over that range and is never
+// reclaimed by retention. Called with rc.mu held.
+func (rc *RecordingConsumer) removeSegment() {
+	if rc.segPath == "" {
+		return
+	}
+	if err := os.Remove(rc.segPath); err != nil && !os.IsNotExist(err) {
+		slog.Warn("failed to remove segment file",
+			"camera", rc.camera, "path", rc.segPath, "error", err)
+	}
+	if rc.onSegmentRemoved != nil {
+		rc.onSegmentRemoved(rc.segPath)
+	}
 }
 
 // handlePaused checks if disk space has recovered. Called with mu held.
@@ -301,6 +424,16 @@ func (rc *RecordingConsumer) ensureSegment() error {
 		return nil
 	}
 
+	// A create that timed out is still wedged in the kernel, holding two
+	// goroutines: the one blocked in os.Create and the one waiting to reap it.
+	// Recording retries every diskPauseRetryInterval for as long as the volume
+	// is out, so starting a fresh attempt each time makes that leak unbounded.
+	// One outstanding create is enough to tell whether the volume has come
+	// back.
+	if rc.createPending.Load() {
+		return fmt.Errorf("segment writer creation still outstanding after %s (stalled volume)", rc.createTimeout)
+	}
+
 	// Check disk space before creating a new segment
 	avail := rc.disk.Available()
 	threshold := rc.disk.MinRequired()
@@ -342,6 +475,7 @@ func (rc *RecordingConsumer) ensureSegment() error {
 	}
 	path := rc.segPath
 	resultCh := make(chan writerResult, 1)
+	rc.createPending.Store(true)
 	go func() {
 		w, err := rc.newWriter(path, rc.videoTrack, rc.audioTrack)
 		resultCh <- writerResult{w, err}
@@ -349,23 +483,28 @@ func (rc *RecordingConsumer) ensureSegment() error {
 
 	select {
 	case res := <-resultCh:
+		rc.createPending.Store(false)
 		if res.err != nil {
 			return fmt.Errorf("create segment writer: %w", res.err)
 		}
 		rc.writer = res.w
-	case <-time.After(segmentWriterCreateTimeout):
+	case <-time.After(rc.createTimeout):
 		// Stalled volume: os.Create is wedged in the kernel and will not
 		// return until the device errors or recovers. Abandon it (one
 		// orphaned goroutine, freed when the syscall finally fails) and
 		// surface a write error so handleWriteError pauses recording; the
 		// pause/resume path then retries and self-heals once I/O works.
+		// createPending stays set until this reaper runs, so the retries do
+		// not stack up more stranded goroutines behind the same wedge.
 		go func() {
-			if res := <-resultCh; res.err == nil && res.w != nil {
+			res := <-resultCh
+			rc.createPending.Store(false)
+			if res.err == nil && res.w != nil {
 				_, _ = res.w.Close()
 				_ = os.Remove(path)
 			}
 		}()
-		return fmt.Errorf("segment writer creation timed out after %s (stalled volume)", segmentWriterCreateTimeout)
+		return fmt.Errorf("segment writer creation timed out after %s (stalled volume)", rc.createTimeout)
 	}
 	rc.currentPath = rc.segPath
 
@@ -398,17 +537,35 @@ func (rc *RecordingConsumer) closeCurrentSegment() {
 		return
 	}
 
-	duration, err := rc.writer.Close()
-	if err != nil {
-		slog.Error("close segment failed", "camera", rc.camera, "error", err)
-	}
+	duration, closeErr := rc.writer.Close()
 	// Honest times: the writer's first sample (the keyframe that opened the
 	// file, media tick 0) plus the media duration actually written. The
 	// projected record from ensureSegment used file-creation time and the
 	// nominal segment length; this upsert corrects both.
 	start := rc.writer.StartTime()
+	if closeErr != nil {
+		// The final flush failed, so every sample since the last successful
+		// flush is gone. Trim the segment to the media that actually reached
+		// the file instead of registering coverage this file does not have:
+		// playback of the tail would run off the end, and the gap would be
+		// invisible to every query.
+		durable := rc.writer.FlushedDuration()
+		slog.Error("close segment failed, trimming to the last durable part",
+			"camera", rc.camera, "path", rc.segPath, "error", closeErr,
+			"written", duration.Round(time.Millisecond),
+			"durable", durable.Round(time.Millisecond))
+		duration = durable
+	}
 
-	if info, err := os.Stat(rc.segPath); err == nil && info.Size() > 0 {
+	info, statErr := os.Stat(rc.segPath)
+	switch {
+	case statErr != nil || info.Size() == 0:
+		rc.removeSegment()
+	case closeErr != nil && duration == 0:
+		// Nothing survived the failed flush: the file holds at most an init
+		// segment, which carries no media.
+		rc.removeSegment()
+	default:
 		if rc.onSegment != nil {
 			rc.onSegment(SegmentInfo{
 				Camera:    rc.camera,
@@ -420,8 +577,6 @@ func (rc *RecordingConsumer) closeCurrentSegment() {
 		}
 		slog.Debug("segment completed", "camera", rc.camera, "path", rc.segPath,
 			"duration", duration.Round(time.Second), "size", info.Size())
-	} else {
-		os.Remove(rc.segPath)
 	}
 
 	rc.writer = nil

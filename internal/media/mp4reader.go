@@ -174,6 +174,11 @@ func probeFMP4Duration(r io.ReadSeeker) (time.Duration, error) {
 	var maxDecodeTime uint64
 	var lastDuration uint32
 	var timeScale uint32
+	// sawStructure separates a file with no samples (a bare init segment, an
+	// honest duration of 0) from a file this parser could make no sense of at
+	// all (an unknown duration). Reporting the second as 0 hands the caller a
+	// plausible number for data that was never read.
+	var sawStructure bool
 
 	_, err := gomp4.ReadBoxStructure(r, func(h *gomp4.ReadHandle) (interface{}, error) {
 		switch h.BoxInfo.Type {
@@ -192,6 +197,7 @@ func probeFMP4Duration(r io.ReadSeeker) (time.Duration, error) {
 			if timeScale == 0 {
 				timeScale = mdhd.Timescale
 			}
+			sawStructure = true
 			return nil, nil
 		case gomp4.BoxTypeMoof():
 			return h.Expand()
@@ -219,12 +225,16 @@ func probeFMP4Duration(r io.ReadSeeker) (time.Duration, error) {
 				totalDur += e.SampleDuration
 			}
 			lastDuration = totalDur
+			sawStructure = true
 			return nil, nil
 		}
 		return nil, nil
 	})
 	if err != nil {
 		return 0, err
+	}
+	if !sawStructure {
+		return 0, fmt.Errorf("no MP4 track structure found")
 	}
 
 	if timeScale == 0 {
@@ -501,6 +511,150 @@ func ConcatMP4(inputs []string, outputPath string, start, duration time.Duration
 	return nil
 }
 
+// fmp4Index accumulates the structure indexFile reports while the box walk is
+// in progress. It is a type rather than a set of locals because the handlers
+// share state across sibling boxes: an mdhd carries a timescale but not the
+// track it belongs to, and a tfhd describes the traf that opened before it.
+type fmp4Index struct {
+	initBoxes       []boxLoc
+	fragments       []fragment
+	trackTimeScales map[uint32]uint32
+	currentTrackID  uint32
+	currentFrag     *fragment
+	currentTraf     *trafEntry
+}
+
+// noteInitBox records where an init-segment box sits in the file. A moov is
+// expanded so the per-track mdhd timescales nested inside it are visited.
+func (ix *fmp4Index) noteInitBox(h *gomp4.ReadHandle) (interface{}, error) {
+	ix.initBoxes = append(ix.initBoxes, boxLoc{
+		offset: int64(h.BoxInfo.Offset),
+		size:   int64(h.BoxInfo.Size),
+	})
+	if h.BoxInfo.Type == gomp4.BoxTypeMoov() {
+		return h.Expand()
+	}
+	return nil, nil
+}
+
+// noteTrackID remembers which track the boxes that follow describe, so the
+// mdhd timescale inside the same trak can be attributed to it.
+func (ix *fmp4Index) noteTrackID(h *gomp4.ReadHandle) error {
+	box, _, err := h.ReadPayload()
+	if err != nil {
+		return err
+	}
+	ix.currentTrackID = box.(*gomp4.Tkhd).TrackID
+	return nil
+}
+
+// noteTimescale records the current track's media timescale, which converts
+// that track's decode times and durations into seconds.
+func (ix *fmp4Index) noteTimescale(h *gomp4.ReadHandle) error {
+	box, _, err := h.ReadPayload()
+	if err != nil {
+		return err
+	}
+	if ix.currentTrackID != 0 {
+		ix.trackTimeScales[ix.currentTrackID] = box.(*gomp4.Mdhd).Timescale
+	}
+	return nil
+}
+
+// beginFragment opens a fragment at a moof. The fragment is only appended once
+// its mdat is reached, since a moof without media contributes nothing.
+func (ix *fmp4Index) beginFragment(h *gomp4.ReadHandle) {
+	ix.currentFrag = &fragment{
+		moofOffset: int64(h.BoxInfo.Offset),
+		moofSize:   int64(h.BoxInfo.Size),
+	}
+	ix.currentTraf = nil
+}
+
+// beginTraf adds a per-track entry to the fragment being built and makes it the
+// target of the tfhd, tfdt and trun boxes nested inside this traf.
+func (ix *fmp4Index) beginTraf() {
+	if ix.currentFrag == nil {
+		return
+	}
+	ix.currentFrag.trafs = append(ix.currentFrag.trafs, trafEntry{})
+	ix.currentTraf = &ix.currentFrag.trafs[len(ix.currentFrag.trafs)-1]
+}
+
+// noteTfhd records the traf's track and its default sync flag. A traf that
+// declares no default sample flags is treated as starting on a sync sample,
+// which is what a per-GOP recording writes.
+func (ix *fmp4Index) noteTfhd(h *gomp4.ReadHandle) error {
+	if ix.currentTraf == nil {
+		return nil
+	}
+	box, _, err := h.ReadPayload()
+	if err != nil {
+		return err
+	}
+	tfhd := box.(*gomp4.Tfhd)
+	ix.currentTraf.trackID = tfhd.TrackID
+	if tfhd.GetFlags()&0x000020 != 0 {
+		ix.currentTraf.isSync = tfhd.DefaultSampleFlags&0x00010000 == 0
+	} else {
+		ix.currentTraf.isSync = true
+	}
+	return nil
+}
+
+// noteTfdt records the traf's base media decode time, which places the
+// fragment on its track's timeline.
+func (ix *fmp4Index) noteTfdt(h *gomp4.ReadHandle) error {
+	if ix.currentTraf == nil {
+		return nil
+	}
+	box, _, err := h.ReadPayload()
+	if err != nil {
+		return err
+	}
+	ix.currentTraf.decodeTime = box.(*gomp4.Tfdt).GetBaseMediaDecodeTime()
+	return nil
+}
+
+// noteTrun adds the run's sample durations to the traf and refines its sync
+// flag from the run's own flags, which are more specific than the tfhd default.
+func (ix *fmp4Index) noteTrun(h *gomp4.ReadHandle) error {
+	if ix.currentTraf == nil {
+		return nil
+	}
+	box, _, err := h.ReadPayload()
+	if err != nil {
+		return err
+	}
+	trun := box.(*gomp4.Trun)
+	var totalDur uint32
+	for _, e := range trun.Entries {
+		totalDur += e.SampleDuration
+	}
+	ix.currentTraf.duration += totalDur
+
+	trunFlags := trun.GetFlags()
+	if trunFlags&0x000004 != 0 {
+		ix.currentTraf.isSync = trun.FirstSampleFlags&0x00010000 == 0
+	} else if trunFlags&0x000400 != 0 && len(trun.Entries) > 0 {
+		ix.currentTraf.isSync = trun.Entries[0].SampleFlags&0x00010000 == 0
+	}
+	return nil
+}
+
+// endFragment closes the open fragment at its mdat and records it. The mdat is
+// the fragment's media, so its offset and size complete the entry.
+func (ix *fmp4Index) endFragment(h *gomp4.ReadHandle) {
+	if ix.currentFrag == nil {
+		return
+	}
+	ix.currentFrag.mdatOffset = int64(h.BoxInfo.Offset)
+	ix.currentFrag.mdatSize = int64(h.BoxInfo.Size)
+	ix.fragments = append(ix.fragments, *ix.currentFrag)
+	ix.currentFrag = nil
+	ix.currentTraf = nil
+}
+
 // indexFile scans an fMP4 file and returns init box locations, fragment metadata,
 // and per-track timescales (from mdhd boxes in the init segment).
 func indexFile(r io.ReadSeeker) (initBoxes []boxLoc, fragments []fragment, trackTimeScales map[uint32]uint32, err error) {
@@ -508,130 +662,53 @@ func indexFile(r io.ReadSeeker) (initBoxes []boxLoc, fragments []fragment, track
 		return nil, nil, nil, err
 	}
 
-	trackTimeScales = make(map[uint32]uint32)
-	var currentTrackID uint32
+	ix := &fmp4Index{trackTimeScales: make(map[uint32]uint32)}
 
 	// First pass with ReadBoxStructure to get fragment timing info.
 	// One fragment is emitted per moof (with one trafEntry per traf inside it).
-	var currentFrag *fragment
-	var currentTraf *trafEntry
 	_, err = gomp4.ReadBoxStructure(r, func(h *gomp4.ReadHandle) (interface{}, error) {
 		switch h.BoxInfo.Type {
 		case gomp4.BoxTypeFtyp(), gomp4.BoxTypeMoov(), gomp4.BoxTypeStyp():
-			initBoxes = append(initBoxes, boxLoc{
-				offset: int64(h.BoxInfo.Offset),
-				size:   int64(h.BoxInfo.Size),
-			})
-			if h.BoxInfo.Type == gomp4.BoxTypeMoov() {
-				return h.Expand()
-			}
-			return nil, nil
+			return ix.noteInitBox(h)
 
 		case gomp4.BoxTypeTrak():
-			currentTrackID = 0
+			ix.currentTrackID = 0
 			return h.Expand()
 
 		case gomp4.BoxTypeTkhd():
-			box, _, err := h.ReadPayload()
-			if err != nil {
-				return nil, err
-			}
-			tkhd := box.(*gomp4.Tkhd)
-			currentTrackID = tkhd.TrackID
-			return nil, nil
+			return nil, ix.noteTrackID(h)
 
 		case gomp4.BoxTypeMdia():
 			return h.Expand()
 
 		case gomp4.BoxTypeMdhd():
-			box, _, err := h.ReadPayload()
-			if err != nil {
-				return nil, err
-			}
-			mdhd := box.(*gomp4.Mdhd)
-			if currentTrackID != 0 {
-				trackTimeScales[currentTrackID] = mdhd.Timescale
-			}
-			return nil, nil
+			return nil, ix.noteTimescale(h)
 
 		case gomp4.BoxTypeMoof():
-			currentFrag = &fragment{
-				moofOffset: int64(h.BoxInfo.Offset),
-				moofSize:   int64(h.BoxInfo.Size),
-			}
-			currentTraf = nil
+			ix.beginFragment(h)
 			return h.Expand()
 
 		case gomp4.BoxTypeTraf():
-			if currentFrag != nil {
-				currentFrag.trafs = append(currentFrag.trafs, trafEntry{})
-				currentTraf = &currentFrag.trafs[len(currentFrag.trafs)-1]
-			}
+			ix.beginTraf()
 			return h.Expand()
 
 		case gomp4.BoxTypeTfhd():
-			if currentTraf != nil {
-				box, _, err := h.ReadPayload()
-				if err != nil {
-					return nil, err
-				}
-				tfhd := box.(*gomp4.Tfhd)
-				currentTraf.trackID = tfhd.TrackID
-				if tfhd.GetFlags()&0x000020 != 0 {
-					currentTraf.isSync = tfhd.DefaultSampleFlags&0x00010000 == 0
-				} else {
-					currentTraf.isSync = true
-				}
-			}
-			return nil, nil
+			return nil, ix.noteTfhd(h)
 
 		case gomp4.BoxTypeTfdt():
-			if currentTraf != nil {
-				box, _, err := h.ReadPayload()
-				if err != nil {
-					return nil, err
-				}
-				tfdt := box.(*gomp4.Tfdt)
-				currentTraf.decodeTime = tfdt.GetBaseMediaDecodeTime()
-			}
-			return nil, nil
+			return nil, ix.noteTfdt(h)
 
 		case gomp4.BoxTypeTrun():
-			if currentTraf != nil {
-				box, _, err := h.ReadPayload()
-				if err != nil {
-					return nil, err
-				}
-				trun := box.(*gomp4.Trun)
-				var totalDur uint32
-				for _, e := range trun.Entries {
-					totalDur += e.SampleDuration
-				}
-				currentTraf.duration += totalDur
-
-				trunFlags := trun.GetFlags()
-				if trunFlags&0x000004 != 0 {
-					currentTraf.isSync = trun.FirstSampleFlags&0x00010000 == 0
-				} else if trunFlags&0x000400 != 0 && len(trun.Entries) > 0 {
-					currentTraf.isSync = trun.Entries[0].SampleFlags&0x00010000 == 0
-				}
-			}
-			return nil, nil
+			return nil, ix.noteTrun(h)
 
 		case gomp4.BoxTypeMdat():
-			if currentFrag != nil {
-				currentFrag.mdatOffset = int64(h.BoxInfo.Offset)
-				currentFrag.mdatSize = int64(h.BoxInfo.Size)
-				fragments = append(fragments, *currentFrag)
-				currentFrag = nil
-				currentTraf = nil
-			}
+			ix.endFragment(h)
 			return nil, nil
 		}
 		return nil, nil
 	})
 
-	return initBoxes, fragments, trackTimeScales, err
+	return ix.initBoxes, ix.fragments, ix.trackTimeScales, err
 }
 
 // copyFragmentAdjusted copies a moof+mdat pair, rewriting the sequence number
@@ -697,161 +774,216 @@ type HLSSegmentRef struct {
 // player to present the exact offset after decoding that keyframe. Pass nil to
 // omit the program-date-time tags.
 func GenerateHLSPlaylist(paths []string, baseURIs []string, fileStarts []time.Time, start time.Duration) (*HLSPlaylistResult, error) {
-	if len(paths) == 0 {
-		return nil, fmt.Errorf("no paths provided")
-	}
-	if len(paths) != len(baseURIs) {
-		return nil, fmt.Errorf("paths and baseURIs length mismatch")
-	}
-	if fileStarts != nil && len(fileStarts) != len(paths) {
-		return nil, fmt.Errorf("paths and fileStarts length mismatch")
+	if err := validateHLSInputs(paths, baseURIs, fileStarts); err != nil {
+		return nil, err
 	}
 
-	type hlsSeg struct {
-		fileIdx   int
-		duration  float64
-		startTick uint64 // decode time of the segment's first fragment
-		videoTS   uint32 // the file's video timescale, for tick-to-time conversion
-		ref       HLSSegmentRef
-	}
-	var segments []hlsSeg
-
-	type initInfo struct {
-		fileIdx   int
-		byteStart int64
-		byteLen   int64
-	}
-	var segInits []initInfo
-
+	var segments []hlsPlaylistSegment
 	for fileIdx, path := range paths {
-		f, err := os.Open(path)
+		fragments, videoTrackID, videoTS, err := indexHLSFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", path, err)
-		}
-
-		initBoxes, fragments, trackTimeScales, err := indexFile(f)
-		f.Close()
-		if err != nil {
-			// On EOF the file is still being written. Keep any fragments already
-			// parsed so in-progress segments contribute their complete GOPs to the
-			// playlist. Skip only if no usable data was recovered or the error is
-			// unrelated to truncation.
-			if (!errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF)) || len(fragments) == 0 {
+			if errors.Is(err, errNoUsableFragments) {
 				continue
 			}
+			return nil, err
 		}
 
-		var initSize int64
-		if len(initBoxes) > 0 {
-			last := initBoxes[len(initBoxes)-1]
-			initSize = last.offset + last.size
-		}
-
-		videoTrackID := findVideoTrack(fragments, trackTimeScales)
-		videoTS := trackTimeScales[videoTrackID]
-		if videoTS == 0 {
-			videoTS = 90000
-		}
-
+		// Only the first file is entered part way through: later files play
+		// from their own beginning.
+		trimStart := fileIdx == 0 && start > 0
 		var startTick uint64
-		if fileIdx == 0 && start > 0 {
+		if trimStart {
 			startTick = uint64(start.Seconds() * float64(videoTS))
 		}
 
-		const targetSegDur = 4.0
-		var curByteStart int64 = -1
-		var curByteEnd int64
-		var curDurTicks uint64
-		var curStartTick uint64
-
-		flush := func() {
-			if curByteStart < 0 {
-				return
-			}
-			dur := float64(curDurTicks) / float64(videoTS)
-			segments = append(segments, hlsSeg{
-				fileIdx:   fileIdx,
-				duration:  dur,
-				startTick: curStartTick,
-				videoTS:   videoTS,
-				ref: HLSSegmentRef{
-					FilePath:  path,
-					ByteStart: curByteStart,
-					ByteEnd:   curByteEnd,
-				},
-			})
-			segInits = append(segInits, initInfo{fileIdx: fileIdx, byteStart: 0, byteLen: initSize})
-			curByteStart = -1
-			curByteEnd = 0
-			curDurTicks = 0
-		}
-
-		for _, frag := range fragments {
-			vTraf := frag.traf(videoTrackID)
-			if vTraf == nil {
-				continue
-			}
-			if fileIdx == 0 && start > 0 {
-				fragEndTick := vTraf.decodeTime + uint64(vTraf.duration)
-				if fragEndTick <= startTick {
-					continue
-				}
-			}
-
-			fragEnd := frag.mdatOffset + frag.mdatSize
-			curDurSec := float64(curDurTicks) / float64(videoTS)
-			if vTraf.isSync && curByteStart >= 0 && curDurSec >= targetSegDur {
-				flush()
-			}
-
-			if curByteStart < 0 {
-				curByteStart = frag.moofOffset
-				curStartTick = vTraf.decodeTime
-			}
-			if fragEnd > curByteEnd {
-				curByteEnd = fragEnd
-			}
-			curDurTicks += uint64(vTraf.duration)
-		}
-		flush()
+		segments = append(segments,
+			segmentHLSFile(path, fileIdx, fragments, videoTrackID, videoTS, startTick, trimStart)...)
 	}
 
 	if len(segments) == 0 {
 		return nil, fmt.Errorf("no segments produced")
 	}
 
+	playlist, refs := buildHLSPlaylist(segments, baseURIs, fileStarts, start)
+	return &HLSPlaylistResult{
+		Playlist: playlist,
+		Segments: refs,
+	}, nil
+}
+
+// hlsPlaylistSegment is one segment of the playlist under construction. It
+// carries the timing the playlist tags need alongside the byte range a request
+// for that segment reads.
+type hlsPlaylistSegment struct {
+	fileIdx   int
+	duration  float64
+	startTick uint64 // decode time of the segment's first fragment
+	videoTS   uint32 // the file's video timescale, for tick-to-time conversion
+	ref       HLSSegmentRef
+}
+
+// errNoUsableFragments reports that a file contributes nothing to the playlist
+// and is passed over. It is distinct from a read failure, which stops playlist
+// generation instead of skipping one file.
+var errNoUsableFragments = errors.New("no usable fragments")
+
+// validateHLSInputs rejects argument lists the playlist cannot be built from,
+// so a mismatch surfaces here rather than as an index panic further down.
+func validateHLSInputs(paths []string, baseURIs []string, fileStarts []time.Time) error {
+	if len(paths) == 0 {
+		return fmt.Errorf("no paths provided")
+	}
+	if len(paths) != len(baseURIs) {
+		return fmt.Errorf("paths and baseURIs length mismatch")
+	}
+	if fileStarts != nil && len(fileStarts) != len(paths) {
+		return fmt.Errorf("paths and fileStarts length mismatch")
+	}
+	return nil
+}
+
+// indexHLSFile reads one file's fragments and the timing of its video track.
+// A file still being written ends in a truncated box, so fragments parsed
+// before the truncation are kept and only a file that yielded none is skipped.
+func indexHLSFile(path string) (frags []fragment, videoTrackID uint32, videoTS uint32, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("open %s: %w", path, err)
+	}
+
+	_, fragments, trackTimeScales, err := indexFile(f)
+	f.Close()
+	if err != nil {
+		// On EOF the file is still being written. Keep any fragments already
+		// parsed so in-progress segments contribute their complete GOPs to the
+		// playlist. Skip only if no usable data was recovered or the error is
+		// unrelated to truncation.
+		if (!errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF)) || len(fragments) == 0 {
+			return nil, 0, 0, errNoUsableFragments
+		}
+	}
+
+	videoTrackID = findVideoTrack(fragments, trackTimeScales)
+	videoTS = trackTimeScales[videoTrackID]
+	if videoTS == 0 {
+		videoTS = 90000
+	}
+	return fragments, videoTrackID, videoTS, nil
+}
+
+// segmentHLSFile groups one file's fragments into playlist segments, closing a
+// segment at a keyframe once it reaches the target duration so every segment
+// starts on a frame a player can decode from. When trimStart is set, fragments
+// that end before startTick are dropped: they hold media the request asked to
+// skip past.
+func segmentHLSFile(path string, fileIdx int, fragments []fragment, videoTrackID uint32, videoTS uint32, startTick uint64, trimStart bool) []hlsPlaylistSegment {
+	const targetSegDur = 4.0
+
+	var segments []hlsPlaylistSegment
+	var curByteStart int64 = -1
+	var curByteEnd int64
+	var curDurTicks uint64
+	var curStartTick uint64
+
+	flush := func() {
+		if curByteStart < 0 {
+			return
+		}
+		segments = append(segments, hlsPlaylistSegment{
+			fileIdx:   fileIdx,
+			duration:  float64(curDurTicks) / float64(videoTS),
+			startTick: curStartTick,
+			videoTS:   videoTS,
+			ref: HLSSegmentRef{
+				FilePath:  path,
+				ByteStart: curByteStart,
+				ByteEnd:   curByteEnd,
+			},
+		})
+		curByteStart = -1
+		curByteEnd = 0
+		curDurTicks = 0
+	}
+
+	for _, frag := range fragments {
+		vTraf := frag.traf(videoTrackID)
+		if vTraf == nil {
+			continue
+		}
+		if trimStart && vTraf.decodeTime+uint64(vTraf.duration) <= startTick {
+			continue
+		}
+
+		fragEnd := frag.mdatOffset + frag.mdatSize
+		curDurSec := float64(curDurTicks) / float64(videoTS)
+		if vTraf.isSync && curByteStart >= 0 && curDurSec >= targetSegDur {
+			flush()
+		}
+
+		if curByteStart < 0 {
+			curByteStart = frag.moofOffset
+			curStartTick = vTraf.decodeTime
+		}
+		if fragEnd > curByteEnd {
+			curByteEnd = fragEnd
+		}
+		curDurTicks += uint64(vTraf.duration)
+	}
+	flush()
+
+	return segments
+}
+
+// hlsTargetDuration reports the EXT-X-TARGETDURATION value, which the longest
+// segment rounded up satisfies. Players reject a playlist whose segments run
+// longer than the value it declares.
+func hlsTargetDuration(segments []hlsPlaylistSegment) int {
 	var maxDur float64
 	for _, seg := range segments {
 		if seg.duration > maxDur {
 			maxDur = seg.duration
 		}
 	}
-	targetDuration := int(math.Ceil(maxDur))
-	if targetDuration < 1 {
-		targetDuration = 1
+	target := int(math.Ceil(maxDur))
+	if target < 1 {
+		return 1
 	}
+	return target
+}
 
-	// Build the m3u8 playlist with indexed segment URLs
+// writeHLSStartTag asks the player to present the exact instant requested when
+// that instant falls inside the first segment, which begins at the keyframe
+// before it. PRECISE=YES is what makes the player decode from the keyframe and
+// still show the requested offset; without it playback snaps to a handful of
+// start times.
+func writeHLSStartTag(b *strings.Builder, first hlsPlaylistSegment, start time.Duration) {
+	if start <= 0 || first.fileIdx != 0 || first.videoTS == 0 {
+		return
+	}
+	firstMediaStart := float64(first.startTick) / float64(first.videoTS)
+	preferredStart := start.Seconds() - firstMediaStart
+	if preferredStart > 0.001 {
+		fmt.Fprintf(b, "#EXT-X-START:TIME-OFFSET=%.6f,PRECISE=YES\n", preferredStart)
+	}
+}
+
+// buildHLSPlaylist renders the m3u8 text for a segment list and returns the
+// segment references in playlist order, so a request for segment N resolves to
+// a file and byte range. Segment URLs are indexed rather than byte-range
+// addressed, because byte ranges fail on the multi-track moofs these
+// recordings contain.
+func buildHLSPlaylist(segments []hlsPlaylistSegment, baseURIs []string, fileStarts []time.Time, start time.Duration) (string, []HLSSegmentRef) {
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
 	b.WriteString("#EXT-X-VERSION:7\n")
-	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", targetDuration)
+	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", hlsTargetDuration(segments))
 	b.WriteString("#EXT-X-PLAYLIST-TYPE:VOD\n")
-	if start > 0 && segments[0].fileIdx == 0 && segments[0].videoTS > 0 {
-		firstMediaStart := float64(segments[0].startTick) / float64(segments[0].videoTS)
-		preferredStart := start.Seconds() - firstMediaStart
-		if preferredStart > 0.001 {
-			// PRECISE=YES is important here: starting only at the containing GOP
-			// recreates the visible "snap to a few start times" this tag removes.
-			fmt.Fprintf(&b, "#EXT-X-START:TIME-OFFSET=%.6f,PRECISE=YES\n", preferredStart)
-		}
-	}
+	writeHLSStartTag(&b, segments[0], start)
 
 	var refs []HLSSegmentRef
 	lastFileIdx := -1
-	for i, seg := range segments {
-		init := segInits[i]
-		if init.fileIdx != lastFileIdx {
+	for _, seg := range segments {
+		if seg.fileIdx != lastFileIdx {
 			if lastFileIdx != -1 {
 				// Decode times restart at zero in every file; without an
 				// explicit discontinuity players treat the jump backwards as
@@ -860,16 +992,16 @@ func GenerateHLSPlaylist(paths []string, baseURIs []string, fileStarts []time.Ti
 			}
 			// Init segment served directly (not byte-range) for Safari compatibility
 			fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"%s/hls/init.mp4\"\n",
-				baseURIs[init.fileIdx])
+				baseURIs[seg.fileIdx])
 			if fileStarts != nil {
 				// Anchor this discontinuity sequence to wall-clock time:
 				// file start (media tick 0) plus the first fragment's offset.
-				pdt := fileStarts[init.fileIdx].Add(
+				pdt := fileStarts[seg.fileIdx].Add(
 					time.Duration(seg.startTick * uint64(time.Second) / uint64(seg.videoTS)))
 				fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n",
 					pdt.UTC().Format("2006-01-02T15:04:05.000Z"))
 			}
-			lastFileIdx = init.fileIdx
+			lastFileIdx = seg.fileIdx
 		}
 
 		fmt.Fprintf(&b, "#EXTINF:%.6f,\n", seg.duration)
@@ -879,10 +1011,7 @@ func GenerateHLSPlaylist(paths []string, baseURIs []string, fileStarts []time.Ti
 
 	b.WriteString("#EXT-X-ENDLIST\n")
 
-	return &HLSPlaylistResult{
-		Playlist: b.String(),
-		Segments: refs,
-	}, nil
+	return b.String(), refs
 }
 
 // ServeHLSSegment reads a byte range from an fMP4 file containing one or more

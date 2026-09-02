@@ -360,39 +360,136 @@ func buildOutputInit(srcInit fmp4.Init, videoTrackID, audioTrackID int, videoTS 
 	return outInit
 }
 
+// transcodeSource is the parsed shape of an input segment: everything the
+// re-encode needs to read before any codec is created. Separating it keeps the
+// file and container handling away from the encoder loop, where the pinned
+// C buffers make every edit delicate.
+type transcodeSource struct {
+	file         *os.File
+	init         fmp4.Init
+	videoTrackID int
+	audioTrackID int
+	h264         *codecs.H264
+	frags        []fragment
+	timeScales   map[uint32]uint32
+	blocks       []moofBlock
+}
+
+// openTranscodeSource opens src and reads its init segment and fragment index.
+// The caller owns the returned file and must close it.
+func openTranscodeSource(src string) (*transcodeSource, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return nil, fmt.Errorf("open src: %w", err)
+	}
+
+	ts := &transcodeSource{file: in}
+	if err := ts.init.Unmarshal(in); err != nil {
+		in.Close()
+		return nil, fmt.Errorf("unmarshal init: %w", err)
+	}
+
+	ts.videoTrackID, ts.audioTrackID, ts.h264, err = identifyTracks(ts.init)
+	if err != nil {
+		in.Close()
+		return nil, err
+	}
+
+	// The init parse consumed the header, so rewind before indexing the
+	// moof+mdat pairs.
+	if _, err := in.Seek(0, io.SeekStart); err != nil {
+		in.Close()
+		return nil, err
+	}
+	_, ts.frags, ts.timeScales, err = indexFile(in)
+	if err != nil {
+		in.Close()
+		return nil, fmt.Errorf("index: %w", err)
+	}
+
+	ts.blocks = collectMoofBlocks(ts.frags)
+	return ts, nil
+}
+
+// readGOPBlock reads one moof+mdat pair whole and unmarshals it as fmp4 parts,
+// which separates per-track sample payloads regardless of whether the moof
+// carries one traf or a video and audio pair.
+func readGOPBlock(in io.ReadSeeker, blk moofBlock, gopIdx int) (fmp4.Parts, error) {
+	blockSize := (blk.mdatOffset - blk.moofOffset) + blk.mdatSize
+	if _, err := in.Seek(blk.moofOffset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	blockBuf := make([]byte, blockSize)
+	if _, err := io.ReadFull(in, blockBuf); err != nil {
+		return nil, fmt.Errorf("read block %d: %w", gopIdx, err)
+	}
+
+	var parts fmp4.Parts
+	if err := parts.Unmarshal(blockBuf); err != nil {
+		return nil, fmt.Errorf("unmarshal block %d: %w", gopIdx, err)
+	}
+	return parts, nil
+}
+
+// gopTracks is one GOP split by track: the video payload concatenated for the
+// decoder, and the audio samples copied for verbatim pass-through.
+type gopTracks struct {
+	videoAVCC     []byte
+	videoBase     uint64
+	videoDuration uint32
+	audioSamples  []*fmp4.Sample
+	audioBase     uint64
+}
+
+// splitGOPTracks separates one block's samples by track. Audio payloads are
+// copied because they outlive the block buffer they were unmarshaled from and
+// are written to the output as they are.
+func splitGOPTracks(parts fmp4.Parts, videoTrackID, audioTrackID int) gopTracks {
+	var g gopTracks
+	for _, part := range parts {
+		for _, tr := range part.Tracks {
+			switch tr.ID {
+			case videoTrackID:
+				g.videoBase = tr.BaseTime
+				for _, s := range tr.Samples {
+					g.videoDuration += s.Duration
+					g.videoAVCC = append(g.videoAVCC, s.Payload...)
+				}
+			case audioTrackID:
+				g.audioBase = tr.BaseTime
+				for _, s := range tr.Samples {
+					g.audioSamples = append(g.audioSamples, &fmp4.Sample{
+						Duration:        s.Duration,
+						Payload:         append([]byte(nil), s.Payload...),
+						IsNonSyncSample: s.IsNonSyncSample,
+					})
+				}
+			}
+		}
+	}
+	return g
+}
+
 // transcodeFile reads src fMP4, re-encodes video track at (outW, outH), copies audio verbatim, writes to dst.
 func transcodeFile(src, dst string, outW, outH int) error {
 	if !ensureOpenH264() {
 		return fmt.Errorf("OpenH264 not available")
 	}
 
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open src: %w", err)
-	}
-	defer in.Close()
-
-	// Parse init segment
-	var srcInit fmp4.Init
-	if err := srcInit.Unmarshal(in); err != nil {
-		return fmt.Errorf("unmarshal init: %w", err)
-	}
-
-	videoTrackID, audioTrackID, srcH264Codec, err := identifyTracks(srcInit)
+	srcFile, err := openTranscodeSource(src)
 	if err != nil {
 		return err
 	}
+	defer srcFile.file.Close()
 
-	// Seek back to start and index moof+mdat locations
-	if _, err := in.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	_, indexedFrags, trackTimeScales, err := indexFile(in)
-	if err != nil {
-		return fmt.Errorf("index: %w", err)
-	}
-
-	blocks := collectMoofBlocks(indexedFrags)
+	in := srcFile.file
+	srcInit := srcFile.init
+	videoTrackID := srcFile.videoTrackID
+	audioTrackID := srcFile.audioTrackID
+	srcH264Codec := srcFile.h264
+	indexedFrags := srcFile.frags
+	trackTimeScales := srcFile.timeScales
+	blocks := srcFile.blocks
 
 	// Create H264 decoder
 	dec := NewH264Decoder()
@@ -482,51 +579,17 @@ func transcodeFile(src, dst string, outW, outH int) error {
 	var encInfoBuf [unsafe.Sizeof(openh264.SFrameBSInfo{})]byte
 
 	for gopIdx, blk := range blocks {
-		// Read the full moof+mdat block and unmarshal it as an fmp4.Part so that
-		// per-track sample payloads are properly separated regardless of whether
-		// the moof uses single-track or multi-track (video+audio) trafs.
-		blockSize := (blk.mdatOffset - blk.moofOffset) + blk.mdatSize
-		if _, err := in.Seek(blk.moofOffset, io.SeekStart); err != nil {
+		parts, err := readGOPBlock(in, blk, gopIdx)
+		if err != nil {
 			return err
 		}
-		blockBuf := make([]byte, blockSize)
-		if _, err := io.ReadFull(in, blockBuf); err != nil {
-			return fmt.Errorf("read block %d: %w", gopIdx, err)
-		}
 
-		var parts fmp4.Parts
-		if err := parts.Unmarshal(blockBuf); err != nil {
-			return fmt.Errorf("unmarshal block %d: %w", gopIdx, err)
-		}
-
-		// Collect video and audio samples from this block
-		var videoAVCC []byte
-		var videoBase uint64
-		var videoDuration uint32
-		var newAudioSamples []*fmp4.Sample
-		var audioBase uint64
-
-		for _, part := range parts {
-			for _, tr := range part.Tracks {
-				switch tr.ID {
-				case videoTrackID:
-					videoBase = tr.BaseTime
-					for _, s := range tr.Samples {
-						videoDuration += s.Duration
-						videoAVCC = append(videoAVCC, s.Payload...)
-					}
-				case audioTrackID:
-					audioBase = tr.BaseTime
-					for _, s := range tr.Samples {
-						newAudioSamples = append(newAudioSamples, &fmp4.Sample{
-							Duration:        s.Duration,
-							Payload:         append([]byte(nil), s.Payload...),
-							IsNonSyncSample: s.IsNonSyncSample,
-						})
-					}
-				}
-			}
-		}
+		gop := splitGOPTracks(parts, videoTrackID, audioTrackID)
+		videoAVCC := gop.videoAVCC
+		videoBase := gop.videoBase
+		videoDuration := gop.videoDuration
+		newAudioSamples := gop.audioSamples
+		audioBase := gop.audioBase
 
 		if len(videoAVCC) == 0 {
 			continue
@@ -659,9 +722,18 @@ func transcodeFile(src, dst string, outW, outH int) error {
 					}
 					// Sum NAL unit lengths by stepping through the library-owned
 					// int32 array one element at a time.
+					//
+					// vet's unsafeptr analyzer reports both conversions below
+					// because it cannot tell a foreign address from a Go
+					// pointer the collector may move. nalLenPtr and bufPtr name
+					// memory OpenH264 allocated, which the collector neither
+					// moves nor frees, and which stays valid until the next
+					// EncodeFrame or destroy call. The suppression is per line
+					// on purpose: golangci-lint runs the same analyzer and
+					// still fails on any conversion that is not marked.
 					var layerSize int32
 					for i := int32(0); i < nalCount; i++ {
-						l := *(*int32)(unsafe.Pointer(nalLenPtr + uintptr(i)*4)) //nolint:govet // address held as uintptr; the GC must not trace library-owned memory
+						l := *(*int32)(unsafe.Pointer(nalLenPtr + uintptr(i)*4)) //nolint:govet // unsafeptr: address held as uintptr; the GC must not trace library-owned memory
 						layerSize += l
 					}
 					if layerSize <= 0 {
@@ -670,7 +742,7 @@ func transcodeFile(src, dst string, outW, outH int) error {
 					// Copy the NAL bytes one byte at a time into a Go-owned slice.
 					layerCopy := make([]byte, layerSize)
 					for i := int32(0); i < layerSize; i++ {
-						layerCopy[i] = *(*uint8)(unsafe.Pointer(bufPtr + uintptr(i))) //nolint:govet // address held as uintptr; the GC must not trace library-owned memory
+						layerCopy[i] = *(*uint8)(unsafe.Pointer(bufPtr + uintptr(i))) //nolint:govet // unsafeptr: address held as uintptr; the GC must not trace library-owned memory
 					}
 					nalBytes = append(nalBytes, layerCopy...)
 				}

@@ -2,11 +2,14 @@ package snapshot
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/jpeg"
+	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 
@@ -252,36 +255,80 @@ func drawLabel(img *image.RGBA, x, y int, text string, c color.RGBA) {
 	drawer.DrawString(text)
 }
 
-// SaveSnapshot encodes an image as JPEG and writes it to disk.
+// createSnapshotTemp opens a uniquely named file beside the target with the
+// permissions a plain create would produce, so the process umask still decides
+// what a new snapshot is readable by. os.CreateTemp forces 0600 and leaves the
+// caller to invent a mode, which is how an operator's stricter umask ends up
+// widened to a fixed 0644.
+func createSnapshotTemp(dir, base string) (*os.File, error) {
+	for attempt := 0; attempt < 10000; attempt++ {
+		name := filepath.Join(dir, fmt.Sprintf(".%s.tmp%d", base, rand.Uint32()))
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666)
+		if err == nil {
+			return f, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("no free temporary name beside %s", filepath.Join(dir, base))
+}
+
+// SaveSnapshot encodes an image as JPEG and replaces the file at path with it.
+// The encode goes to a temporary file in the same directory which is then
+// renamed over the target, so a reader holding that path sees either the
+// previous snapshot or the new one and never the empty or half-written file a
+// truncating write exposes. Cameras overwrite one path on every capture, and
+// the API and the notification dispatcher read it at arbitrary times, so that
+// window is reached in normal operation rather than only under a crash.
 func SaveSnapshot(img *image.RGBA, path string, quality int) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create directory: %w", err)
 	}
 
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create file: %w", err)
-	}
-
 	if quality <= 0 || quality > 100 {
 		quality = 85
 	}
 
+	f, err := createSnapshotTemp(dir, filepath.Base(path))
+	if err != nil {
+		return fmt.Errorf("create file: %w", err)
+	}
+	tmpPath := f.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = f.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	// A snapshot is written by replacing the file, so its permissions have to be
+	// set deliberately rather than inherited from whatever the target already
+	// was. A camera overwrites one path every few seconds, so an operator who
+	// tightened a snapshot's mode would otherwise have every capture widen it
+	// again.
+	if info, statErr := os.Stat(path); statErr == nil {
+		if err := f.Chmod(info.Mode().Perm()); err != nil {
+			return fmt.Errorf("set permissions: %w", err)
+		}
+	}
+
 	w := bufio.NewWriter(f)
 	if err := jpeg.Encode(w, img, &jpeg.Options{Quality: quality}); err != nil {
-		_ = f.Close()
 		return fmt.Errorf("encode jpeg: %w", err)
 	}
-
 	if err := w.Flush(); err != nil {
-		_ = f.Close()
 		return fmt.Errorf("flush buffer: %w", err)
 	}
-
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close file: %w", err)
 	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replace file: %w", err)
+	}
+	committed = true
 
 	return nil
 }

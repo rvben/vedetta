@@ -354,8 +354,15 @@ func copyDecodedFrame(planePtr [3]uintptr, planeLen [3]int, w, h, yStride, cStri
 // header is materialized only as the immediate argument to copy, which lowers
 // to a non-preemptible memmove, so the foreign address is never live at a GC
 // safepoint and never stored where the GC could trace it.
+//
+// vet's unsafeptr analyzer reports this conversion because it cannot tell a
+// foreign address from a Go pointer that the collector may move. src always
+// names memory OpenH264 allocated, which the collector neither moves nor
+// frees, so the conversion is correct here and the report is not actionable.
+// The suppression is per line on purpose: golangci-lint runs the same analyzer
+// and still fails on any conversion that is not marked like this one.
 func copyFromCPlane(dst []byte, src uintptr, n int) {
-	copy(dst, unsafe.Slice((*byte)(unsafe.Pointer(src)), n)) //nolint:govet // address held as uintptr; the slice is transient and consumed by memmove
+	copy(dst, unsafe.Slice((*byte)(unsafe.Pointer(src)), n)) //nolint:govet // unsafeptr: address held as uintptr; the slice is transient and consumed by memmove
 }
 
 // Flush retrieves any buffered frame from the decoder without feeding new data.

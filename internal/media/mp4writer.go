@@ -3,6 +3,7 @@ package media
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
 	"github.com/pion/rtp"
 
+	"github.com/rvben/vedetta/internal/h264au"
 	"github.com/rvben/vedetta/internal/rtsp"
 )
 
@@ -25,6 +27,20 @@ import (
 // duration would silently compress the gap and desync that mapping for the
 // rest of the file. Callers should close the segment and start a new one.
 var ErrTimestampGap = errors.New("video RTP timestamp gap")
+
+const (
+	// maxPendingPartSeconds bounds how much media time may sit in the GOP
+	// buffer before it is written out. A stream that stops emitting keyframes
+	// (or emits them far apart) would otherwise buffer an entire segment in
+	// memory, since a part is normally only flushed on the next keyframe.
+	maxPendingPartSeconds = 4
+	// maxPendingPartBytes bounds the same buffer by size, which is what
+	// catches a high-bitrate stream well before the duration ceiling.
+	maxPendingPartBytes = 8 << 20
+	// noKeyframeLogInterval rate-limits the warning about a stream whose
+	// keyframe interval exceeds maxPendingPartSeconds.
+	noKeyframeLogInterval = time.Minute
+)
 
 // SegmentWriter writes RTP packets into an fMP4 file.
 // Video and audio samples are buffered per GOP (group of pictures) and flushed
@@ -68,6 +84,9 @@ type SegmentWriter struct {
 	pendingAudioSamples []*fmp4.Sample
 	pendingVideoDTS     uint64 // base decode time for pending video GOP
 	pendingAudioDTS     uint64 // base decode time for pending audio
+	pendingBytes        int    // payload bytes buffered but not yet marshaled
+	flushedVideoDTS     uint64 // video media time actually marshaled to the file
+	lastNoKeyframeLog   time.Time
 }
 
 // NewSegmentWriter creates a new fMP4 segment writer.
@@ -204,19 +223,17 @@ func (sw *SegmentWriter) WriteVideo(pkt *rtp.Packet) error {
 // be held by the caller.
 func (sw *SegmentWriter) writeVideoAccessUnit(au [][]byte, sampleDuration uint32, sampleTime time.Time) error {
 
-	// Update SPS/PPS from in-band parameters
-	for _, nalu := range au {
-		if len(nalu) == 0 {
-			continue
-		}
-		typ := h264.NALUType(nalu[0] & 0x1F)
-		switch typ {
-		case h264.NALUTypeSPS:
-			sw.videoSPS = nalu
-		case h264.NALUTypePPS:
-			sw.videoPPS = nalu
-		}
+	// Strip SEI before muxing. A recorded clip is replayed by the same strict
+	// decoders that reject junk SEI live (an iPhone opening an event clip runs
+	// the identical VideoToolbox path), so the file on disk carries the same
+	// normalized bitstream the live transports serve. See h264au.DropSEI.
+	au = h264au.DropSEI(au)
+	if len(au) == 0 {
+		return nil
 	}
+
+	// Update SPS/PPS from in-band parameters
+	sw.videoSPS, sw.videoPPS, _ = h264au.TrackParameterSets(au, sw.videoSPS, sw.videoPPS)
 
 	// Write the init segment on first keyframe
 	if !sw.initWritten {
@@ -257,9 +274,44 @@ func (sw *SegmentWriter) writeVideoAccessUnit(au [][]byte, sampleDuration uint32
 	}
 
 	sw.pendingVideoSamples = append(sw.pendingVideoSamples, sample)
+	sw.pendingBytes += len(sample.Payload)
 	sw.videoDTS += uint64(sample.Duration)
 
-	return nil
+	return sw.capPendingPart()
+}
+
+// capPendingPart writes the buffered samples out early when the GOP buffer
+// grows past its duration or byte ceiling. fMP4 parts that begin on a
+// non-keyframe are legal: mp4reader derives seek points from per-sample sync
+// flags (tfhd default_sample_flags / trun sample flags), not from fragment
+// boundaries, so an extra part only extends the current HLS segment instead of
+// starting one. Called with sw.mu held.
+func (sw *SegmentWriter) capPendingPart() error {
+	if len(sw.pendingVideoSamples) == 0 && len(sw.pendingAudioSamples) == 0 {
+		return nil
+	}
+
+	overBytes := sw.pendingBytes >= maxPendingPartBytes
+	overTime := false
+	if len(sw.pendingVideoSamples) > 0 && sw.videoTimeScale > 0 {
+		buffered := sw.videoDTS - sw.pendingVideoDTS
+		overTime = buffered >= uint64(sw.videoTimeScale)*maxPendingPartSeconds
+	}
+	if !overBytes && !overTime {
+		return nil
+	}
+
+	if overTime && time.Since(sw.lastNoKeyframeLog) > noKeyframeLogInterval {
+		buffered := time.Duration(sw.videoDTS-sw.pendingVideoDTS) * time.Second / time.Duration(sw.videoTimeScale)
+		slog.Warn("no keyframe within the expected interval, flushing a partial GOP",
+			"path", sw.path,
+			"buffered", buffered.Round(time.Millisecond),
+			"samples", len(sw.pendingVideoSamples),
+		)
+		sw.lastNoKeyframeLog = time.Now()
+	}
+
+	return sw.flushGOP()
 }
 
 // WriteAudio processes an audio RTP packet into the fMP4 segment.
@@ -291,10 +343,11 @@ func (sw *SegmentWriter) WriteAudio(pkt *rtp.Packet) error {
 		}
 
 		sw.pendingAudioSamples = append(sw.pendingAudioSamples, sample)
+		sw.pendingBytes += len(sample.Payload)
 		sw.audioDTS += 1024
 	}
 
-	return nil
+	return sw.capPendingPart()
 }
 
 // StartTime returns the wall-clock time recording actually began: the arrival
@@ -310,6 +363,19 @@ func (sw *SegmentWriter) StartTime() time.Time {
 		return sw.pendingVideoTime
 	}
 	return sw.startTime
+}
+
+// FlushedDuration returns the video media time that has actually reached the
+// file. It lags the writer's total whenever a flush fails, which lets a caller
+// describe a truncated segment without claiming coverage that was never
+// written. Returns 0 when no video sample has been marshaled.
+func (sw *SegmentWriter) FlushedDuration() time.Duration {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if sw.videoTimeScale == 0 || sw.flushedVideoDTS == 0 {
+		return 0
+	}
+	return time.Duration(sw.flushedVideoDTS * uint64(time.Second) / uint64(sw.videoTimeScale))
 }
 
 // Close finalizes the segment and returns its duration: the media time written
@@ -330,9 +396,12 @@ func (sw *SegmentWriter) Close() (time.Duration, error) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	// Flush any remaining buffered samples
+	// Flush any remaining buffered samples. This is the only write for the
+	// last GOP of the segment, so its failure must reach the caller: silently
+	// dropping it registers a truncated file as a complete segment.
+	var gopErr error
 	if len(sw.pendingVideoSamples) > 0 || len(sw.pendingAudioSamples) > 0 {
-		sw.flushGOP()
+		gopErr = sw.flushGOP()
 	}
 
 	duration := time.Since(sw.startTime)
@@ -340,14 +409,18 @@ func (sw *SegmentWriter) Close() (time.Duration, error) {
 		duration = time.Duration(sw.videoDTS * uint64(time.Second) / uint64(sw.videoTimeScale))
 	}
 
+	var errs []error
+	if gopErr != nil {
+		errs = append(errs, fmt.Errorf("flush final GOP: %w", gopErr))
+	}
 	if err := sw.f.Close(); err != nil {
-		return duration, fmt.Errorf("close segment: %w", err)
+		errs = append(errs, fmt.Errorf("close segment: %w", err))
 	}
 	if flushErr != nil {
-		return duration, fmt.Errorf("flush final video access unit: %w", flushErr)
+		errs = append(errs, fmt.Errorf("flush final video access unit: %w", flushErr))
 	}
 
-	return duration, nil
+	return duration, errors.Join(errs...)
 }
 
 // flushGOP writes all pending video and audio samples as a single fMP4 Part.
@@ -384,9 +457,18 @@ func (sw *SegmentWriter) flushGOP() error {
 		return fmt.Errorf("marshal fmp4 GOP: %w", err)
 	}
 
+	if len(sw.pendingVideoSamples) > 0 {
+		var written uint64
+		for _, s := range sw.pendingVideoSamples {
+			written += uint64(s.Duration)
+		}
+		sw.flushedVideoDTS = sw.pendingVideoDTS + written
+	}
+
 	sw.seqNum++
 	sw.pendingVideoSamples = nil
 	sw.pendingAudioSamples = nil
+	sw.pendingBytes = 0
 
 	return nil
 }

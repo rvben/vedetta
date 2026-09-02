@@ -161,11 +161,10 @@ func TestScanExistingSegments_FindsNewFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a fake .mp4 file on disk
+	// A real segment: the scan has to read its duration to place it on the
+	// timeline, so a stand-in byte string cannot exercise the import.
 	segPath := filepath.Join(segDir, "2026-01-01_12-00-00.mp4")
-	if err := os.WriteFile(segPath, []byte("fake mp4 data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProbeableSegment(t, segPath)
 
 	sr.ScanExistingSegments("cam1", segDir)
 
@@ -178,6 +177,9 @@ func TestScanExistingSegments_FindsNewFiles(t *testing.T) {
 	}
 	if all[0].Path != segPath {
 		t.Errorf("expected path %q, got %q", segPath, all[0].Path)
+	}
+	if d := all[0].EndTime.Sub(all[0].StartTime); d <= 0 {
+		t.Errorf("imported segment spans %v, want the duration read from the file", d)
 	}
 }
 

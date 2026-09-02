@@ -28,15 +28,30 @@ type Segment struct {
 // SegmentRecorder continuously records RTSP streams into fixed-length segments
 // using the native Go media pipeline (no ffmpeg).
 type SegmentRecorder struct {
-	config      config.RecordingConfig
-	baseDir     string
-	db          *storage.DB
-	hub         *rtsp.Hub
-	disk        *media.DiskSpace
-	wg          sync.WaitGroup
-	mu          sync.Mutex
-	consumers   []*media.RecordingConsumer
-	cancelFuncs map[string]context.CancelFunc
+	config    config.RecordingConfig
+	baseDir   string
+	db        *storage.DB
+	hub       *rtsp.Hub
+	disk      *media.DiskSpace
+	wg        sync.WaitGroup
+	mu        sync.Mutex
+	consumers []*media.RecordingConsumer
+	sessions  map[string]*recordingSession
+}
+
+// recordingSession is the single recording of one camera. Overlapping callers
+// (two events on the same camera, or an event during continuous recording) each
+// hold a lease on the same session instead of starting a second recorder: two
+// recorders on one camera derive the same second-resolution filename, truncate
+// each other's file, and collapse into one DB row. The session runs until the
+// last lease is released, so a second event extends recording rather than
+// restarting it. Every field is guarded by SegmentRecorder.mu.
+type recordingSession struct {
+	cancel  context.CancelFunc
+	closed  chan struct{} // closed when the last lease is released
+	done    chan struct{} // closed when the record loop has exited
+	refs    int
+	stopped bool
 }
 
 func NewSegmentRecorder(cfg config.RecordingConfig, db *storage.DB, hub *rtsp.Hub) *SegmentRecorder {
@@ -47,17 +62,20 @@ func NewSegmentRecorder(cfg config.RecordingConfig, db *storage.DB, hub *rtsp.Hu
 	disk := media.NewDiskSpace(baseDir)
 	disk.SetThreshold(uint64(cfg.MinDiskFreeBytes()), db.GetLargestSegmentSizeSince)
 	return &SegmentRecorder{
-		config:      cfg,
-		baseDir:     baseDir,
-		db:          db,
-		hub:         hub,
-		disk:        disk,
-		cancelFuncs: make(map[string]context.CancelFunc),
+		config:   cfg,
+		baseDir:  baseDir,
+		db:       db,
+		hub:      hub,
+		disk:     disk,
+		sessions: make(map[string]*recordingSession),
 	}
 }
 
 // StartRecording begins continuous segment recording for a camera
 // by creating a RecordingConsumer that receives RTP packets from the Hub.
+// Calling it again for a camera that is already recording takes an additional
+// lease on the running session: recording then continues until every caller's
+// context has ended, and no second writer is attached to the same camera.
 func (sr *SegmentRecorder) StartRecording(ctx context.Context, cameraName, rtspURL string) {
 	segDir, err := safepath.Join(sr.baseDir, cameraName, "segments")
 	if err != nil {
@@ -67,30 +85,105 @@ func (sr *SegmentRecorder) StartRecording(ctx context.Context, cameraName, rtspU
 		return
 	}
 
-	camCtx, camCancel := context.WithCancel(ctx)
 	sr.mu.Lock()
-	sr.cancelFuncs[cameraName] = camCancel
+	if sr.sessions == nil {
+		sr.sessions = make(map[string]*recordingSession)
+	}
+	if sess, ok := sr.sessions[cameraName]; ok && !sess.stopped {
+		sess.refs++
+		// refs is read here rather than in the log call: releaseLease can
+		// decrement it the moment the mutex is dropped, and a logging argument
+		// is an ordinary read that races with that decrement whether or not the
+		// level is enabled.
+		holders := sess.refs
+		sr.mu.Unlock()
+		slog.Debug("recording session extended", "camera", cameraName, "holders", holders)
+		go sr.holdLease(ctx, sess)
+		return
+	}
+
+	// A session that is already stopping cannot be revived (its record loop is
+	// finalizing the current file), so the new one waits for it to finish
+	// rather than briefly running two writers on the same camera.
+	prev := sr.sessions[cameraName]
+
+	// The session outlives any single caller, so it must not inherit one
+	// caller's cancellation; leases end it instead.
+	sessCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	sess := &recordingSession{
+		cancel: cancel,
+		closed: make(chan struct{}),
+		done:   make(chan struct{}),
+		refs:   1,
+	}
+	sr.sessions[cameraName] = sess
+	sr.wg.Add(1)
 	sr.mu.Unlock()
 
-	sr.wg.Add(1)
 	go func() {
 		defer sr.wg.Done()
+		defer close(sess.done)
 		defer func() {
 			sr.mu.Lock()
-			delete(sr.cancelFuncs, cameraName)
+			if cur, ok := sr.sessions[cameraName]; ok && cur == sess {
+				delete(sr.sessions, cameraName)
+			}
 			sr.mu.Unlock()
 		}()
-		sr.recordLoop(camCtx, cameraName, rtspURL, segDir)
+		if prev != nil {
+			select {
+			case <-prev.done:
+			case <-sessCtx.Done():
+				return
+			}
+		}
+		sr.recordLoop(sessCtx, cameraName, rtspURL, segDir)
 	}()
+
+	go sr.holdLease(ctx, sess)
 }
 
-// StopRecording stops recording for a single camera.
+// holdLease releases the caller's lease on the session once the caller's
+// context ends (or the session has already stopped for another reason).
+func (sr *SegmentRecorder) holdLease(ctx context.Context, sess *recordingSession) {
+	select {
+	case <-ctx.Done():
+	case <-sess.closed:
+	}
+	sr.releaseLease(sess)
+}
+
+// releaseLease drops one lease and stops the session when the last one goes.
+func (sr *SegmentRecorder) releaseLease(sess *recordingSession) {
+	sr.mu.Lock()
+	if sess.refs > 0 {
+		sess.refs--
+	}
+	stop := sess.refs == 0 && !sess.stopped
+	if stop {
+		sess.stopped = true
+	}
+	sr.mu.Unlock()
+	if stop {
+		close(sess.closed)
+		sess.cancel()
+	}
+}
+
+// StopRecording stops recording for a single camera, regardless of how many
+// callers still hold a lease on it.
 func (sr *SegmentRecorder) StopRecording(cameraName string) {
 	sr.mu.Lock()
-	cancel, ok := sr.cancelFuncs[cameraName]
+	sess, ok := sr.sessions[cameraName]
+	stop := ok && !sess.stopped
+	if stop {
+		sess.stopped = true
+		sess.refs = 0
+	}
 	sr.mu.Unlock()
-	if ok {
-		cancel()
+	if stop {
+		close(sess.closed)
+		sess.cancel()
 	}
 }
 
@@ -226,14 +319,25 @@ func (sr *SegmentRecorder) recordLoop(ctx context.Context, cameraName, rtspURL, 
 			slog.Error("failed to save segment to database", "path", info.Path, "error", err)
 		}
 	})
+	// The row above is written as soon as the file is created, so the consumer
+	// has to be able to retract it when it deletes that file again.
+	consumer.SetSegmentRemovedHook(func(path string) {
+		if err := db.DeleteSegment(path); err != nil {
+			slog.Error("failed to delete segment from database", "path", path, "error", err)
+		}
+	})
 
 	sr.mu.Lock()
 	sr.consumers = append(sr.consumers, consumer)
 	sr.mu.Unlock()
 
 	source.AddConsumer(consumer)
-	defer source.RemoveConsumer(consumer)
+	// Deferred calls run in reverse order, so this pair detaches the consumer
+	// from the fan-out first and only then closes it. Closing while still
+	// registered leaves the source delivering packets into a consumer that is
+	// tearing down.
 	defer consumer.Close()
+	defer source.RemoveConsumer(consumer)
 	defer func() {
 		sr.mu.Lock()
 		for i, c := range sr.consumers {
@@ -362,7 +466,26 @@ func (sr *SegmentRecorder) ScanExistingSegments(cameraName, segDir string) {
 			continue
 		}
 
-		duration := probeDuration(path)
+		duration, err := probeDuration(path)
+		if err != nil {
+			// A duration that cannot be read is not a duration of zero.
+			// Importing it as zero writes StartTime == EndTime, which is
+			// indistinguishable from a genuine zero-length segment: the row
+			// then overlaps no query range, so the footage is silently
+			// unreachable while still being counted. Leave the file alone and
+			// skip the row.
+			slog.Warn("skipping segment with unreadable duration",
+				"camera", cameraName, "path", path, "error", err)
+			continue
+		}
+		if duration <= 0 {
+			// A readable file that holds no samples (a bare init segment left
+			// by a create that never got a keyframe). A row for it would
+			// describe an empty instant.
+			slog.Warn("skipping segment with no media",
+				"camera", cameraName, "path", path)
+			continue
+		}
 		startTime := info.ModTime().Add(-duration)
 
 		rec := storage.SegmentRecord{
@@ -380,12 +503,10 @@ func (sr *SegmentRecorder) ScanExistingSegments(cameraName, segDir string) {
 	}
 }
 
-// probeDuration uses pure Go MP4 parsing to determine the duration of a video file.
-func probeDuration(path string) time.Duration {
-	dur, err := media.ProbeDuration(path)
-	if err != nil {
-		// Fall back to file modification time heuristic
-		return 0
-	}
-	return dur
+// probeDuration uses pure Go MP4 parsing to determine the duration of a video
+// file. The error is returned rather than folded into a zero duration: the
+// caller has to be able to tell "this file is unreadable" from "this file holds
+// no video".
+func probeDuration(path string) (time.Duration, error) {
+	return media.ProbeDuration(path)
 }

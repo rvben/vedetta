@@ -72,7 +72,7 @@ func TestSegmentRecorder_TransientSegmentDirFailure_SelfHeals(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		sr.mu.Lock()
-		_, managed := sr.cancelFuncs["front_door"]
+		_, managed := sr.sessions["front_door"]
 		sr.mu.Unlock()
 		if managed {
 			break
@@ -80,7 +80,7 @@ func TestSegmentRecorder_TransientSegmentDirFailure_SelfHeals(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	sr.mu.Lock()
-	_, managed := sr.cancelFuncs["front_door"]
+	_, managed := sr.sessions["front_door"]
 	sr.mu.Unlock()
 	if !managed {
 		t.Fatal("front_door was permanently abandoned on a transient segment-dir failure: no managed retry, recording bricked until full process restart")

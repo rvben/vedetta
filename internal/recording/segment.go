@@ -36,7 +36,10 @@ type SegmentRecorder struct {
 	wg        sync.WaitGroup
 	mu        sync.Mutex
 	consumers []*media.RecordingConsumer
-	sessions  map[string]*recordingSession
+	// reattachInterval overrides rtsp.ReattachInterval. Zero means the
+	// production interval; only tests set it.
+	reattachInterval time.Duration
+	sessions         map[string]*recordingSession
 }
 
 // recordingSession is the single recording of one camera. Overlapping callers
@@ -307,25 +310,37 @@ func (sr *SegmentRecorder) recordLoop(ctx context.Context, cameraName, rtspURL, 
 	}
 
 	db := sr.db
-	consumer := media.NewRecordingConsumer(segDir, cameraName, segmentLen, videoTrack, audioTrack, sr.disk, func(info media.SegmentInfo) {
-		rec := storage.SegmentRecord{
-			Camera:    info.Camera,
-			Path:      info.Path,
-			StartTime: info.StartTime,
-			EndTime:   info.EndTime,
-			SizeBytes: info.SizeBytes,
+	build := func() (*media.RecordingConsumer, bool) {
+		rc := media.NewRecordingConsumer(segDir, cameraName, segmentLen, source.VideoTrack(), source.AudioTrack(), sr.disk, func(info media.SegmentInfo) {
+			rec := storage.SegmentRecord{
+				Camera:    info.Camera,
+				Path:      info.Path,
+				StartTime: info.StartTime,
+				EndTime:   info.EndTime,
+				SizeBytes: info.SizeBytes,
+			}
+			if err := db.SaveSegment(rec); err != nil {
+				slog.Error("failed to save segment to database", "path", info.Path, "error", err)
+			}
+		})
+		if rc == nil {
+			return nil, false
 		}
-		if err := db.SaveSegment(rec); err != nil {
-			slog.Error("failed to save segment to database", "path", info.Path, "error", err)
-		}
-	})
-	// The row above is written as soon as the file is created, so the consumer
-	// has to be able to retract it when it deletes that file again.
-	consumer.SetSegmentRemovedHook(func(path string) {
-		if err := db.DeleteSegment(path); err != nil {
-			slog.Error("failed to delete segment from database", "path", path, "error", err)
-		}
-	})
+		// The row above is written as soon as the file is created, so the
+		// consumer has to be able to retract it when it deletes that file again.
+		rc.SetSegmentRemovedHook(func(path string) {
+			if err := db.DeleteSegment(path); err != nil {
+				slog.Error("failed to delete segment from database", "path", path, "error", err)
+			}
+		})
+		return rc, true
+	}
+
+	consumer, ok := build()
+	if !ok {
+		slog.Error("could not create recording consumer", "camera", cameraName)
+		return
+	}
 
 	sr.mu.Lock()
 	sr.consumers = append(sr.consumers, consumer)
@@ -335,9 +350,10 @@ func (sr *SegmentRecorder) recordLoop(ctx context.Context, cameraName, rtspURL, 
 	// Deferred calls run in reverse order, so this pair detaches the consumer
 	// from the fan-out first and only then closes it. Closing while still
 	// registered leaves the source delivering packets into a consumer that is
-	// tearing down.
-	defer consumer.Close()
-	defer source.RemoveConsumer(consumer)
+	// tearing down. Both read the variable rather than the value bound when the
+	// defer ran, because the consumer is replaced if the source detaches it.
+	defer func() { consumer.Close() }()
+	defer func() { source.RemoveConsumer(consumer) }()
 	defer func() {
 		sr.mu.Lock()
 		for i, c := range sr.consumers {
@@ -349,8 +365,56 @@ func (sr *SegmentRecorder) recordLoop(ctx context.Context, cameraName, rtspURL, 
 		sr.mu.Unlock()
 	}()
 
-	// Block until context is cancelled — the Hub handles reconnection
-	<-ctx.Done()
+	// The Hub handles reconnection, but not a consumer the Source itself
+	// detached. RecordingConsumer.OnDisconnect finalizes the open segment on the
+	// fan-out goroutine, which is the same MP4 muxing that dispatch needs a
+	// recover for; a panic there detaches the recorder, and this camera then
+	// records nothing at all until the process restarts.
+	reattach := time.NewTicker(sr.reattachEvery())
+	defer reattach.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-reattach.C:
+			next, replaced := rtsp.ReattachIfDetached(source, consumer, build)
+			if !replaced {
+				continue
+			}
+			slog.Warn("recording consumer was detached, rebuilt it", "camera", cameraName)
+			old := consumer
+			consumer = next
+			sr.replaceConsumer(old, next)
+			old.Close()
+		}
+	}
+}
+
+// replaceConsumer swaps a detached consumer for its replacement in place, so
+// the registration order the status endpoints report stays the order cameras
+// started in.
+func (sr *SegmentRecorder) replaceConsumer(old, next *media.RecordingConsumer) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	for i, c := range sr.consumers {
+		if c == old {
+			sr.consumers[i] = next
+			return
+		}
+	}
+	sr.consumers = append(sr.consumers, next)
+}
+
+// reattachEvery is how often the recorder re-checks its consumers. Tests set
+// reattachInterval so a case that has to survive a tick does not cost the
+// production interval in wall time.
+func (sr *SegmentRecorder) reattachEvery() time.Duration {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	if sr.reattachInterval > 0 {
+		return sr.reattachInterval
+	}
+	return rtsp.ReattachInterval
 }
 
 // FindSegments returns segments for a camera that overlap the given time range.

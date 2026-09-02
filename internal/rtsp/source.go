@@ -672,9 +672,12 @@ func (s *Source) fanOutVideo(pkt *rtp.Packet) {
 // camera, not just this one.
 //
 // A consumer that panics is detached. Its internal state after a panic is
-// unknown, and every consumer is recreated when its viewer, recorder or
-// detector reattaches, so dropping it is recoverable where feeding it more
-// packets is not.
+// unknown, so dropping it is recoverable where feeding it more packets is not.
+//
+// That makes detaching only half of the mechanism: something has to put a
+// consumer back. A viewer transport does it on the next request, and the
+// recorder, detector and snapshot consumers poll ReattachIfDetached, because
+// nothing else would ever ask on their behalf.
 func (s *Source) deliver(c Consumer, callback string, fn func()) {
 	defer func() {
 		r := recover()

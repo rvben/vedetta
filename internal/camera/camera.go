@@ -130,18 +130,21 @@ type DetectionFrame struct {
 
 // Camera manages a single RTSP camera stream.
 type Camera struct {
-	config               config.CameraConfig
-	detector             *detect.Detector
-	tracker              *detect.Tracker
-	motionDetector       *detect.MotionDetector
-	events               chan<- Event
-	eventEnds            chan<- EventEnd
-	presenceEvents       chan<- PresenceEvent
-	hub                  *rtsp.Hub
-	eventSnapDir         string
-	eventSnapQuality     int
-	latestSnapshotPath   string
-	snapConsumer         *media.SnapshotConsumer
+	config             config.CameraConfig
+	detector           *detect.Detector
+	tracker            *detect.Tracker
+	motionDetector     *detect.MotionDetector
+	events             chan<- Event
+	eventEnds          chan<- EventEnd
+	presenceEvents     chan<- PresenceEvent
+	hub                *rtsp.Hub
+	eventSnapDir       string
+	eventSnapQuality   int
+	latestSnapshotPath string
+	snapConsumer       *media.SnapshotConsumer
+	// reattachInterval overrides consumerReattachInterval. Zero means the
+	// production interval; only tests set it.
+	reattachInterval     time.Duration
 	detectConsumer       *media.DetectConsumer // set while the detect goroutine is running
 	detectEnabled        bool
 	motionMinRegionScore float64
@@ -407,7 +410,7 @@ func (c *Camera) LastSnapshotTime() time.Time {
 // detect-resolution frame when the snap consumer has nothing yet. Returns nil
 // if no frame has been decoded.
 func (c *Camera) LiveFrame() *image.RGBA {
-	if sc := c.snapConsumer; sc != nil {
+	if sc := c.snapshotConsumer(); sc != nil {
 		if f := sc.LastFrame(); f != nil {
 			return f
 		}
@@ -573,6 +576,14 @@ func (c *Camera) readFrames(ctx context.Context) {
 		}
 	}
 
+	newConsumer := func() (*media.DetectConsumer, bool) {
+		dc := media.NewDetectConsumer(c.config.Name, w, h, fps, source.VideoTrack())
+		if dc == nil || !dc.Available() {
+			return nil, false
+		}
+		return dc, true
+	}
+
 	consumer := media.NewDetectConsumer(c.config.Name, w, h, fps, videoTrack)
 	if !consumer.Available() {
 		c.setDegraded("detect decoder unavailable")
@@ -591,14 +602,19 @@ func (c *Camera) readFrames(ctx context.Context) {
 	// fan-out stops delivering to this consumer first. Close still fences any
 	// in-flight OnVideoRTP via the consumer's decMu, but removing first narrows
 	// the window. Deferred calls run LIFO, so Close is registered before
-	// RemoveConsumer to make RemoveConsumer run first.
-	defer consumer.Close()
-	defer source.RemoveConsumer(consumer)
+	// RemoveConsumer to make RemoveConsumer run first. Both read the variable
+	// rather than the value bound when the defer ran, because the consumer is
+	// replaced if the source ever detaches it.
+	defer func() { consumer.Close() }()
+	defer func() { source.RemoveConsumer(consumer) }()
 
 	// Attach snapshot consumer to the main (high-res) stream for event snapshots
 	c.startSnapshotConsumer(ctx)
 
 	defer c.flushMotionBucket()
+
+	reattach := time.NewTicker(c.reattachEvery())
+	defer reattach.Stop()
 
 	for {
 		select {
@@ -606,6 +622,19 @@ func (c *Camera) readFrames(ctx context.Context) {
 			return
 		case frame := <-consumer.Frames():
 			c.processFrame(frame.Data, frame.Width, frame.Height)
+		case <-reattach.C:
+			next, replaced := rtsp.ReattachIfDetached(source, consumer, newConsumer)
+			if !replaced {
+				continue
+			}
+			slog.Warn("detect consumer was detached, rebuilt it",
+				"camera", c.config.Name)
+			old := consumer
+			consumer = next
+			c.mu.Lock()
+			c.detectConsumer = next
+			c.mu.Unlock()
+			old.Close()
 		}
 	}
 }
@@ -658,14 +687,56 @@ func (c *Camera) startSnapshotConsumer(ctx context.Context) {
 		return
 	}
 
-	c.snapConsumer = sc
+	c.setSnapshotConsumer(sc)
 	mainSource.AddConsumer(sc)
 
 	go func() {
-		<-ctx.Done()
-		mainSource.RemoveConsumer(sc)
-		sc.Close()
+		reattach := time.NewTicker(c.reattachEvery())
+		defer reattach.Stop()
+		current := sc
+		for {
+			select {
+			case <-ctx.Done():
+				mainSource.RemoveConsumer(current)
+				current.Close()
+				return
+			case <-reattach.C:
+				next, replaced := rtsp.ReattachIfDetached(mainSource, current, func() (*media.SnapshotConsumer, bool) {
+					track := mainSource.VideoTrack()
+					if track == nil {
+						return nil, false
+					}
+					rebuilt := media.NewSnapshotConsumer(c.config.Name, track)
+					return rebuilt, rebuilt != nil
+				})
+				if !replaced {
+					continue
+				}
+				slog.Warn("snapshot consumer was detached, rebuilt it",
+					"camera", c.config.Name)
+				old := current
+				current = next
+				c.setSnapshotConsumer(next)
+				old.Close()
+			}
+		}
 	}()
+}
+
+// snapshotConsumer returns the main-stream snapshot consumer, or nil when the
+// camera has none. Accessed through the lock because the consumer is replaced
+// when the RTSP source detaches it, which happens on the reattach goroutine
+// while detection reads it.
+func (c *Camera) snapshotConsumer() *media.SnapshotConsumer {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapConsumer
+}
+
+func (c *Camera) setSnapshotConsumer(sc *media.SnapshotConsumer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.snapConsumer = sc
 }
 
 // processFrame handles a decoded RGB24 frame — motion detection + YOLO.
@@ -949,7 +1020,7 @@ func (c *Camera) captureEventSnapshot(tracked []detect.TrackedObject, buf []byte
 	}
 
 	var fullRes *image.RGBA
-	if sc := c.snapConsumer; sc != nil {
+	if sc := c.snapshotConsumer(); sc != nil {
 		fullRes = sc.LastFrame()
 	}
 	if fullRes != nil {

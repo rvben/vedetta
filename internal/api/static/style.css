@@ -3591,10 +3591,16 @@ kbd {
 
 /* ─── Accessibility ─── */
 @media (prefers-reduced-motion: reduce) {
+  /* Delays are collapsed alongside durations. The staggered card entrance
+     combines a delay with animation-fill-mode: both, so a delay left in place
+     holds the element at its opacity:0 first keyframe for the whole delay:
+     motion is gone but the content still appears late. */
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
   }
   .cam-live-dot { animation: none; }
   .playback-badge { animation: none; }

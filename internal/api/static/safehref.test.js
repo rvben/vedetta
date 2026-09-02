@@ -2,9 +2,9 @@
 // Run: node --test internal/api/static/safehref.test.js
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { safeRedirectPath } = require('./safehref.js');
+const { safeRedirectPath, sameOriginPath } = require('./safehref.js');
 
-const ORIGIN = 'https://vedetta.am8.nl';
+const ORIGIN = 'https://nvr.example.com';
 
 // safeRedirectPath gates the post-login redirect target read from the `next`
 // query param. It must only ever return a same-origin relative path so an
@@ -64,4 +64,29 @@ test('garbage that cannot be parsed falls back to root', () => {
   // A bare value with no scheme resolves against origin and stays same-origin,
   // so this asserts the relative-resolution branch does not throw.
   assert.equal(safeRedirectPath('cameras', ORIGIN), '/cameras');
+});
+
+// sameOriginPath is the same gate with a different answer for a rejected
+// value: null instead of a fallback path. The declarative data-action DSL
+// assigns location.href from a value interpolated out of markup, and there the
+// right response to a hostile value is to navigate nowhere at all.
+
+test('sameOriginPath returns the path for a same-origin target', () => {
+  assert.equal(sameOriginPath('/events.html?filter=person', ORIGIN), '/events.html?filter=person');
+  assert.equal(sameOriginPath(ORIGIN + '/settings#mqtt', ORIGIN), '/settings#mqtt');
+});
+
+test('sameOriginPath returns null for anything that leaves the origin', () => {
+  assert.equal(sameOriginPath('javascript:alert(1)', ORIGIN), null);
+  assert.equal(sameOriginPath('//evil.com', ORIGIN), null);
+  assert.equal(sameOriginPath('https://evil.com/phish', ORIGIN), null);
+  assert.equal(sameOriginPath('data:text/html,<h1>x</h1>', ORIGIN), null);
+  assert.equal(sameOriginPath('\\\\evil.com', ORIGIN), null);
+  assert.equal(sameOriginPath('/.//evil.com', ORIGIN), null);
+});
+
+test('sameOriginPath returns null for an empty target', () => {
+  assert.equal(sameOriginPath('', ORIGIN), null);
+  assert.equal(sameOriginPath(null, ORIGIN), null);
+  assert.equal(sameOriginPath(undefined, ORIGIN), null);
 });

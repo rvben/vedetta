@@ -112,6 +112,75 @@ async function waitForPage(page) {
   await page.waitForTimeout(250);
 }
 
+// page.goto waits for the load event by default, and the camera page holds an
+// open live-media request, so load can arrive seconds late or not at all. Every
+// assertion here reads the parsed and settled DOM, which domcontentloaded
+// already guarantees.
+//
+// The explicit per-navigation timeout is what keeps a failure legible. Without
+// it a page that genuinely hangs consumes the whole test budget and the error
+// surfaces at whichever navigation happened to be in flight, which is how this
+// suite reported a contrast failure on a different page every run.
+const navigationTimeout = 15_000;
+
+async function openPage(page, path) {
+  await page.goto(path, { waitUntil: 'domcontentloaded', timeout: navigationTimeout });
+  await waitForPage(page);
+}
+
+// Both themes pair a page canvas with primary text that reads clearly against
+// it, so the two always sit far apart in luminance once a theme has settled.
+// This suite has been seen to read one theme's text against the other theme's
+// canvas, in both directions, and report a contrast the page never renders.
+// Holding until the pair agrees keeps the assertions on a settled page. The
+// canvas is derived exactly as the contrast measurement derives it, because the
+// disagreement shows up on the body rather than on the root's tokens.
+const themeSettleTimeout = 10_000;
+
+async function waitForThemeTokens(page) {
+  try {
+    await page.waitForFunction(() => {
+      const channel = value => {
+        const n = value / 255;
+        return n <= 0.04045 ? n / 12.92 : Math.pow((n + 0.055) / 1.055, 2.4);
+      };
+      const luminance = rgb => 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+      const parse = value => {
+        const hex = value.trim().match(/^#([0-9a-f]{6})$/i);
+        if (hex) return [0, 2, 4].map(offset => parseInt(hex[1].slice(offset, offset + 2), 16)).concat(1);
+        const rgb = value.match(/rgba?\(([^)]+)\)/);
+        if (!rgb) return null;
+        const parts = rgb[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+        return [parts[0], parts[1], parts[2], parts.length > 3 ? parts[3] : 1];
+      };
+      const root = getComputedStyle(document.documentElement);
+      const base = parse(root.getPropertyValue('--base'));
+      const text = parse(root.getPropertyValue('--text-primary'));
+      if (!base || !text) return false;
+      // A body background that is fully transparent has been propagated to the
+      // viewport canvas, which leaves the base token as the visible colour.
+      const bodyBackground = parse(getComputedStyle(document.body).backgroundColor);
+      const canvas = bodyBackground && bodyBackground[3] ? bodyBackground : base;
+      const [lighter, darker] = [luminance(canvas), luminance(text)].sort((a, b) => b - a);
+      return (lighter + 0.05) / (darker + 0.05) >= 4.5;
+    }, undefined, { timeout: themeSettleTimeout });
+  } catch (cause) {
+    // A bare timeout here reports nothing about why the page never settled, and
+    // without the bound the wait consumes the whole test budget and the failure
+    // surfaces at the next navigation instead. Naming the palette the page
+    // actually resolved turns both into the finding: a root that reports one
+    // theme's tokens while the body still inherits the other's is a theme that
+    // never reached the body.
+    const palette = await page.evaluate(() => ({
+      rootBase: getComputedStyle(document.documentElement).getPropertyValue('--base').trim(),
+      bodyBase: getComputedStyle(document.body).getPropertyValue('--base').trim(),
+      bodyBackground: getComputedStyle(document.body).backgroundColor,
+      textPrimary: getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim(),
+    }));
+    throw new Error(`theme never settled at ${page.url()}: ${JSON.stringify(palette)}`, { cause });
+  }
+}
+
 async function semanticViolations(page) {
   return page.evaluate(() => {
     const visible = el => {
@@ -274,23 +343,31 @@ async function contrastViolations(page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  // Entrance animations run for 200-350ms after each htmx swap, so a
+  // measurement taken while one is in flight reads a partially faded element
+  // and reports contrast the design never ships. Reduced motion collapses
+  // every animation and transition to 0.01ms through the stylesheet's own
+  // accessibility block, which makes these assertions measure the settled page.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await mockApplication(page);
 });
 
 for (const route of pages) {
   test(`${route.name} has sound semantics`, async ({ page }) => {
-    await page.goto(route.path);
-    await waitForPage(page);
+    await openPage(page, route.path);
     expect(await semanticViolations(page)).toEqual([]);
   });
 }
 
 test('every authenticated page works at phone, tablet, and desktop widths', async ({ page }) => {
+  // Playwright's default 30s is a budget for one navigation, and this walks
+  // every page at three widths. Sizing the budget to the work is what stops a
+  // slow machine from reporting a layout failure on an arbitrary page.
+  test.setTimeout(navigationTimeout * viewports.length * pages.length);
   for (const viewport of viewports) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     for (const route of pages.filter(route => !['Login', 'Setup'].includes(route.name))) {
-      await page.goto(route.path);
-      await waitForPage(page);
+      await openPage(page, route.path);
       const issues = await layoutViolations(page, viewport.name === 'phone');
       expect(issues, `${route.name} at ${viewport.name}`).toEqual([]);
     }
@@ -299,10 +376,11 @@ test('every authenticated page works at phone, tablet, and desktop widths', asyn
 
 for (const theme of ['dark', 'light']) {
   test(`core pages meet text contrast in ${theme} theme`, async ({ page }) => {
+    test.setTimeout(navigationTimeout * pages.length);
     await page.addInitScript(selectedTheme => localStorage.setItem('vedetta-theme', selectedTheme), theme);
     for (const route of pages) {
-      await page.goto(route.path);
-      await waitForPage(page);
+      await openPage(page, route.path);
+      await waitForThemeTokens(page);
       const failures = await contrastViolations(page);
       expect(failures, `${route.name} in ${theme} theme`).toEqual([]);
     }
@@ -310,8 +388,7 @@ for (const theme of ['dark', 'light']) {
 }
 
 test('keyboard users can skip navigation and dismiss a managed dialog', async ({ page, browserName }) => {
-  await page.goto('/');
-  await waitForPage(page);
+  await openPage(page, '/');
 
   const skip = page.getByRole('link', { name: 'Skip to content' });
   if (browserName === 'webkit') {
@@ -334,4 +411,43 @@ test('keyboard users can skip navigation and dismiss a managed dialog', async ({
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(addCamera).toBeFocused();
+});
+
+// Cards entering after an htmx swap carry .fade-in plus a .stagger-N delay, and
+// the animation's fill-mode holds its first keyframe (opacity: 0) for the whole
+// delay. Collapsing only the duration under reduced motion therefore removes the
+// movement but still hides the content for the length of the delay, which is the
+// opposite of what a reader who asks for reduced motion wants.
+test('reduced motion shows staggered content immediately', async ({ page }) => {
+  await openPage(page, '/');
+  const opacities = await page.evaluate(async () => {
+    const probes = ['stagger-1', 'stagger-2', 'stagger-3', 'stagger-4'].map(stagger => {
+      const el = document.createElement('div');
+      el.className = `fade-in ${stagger}`;
+      el.textContent = 'probe';
+      document.body.appendChild(el);
+      return el;
+    });
+    // The longest stagger delays 0.2s. Reading after 60ms is inside that delay,
+    // so a delay left in place still reports the hidden first keyframe.
+    await new Promise(resolve => setTimeout(resolve, 60));
+    return probes.map(el => getComputedStyle(el).opacity);
+  });
+  expect(opacities).toEqual(['1', '1', '1', '1']);
+});
+
+// Every dashboard page applies the saved theme from a small inline script in the
+// head, so the palette is right at the first paint. app.js applies it too, but
+// it is large enough that waiting for it shows a light-theme reader the dark
+// palette first, and repaints an already-rendered tree. Blocking app.js proves
+// the inline script alone covers the first paint.
+test('the saved theme is applied without waiting for the application script', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('vedetta-theme', 'light'));
+  await page.route('**/app.js', route => route.abort());
+  for (const path of ['/', '/events.html', '/settings.html', '/camera.html?name=front_door']) {
+    // domcontentloaded is the moment this test is about: the theme must be
+    // right at the first paint, not once every subresource has settled.
+    await page.goto(path, { waitUntil: 'domcontentloaded' });
+    expect(await page.getAttribute('html', 'data-theme'), path).toBe('light');
+  }
 });

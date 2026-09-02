@@ -289,7 +289,11 @@ test('setup separates a failed network scan from a valid empty result', async ({
   let discoveryFails = true;
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname;
-    if (path === '/api/setup/status') return json(route, { status: 'setup', admin_configured: true });
+    // A caller that already holds this start's setup code, which is what the
+    // wizard looks like on a refresh part-way through. Both fields are needed:
+    // an account without a valid code means the code has been rotated by a
+    // restart, and the page then asks for the new one instead of continuing.
+    if (path === '/api/setup/status') return json(route, { status: 'setup', admin_configured: true, setup_code_valid: true });
     if (path === '/api/setup/codecs/openh264') return json(route, { available: true });
     if (path === '/api/discover') {
       return discoveryFails ? json(route, { error: 'network interface unavailable' }, 503) : json(route, { cameras: [] });
@@ -313,6 +317,54 @@ test('setup separates a failed network scan from a valid empty result', async ({
   await expect(page).toHaveURL(/\/setup\.html/);
   await expect(page.getByRole('alert').filter({ hasText: 'could not persist setup state' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Finish setup' })).toBeEnabled();
+});
+
+// Restarting part-way through setup leaves the admin account in place and
+// issues a new setup code, so the account-creation call that would normally
+// carry a code answers 409 and every other setup call answers 403. Without a
+// screen that takes the new code the operator's only way back into the wizard
+// is deleting the database, so this covers the whole way back in: recognizing
+// the state, rejecting a wrong code, and continuing on the right one.
+test('setup asks for the new code after a restart instead of stranding the wizard', async ({ page }) => {
+  let codeAccepted = false;
+  const submittedCodes = [];
+
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/setup/status') {
+      return json(route, { status: 'setup', admin_configured: true, setup_code_valid: codeAccepted });
+    }
+    if (path === '/api/setup/verify') {
+      submittedCodes.push(JSON.parse(route.request().postData() || '{}').setup_code);
+      if (!codeAccepted) {
+        return json(route, { error: 'setup code required: see the one-time code printed in the server log at startup' }, 403);
+      }
+      return json(route, { status: 'ok' });
+    }
+    if (path === '/api/setup/codecs/openh264') return json(route, { available: true });
+    if (path === '/api/discover') return json(route, { cameras: [] });
+    return json(route, {});
+  });
+
+  await page.goto('/setup.html');
+
+  await expect(page.getByRole('heading', { name: 'Enter the current setup code' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Create your account' })).not.toBeVisible();
+
+  await page.locator('#resume-code').fill('wrongcode1');
+  await page.locator('#resume-submit').click();
+  await expect(page.locator('#code-status')).toContainText('setup code required');
+  await expect(page.locator('#resume-submit')).toBeEnabled();
+  await expect(page.getByRole('heading', { name: 'Enter the current setup code' })).toBeVisible();
+
+  codeAccepted = true;
+  await page.locator('#resume-code').fill('abcd234xyz');
+  await page.locator('#resume-submit').click();
+  await expect(page.getByText('No cameras found')).toBeVisible();
+
+  // The code reaches the server as typed except for case, which the field
+  // normalizes because the log prints it uppercase.
+  expect(submittedCodes).toEqual(['WRONGCODE1', 'ABCD234XYZ']);
 });
 
 test('authentication screens honor the saved theme without decorative elevation', async ({ page }) => {

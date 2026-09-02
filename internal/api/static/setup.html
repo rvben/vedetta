@@ -117,6 +117,17 @@
       font-weight: 500;
       color: var(--muted);
     }
+    .field-hint {
+      margin: 0 0 0.5rem;
+      font-size: 0.8rem;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+    #setup-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
     input[type="text"],
     input[type="password"] {
       width: 100%;
@@ -552,8 +563,11 @@
       <h2 id="setup-account-title">Create your account</h2>
       <p class="subtitle">Create the local administrator account for your private camera system.</p>
       <form id="admin-form">
+        <label for="setup-code">Setup code</label>
+        <p class="field-hint">Printed once in the server log when vedetta started. It proves you are the person who runs this machine, so nobody else on the network can claim the installation first.</p>
+        <input id="setup-code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD234XYZ" autofocus required>
         <label for="admin-username">Username</label>
-        <input id="admin-username" type="text" autocomplete="username" autofocus required>
+        <input id="admin-username" type="text" autocomplete="username" required>
         <label for="admin-password">Password</label>
         <div class="pw-wrap">
           <input id="admin-password" type="password" autocomplete="new-password" required>
@@ -585,6 +599,35 @@
         <p id="config-readonly-msg"></p>
         <button type="button" class="btn btn-primary" id="continue-to-cameras">Continue</button>
       </div>
+    </section>
+  </div>
+
+  <!-- Screen 1 again: the account exists, but this start issued a new setup code -->
+  <div id="screen-code" class="screen">
+    <section class="shell" aria-labelledby="setup-resume-title">
+      <div class="steps" role="progressbar" aria-valuemin="1" aria-valuemax="2" aria-valuenow="1" aria-label="Setup step 1 of 2">
+        <div class="step-dot active"></div>
+        <div class="step-dot"></div>
+        <span class="sr-only">Step 1 of 2</span>
+      </div>
+      <p class="step-label">Step 1 of 2 &middot; Setup code</p>
+      <div class="brand">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+        <span class="brand-text">vedetta</span>
+      </div>
+      <h2 id="setup-resume-title">Enter the current setup code</h2>
+      <p class="subtitle">Your administrator account is already created, so there is nothing to redo. Vedetta issues a new setup code every time it starts, and the one this browser holds is from an earlier start.</p>
+      <form id="code-form">
+        <label for="resume-code">Setup code</label>
+        <p class="field-hint">Printed in the server log at startup, on the line that begins &ldquo;first-run setup requires a one-time code&rdquo;.</p>
+        <input id="resume-code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD234XYZ" required>
+        <button type="submit" class="btn btn-primary" id="resume-submit">Continue</button>
+        <div class="status" id="code-status" role="status" aria-live="polite" aria-atomic="true"></div>
+      </form>
+      <p class="privacy-note">Video, credentials, and recognition data stay on this Vedetta server.</p>
     </section>
   </div>
 
@@ -738,11 +781,12 @@
 
       adminForm.addEventListener('submit', function(e) {
         e.preventDefault();
+        var setupCode = $('setup-code').value.trim().toUpperCase();
         var username = $('admin-username').value.trim();
         var password = $('admin-password').value;
         var confirm = $('admin-confirm').value;
 
-        if (!username || !password || !confirm) {
+        if (!setupCode || !username || !password || !confirm) {
           setStatus(adminStatus, 'All fields are required.', 'error');
           return;
         }
@@ -757,7 +801,11 @@
         fetch('/api/setup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: username, password: password })
+          // The setup code travels with this first call. The server answers
+          // with a cookie that carries it, so the rest of the wizard, including
+          // the discovery thumbnails that are plain <img> loads, is authorized
+          // without asking again.
+          body: JSON.stringify({ setup_code: setupCode, username: username, password: password })
         })
           .then(function(resp) { return readJSON(resp, 'Setup failed'); })
           .then(function(data) {
@@ -788,6 +836,36 @@
 
       // Continue to cameras after config_readonly
       $('continue-to-cameras').addEventListener('click', goToCameraScreen);
+
+      // --- Screen 1 again: setup code re-entry ---
+      var codeForm = $('code-form');
+      var codeStatus = $('code-status');
+      var resumeSubmit = $('resume-submit');
+
+      codeForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var code = $('resume-code').value.trim().toUpperCase();
+        if (!code) {
+          setStatus(codeStatus, 'Enter the setup code from the server log.', 'error');
+          return;
+        }
+        resumeSubmit.disabled = true;
+        setStatus(codeStatus, 'Checking\u2026', '');
+
+        // The server answers this call with the cookie that authorizes the rest
+        // of the wizard, exactly as creating the account would have.
+        fetch('/api/setup/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ setup_code: code })
+        })
+          .then(function(resp) { return readJSON(resp, 'That setup code was not accepted'); })
+          .then(function() { goToCameraScreen(); })
+          .catch(function(err) {
+            setStatus(codeStatus, err.message, 'error');
+            resumeSubmit.disabled = false;
+          });
+      });
 
       // --- Screen 2: Camera Discovery ---
       var discoveredCameras = [];
@@ -1198,13 +1276,22 @@
         return String(str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       }
 
-      // On load: check setup state. Redirect to app when already running;
-      // skip to cameras when admin account was already created (page refresh).
+      // On load: check setup state. Redirect to the app when already running;
+      // skip to cameras on a refresh that still holds this start's setup code;
+      // ask for the code again when the account exists but the code does not
+      // match, which is what a restart part-way through setup leaves behind.
       fetch('/api/setup/status').then(function(r) { return readJSON(r, 'Could not check setup status'); }).then(function(d) {
         if (d.status === 'running') {
           location.replace('/');
-        } else if (d.admin_configured) {
+        } else if (d.admin_configured && d.setup_code_valid) {
           goToCameraScreen();
+        } else if (d.admin_configured) {
+          // The account exists but this browser does not hold the code this
+          // start issued, which is what a restart part-way through setup looks
+          // like. Skipping to the cameras here would show a screen whose every
+          // call is refused, with no field to type the new code into.
+          showScreen('screen-code');
+          $('resume-code').focus();
         }
       }).catch(function(err) {
         setStatus(adminStatus, err.message + '. You can still create the administrator account.', 'error');

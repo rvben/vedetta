@@ -4,9 +4,24 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>People - Vedetta</title>
+  <meta name="theme-color" content="#0a0e14">
+  <script>
+    // Applies the saved theme before the stylesheet is linked, so the light
+    // palette is in place the first time any style is resolved. Setting the
+    // attribute after the stylesheet leaves WebKit serving the dark value of an
+    // inherited custom property to the body while the root already reports the
+    // light one, which paints light text on the dark canvas until an unrelated
+    // recalculation happens to clear it.
+    try {
+      if (localStorage.getItem('vedetta-theme') === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+        var themeColor = document.querySelector('meta[name="theme-color"]');
+        if (themeColor) themeColor.setAttribute('content', '#ffffff');
+      }
+    } catch (_) {}
+  </script>
   <script src="/htmx.min.js"></script>
   <link rel="stylesheet" href="/style.css">
-  <meta name="theme-color" content="#0a0e14">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
   <link rel="manifest" href="/manifest.webmanifest">
@@ -223,6 +238,8 @@
 
   <!-- Keyboard Shortcut Modal -->
   <div class="toast-container" id="toasts"></div>
+  <script src="/safehref.js"></script>
+  <script src="/session.js"></script>
   <script src="/app.js"></script>
   <script>
     var peopleData = [];

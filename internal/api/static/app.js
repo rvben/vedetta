@@ -281,6 +281,60 @@ function isUnsafeMethod(method) {
 }
 
 var nativeFetch = window.fetch.bind(window);
+
+// ─── Session expiry ───
+// Every surface that can discover an expired session ends here. The guard makes
+// the navigation one-shot: fetch, htmx and several image pollers can all see
+// the first 401 within the same tick, and each of them assigning location.href
+// would stack redundant navigations.
+var sessionGuard = createSessionGuard();
+var sessionProbeInFlight = false;
+
+function handleSessionExpired() {
+  var target = loginRedirectTarget(location);
+  if (!target) return;
+  if (!sessionGuard.claimRedirect()) return;
+  location.href = target;
+}
+
+// noteImageLoadFailure records one failed image load for a polling source.
+// Image loading reports no status code, so an expired session is
+// indistinguishable from a camera that is briefly unable to produce a frame.
+// After a run of consecutive failures the same URL is re-requested with fetch,
+// which does expose the status, and a 401 there ends the polling for good.
+function noteImageLoadFailure(key, url) {
+  if (!sessionGuard.noteImageFailure(key)) return;
+  if (sessionProbeInFlight || sessionGuard.hasRedirected()) return;
+  sessionProbeInFlight = true;
+  nativeFetch(url, { credentials: 'same-origin' })
+    .then(function(resp) {
+      if (resp.status === 401) handleSessionExpired();
+    })
+    .catch(function() {})
+    .then(function() {
+      sessionProbeInFlight = false;
+    });
+}
+
+function noteImageLoadSuccess(key) {
+  sessionGuard.noteImageSuccess(key);
+}
+
+// watchImageSource wires one long-lived <img> to the session guard exactly
+// once. The element outlives the code paths that start and stop polling on it,
+// so attaching listeners at each start would count a single failed load once
+// per attachment and trip the threshold on the first hiccup.
+function watchImageSource(img, key) {
+  if (!img || img.dataset.sessionWatched === key) return;
+  img.dataset.sessionWatched = key;
+  img.addEventListener('load', function() {
+    noteImageLoadSuccess(key);
+  });
+  img.addEventListener('error', function() {
+    noteImageLoadFailure(key, img.src);
+  });
+}
+
 window.fetch = function(input, init) {
   init = init || {};
   var method = init.method || 'GET';
@@ -292,8 +346,8 @@ window.fetch = function(input, init) {
     }
   }
   return nativeFetch(input, Object.assign({}, init, { headers: headers })).then(function(resp) {
-    if (resp.status === 401 && location.pathname !== '/login.html') {
-      location.href = '/login.html?next=' + encodeURIComponent(location.pathname + location.search + location.hash);
+    if (resp.status === 401) {
+      handleSessionExpired();
     }
     return resp;
   });
@@ -509,7 +563,16 @@ function executeActionStatement(statement, element, event) {
 
   var locationMatch = statement.match(/^location\.href\s*=\s*(.+)$/);
   if (locationMatch) {
-    location.href = String(resolveActionValue(locationMatch[1], element, event));
+    // The interpolated value comes from markup, so the sink accepts only a
+    // same-origin path. A scheme, a protocol-relative //host prefix or any
+    // other origin is dropped rather than navigated to.
+    var rawTarget = String(resolveActionValue(locationMatch[1], element, event));
+    var navTarget = sameOriginPath(rawTarget, location.origin);
+    if (navTarget === null) {
+      console.warn('Blocked data action navigation:', rawTarget);
+      return false;
+    }
+    location.href = navTarget;
     return false;
   }
 
@@ -2626,10 +2689,12 @@ function initTimeline() {
     lastThumbUrl = url;
 
     previewImg.onload = function() {
+      noteImageLoadSuccess('thumbnail:' + name);
       preview.style.display = '';
     };
     previewImg.onerror = function() {
       preview.style.display = 'none';
+      noteImageLoadFailure('thumbnail:' + name, url);
     };
     previewImg.src = url;
   }
@@ -3376,6 +3441,13 @@ function refreshBirdseye() {
 
           var img = document.createElement('img');
           img.alt = cam.name + ' camera feed';
+          var birdseyeKey = 'birdseye:' + cam.name;
+          img.addEventListener('load', function() {
+            noteImageLoadSuccess(birdseyeKey);
+          });
+          img.addEventListener('error', function() {
+            noteImageLoadFailure(birdseyeKey, img.src);
+          });
           cell.appendChild(img);
 
           var label = document.createElement('div');
@@ -4523,6 +4595,13 @@ document.addEventListener('htmx:sendError', function(e) {
 });
 
 document.addEventListener('htmx:responseError', function(e) {
+  // An expired session is not a connectivity problem and not a section that
+  // failed to render: leave for the login page instead of painting an error
+  // into the target and polling on.
+  if (e && e.detail && e.detail.xhr && e.detail.xhr.status === 401) {
+    handleSessionExpired();
+    return;
+  }
   console.error('HTMX error:', e.detail);
   clearTimeout(connDebounceTimer);
   setConnStatus('error');
@@ -4611,6 +4690,7 @@ document.addEventListener('visibilitychange', function() {
       var zname = getCameraName();
       if (zname) {
         var zsnap = el('zone-snapshot');
+        watchImageSource(zsnap, 'zones:' + zname);
         zoneSnapshotTimer = setInterval(function() {
           zsnap.src = '/api/cameras/' + encodeURIComponent(zname) + '/zones/snapshot?t=' + Date.now();
         }, 10000);
@@ -4719,12 +4799,14 @@ function initGridSnapshotStates() {
 
     var probe = new Image();
     probe.onload = function() {
+      noteImageLoadSuccess('snapshot:' + name);
       img.src = snapUrl;
       preview.classList.remove('cam-preview--loading');
     };
     probe.onerror = function() {
       preview.classList.remove('cam-preview--loading');
       preview.classList.add('cam-preview--error');
+      noteImageLoadFailure('snapshot:' + name, snapUrl);
     };
     probe.src = snapUrl;
   });
@@ -4782,11 +4864,13 @@ function refreshGridSnapshots() {
             var newUrl = '/api/cameras/' + encodeURIComponent(name) + '/snapshot?t=' + t;
             var probe = new Image();
             probe.onload = function() {
+              noteImageLoadSuccess('snapshot:' + name);
               img.src = newUrl;
               if (preview) preview.classList.remove('cam-preview--error');
             };
             probe.onerror = function() {
               if (preview) preview.classList.add('cam-preview--error');
+              noteImageLoadFailure('snapshot:' + name, newUrl);
             };
             probe.src = newUrl;
           }

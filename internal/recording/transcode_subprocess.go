@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -36,13 +37,93 @@ const (
 type transcodeFailureKind string
 
 const (
+	// transcodeFailureUnclassified is recorded when a recompression failed and
+	// nothing identified why: an error raised in the parent, or a worker that
+	// died without saying anything. It is the value this build logged as
+	// failure_type before the taxonomy existed, kept so existing log queries
+	// keep matching.
+	transcodeFailureUnclassified transcodeFailureKind = "transcode_error"
+
 	transcodeFailureCrash         transcodeFailureKind = "worker_crash"
 	transcodeFailureExit          transcodeFailureKind = "worker_exit"
 	transcodeFailureTimeout       transcodeFailureKind = "worker_timeout"
 	transcodeFailureProtocol      transcodeFailureKind = "worker_protocol"
 	transcodeFailureInvalidOutput transcodeFailureKind = "invalid_output"
 	transcodeFailureSourceChanged transcodeFailureKind = "source_changed"
+
+	// The kinds below are classifications the worker made about the file
+	// itself, carried across the process boundary. The first is transient,
+	// the other two are properties of the bytes on disk and do not change.
+	transcodeFailureCodecUnavailable    transcodeFailureKind = "codec_unavailable"
+	transcodeFailureSourceNotFragmented transcodeFailureKind = "source_not_fragmented"
+	transcodeFailureSourceUndecodable   transcodeFailureKind = "source_undecodable"
 )
+
+// sourceFailureKinds maps the worker's classification of a file onto the
+// parent's failure taxonomy. The mapping is written out rather than done by
+// casting the strings so the two vocabularies can be read side by side, and so
+// a classification this build does not know about falls back to the generic
+// exit failure instead of becoming an unrecognised kind.
+var sourceFailureKinds = map[media.TranscodeErrorKind]transcodeFailureKind{
+	media.TranscodeCodecUnavailable:    transcodeFailureCodecUnavailable,
+	media.TranscodeSourceNotFragmented: transcodeFailureSourceNotFragmented,
+	media.TranscodeSourceUndecodable:   transcodeFailureSourceUndecodable,
+}
+
+// allTranscodeFailureKinds enumerates every kind this build can record, so a
+// test can check that each one is accounted for by the retry policy.
+var allTranscodeFailureKinds = []transcodeFailureKind{
+	transcodeFailureUnclassified,
+	transcodeFailureCrash,
+	transcodeFailureExit,
+	transcodeFailureTimeout,
+	transcodeFailureProtocol,
+	transcodeFailureInvalidOutput,
+	transcodeFailureSourceChanged,
+	transcodeFailureCodecUnavailable,
+	transcodeFailureSourceNotFragmented,
+	transcodeFailureSourceUndecodable,
+}
+
+// permanentTranscodeFailureKinds are the causes no later attempt can clear:
+// both are properties of the bytes on disk. It is the only list of them, so
+// retryable() and the kinds handed to the startup reset cannot disagree.
+var permanentTranscodeFailureKinds = []transcodeFailureKind{
+	transcodeFailureSourceNotFragmented,
+	transcodeFailureSourceUndecodable,
+}
+
+// retryable reports whether a later attempt on the same file could succeed.
+// Unrecognised kinds retry: a cause we have not classified is not evidence
+// that a file is beyond help, and retrying a hopeless file costs two more
+// attempts while retiring a recoverable one loses the recompression forever.
+func (k transcodeFailureKind) retryable() bool {
+	return !slices.Contains(permanentTranscodeFailureKinds, k)
+}
+
+// permanentFailureKinds names the recorded failure causes that must survive the
+// startup counter reset, in the string form storage holds. The reset exists so a
+// transient cause (a host that was missing OpenH264) does not retire a segment
+// forever; without this exclusion it also frees files that can never recompress,
+// which is how production came to retry the same set three times per restart
+// indefinitely.
+func permanentFailureKinds() []string {
+	out := make([]string, len(permanentTranscodeFailureKinds))
+	for i, k := range permanentTranscodeFailureKinds {
+		out[i] = string(k)
+	}
+	return out
+}
+
+// failureKindOf names why a recompression attempt failed. A failure the worker
+// classified carries its own kind; anything else is unclassified, which retries.
+func failureKindOf(err error) transcodeFailureKind {
+	var workerErr *transcodeWorkerError
+	if errors.As(err, &workerErr) {
+		return workerErr.kind
+	}
+	return transcodeFailureUnclassified
+}
 
 type transcodeWorkerError struct {
 	kind transcodeFailureKind
@@ -102,6 +183,14 @@ func outOfProcessTranscodeWithTimeout(path string, targetW, targetH int, timeout
 			fmt.Errorf("transcode subprocess timed out after %s", timeout))
 	}
 	if runErr != nil {
+		// A classification the worker made about the file outranks the exit
+		// status, which only says that it failed.
+		if srcKind, detail, ok := parseTranscodeFailure(stdout.Bytes()); ok {
+			if kind, known := sourceFailureKinds[srcKind]; known {
+				return media.TranscodeResult{}, workerError(kind,
+					fmt.Errorf("transcode rejected source: %s: %s", srcKind, detail))
+			}
+		}
 		kind := transcodeFailureExit
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) && exitErr.ProcessState != nil && exitErr.ExitCode() == -1 {
@@ -243,6 +332,25 @@ func parseTranscodeResult(stdout []byte) (media.TranscodeResult, error) {
 		return res, nil
 	}
 	return media.TranscodeResult{}, fmt.Errorf("transcode subprocess produced no result line")
+}
+
+// parseTranscodeFailure extracts the marker-prefixed JSON failure line the
+// child writes when it identified why a file cannot be recompressed. Its
+// absence is not a classification: a child that crashed, timed out, or failed
+// for a reason it could not name emits nothing here, and that failure retries.
+func parseTranscodeFailure(stdout []byte) (media.TranscodeErrorKind, string, bool) {
+	for _, line := range strings.Split(string(stdout), "\n") {
+		payload, ok := strings.CutPrefix(line, media.TranscodeErrorMarker)
+		if !ok {
+			continue
+		}
+		var p media.TranscodeErrorPayload
+		if err := json.Unmarshal([]byte(payload), &p); err != nil || p.Kind == "" {
+			return "", "", false
+		}
+		return p.Kind, p.Detail, true
+	}
+	return "", "", false
 }
 
 // trimStderr bounds child stderr (OpenH264 warnings plus any crash traceback)

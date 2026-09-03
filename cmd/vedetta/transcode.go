@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -37,6 +38,16 @@ func runTranscode(args []string) {
 
 	res, err := media.TranscodeSegmentTo(rest[0], *output, *width, *height)
 	if err != nil {
+		// A failure the transcoder could attribute to the file itself is
+		// reported as structured output, so the parent can tell a source
+		// that will never recompress from one worth retrying. Everything
+		// else is just a non-zero exit, which the parent retries.
+		var te *media.TranscodeError
+		if errors.As(err, &te) {
+			if payload, mErr := json.Marshal(media.TranscodeErrorPayload{Kind: te.Kind, Detail: te.Detail}); mErr == nil {
+				fmt.Fprintf(os.Stdout, "%s%s\n", media.TranscodeErrorMarker, payload)
+			}
+		}
 		fmt.Fprintf(os.Stderr, "transcode failed: %v\n", err)
 		os.Exit(1)
 	}

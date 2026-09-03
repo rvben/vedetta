@@ -479,10 +479,38 @@ func splitGOPTracks(parts fmp4.Parts, videoTrackID, audioTrackID int) gopTracks 
 	return g
 }
 
+// gopTally records why individual GOPs produced no output picture. A run that
+// encodes nothing is otherwise indistinguishable from every other run that
+// encodes nothing, and the two causes seen in production - a source with no
+// fragments and a source whose video does not decode - are both permanent while
+// the generic failure is not.
+type gopTally struct {
+	withVideo    int // fragments carrying video samples, the denominator
+	unparsable   int // malformed AVCC, or no keyframe NALs to hand the decoder
+	undecodable  int // the decoder ran on a keyframe and produced no picture
+	badGeometry  int // our own scaler produced planes the encoder cannot read
+	encodeFailed int // the encoder ran and returned nothing usable
+}
+
+// classify names the cause when no picture was produced at all. When the
+// evidence does not single one out it returns a counted but unclassified error,
+// which the caller retries. Being wrong in that direction costs two more
+// attempts; being wrong in the other retires a file that would have succeeded.
+func (t gopTally) classify() error {
+	if t.withVideo > 0 && t.unparsable+t.undecodable == t.withVideo {
+		return transcodeError(TranscodeSourceUndecodable,
+			"no keyframe decoded in any of %d fragments (%d rejected by the decoder, %d without readable keyframe NALs)",
+			t.withVideo, t.undecodable, t.unparsable)
+	}
+	return fmt.Errorf(
+		"no frames encoded from %d fragments carrying video (%d undecodable, %d unparsable, %d bad geometry, %d encoder failures)",
+		t.withVideo, t.undecodable, t.unparsable, t.badGeometry, t.encodeFailed)
+}
+
 // transcodeFile reads src fMP4, re-encodes video track at (outW, outH), copies audio verbatim, writes to dst.
 func transcodeFile(src, dst string, outW, outH int) error {
 	if !ensureOpenH264() {
-		return fmt.Errorf("OpenH264 not available")
+		return transcodeError(TranscodeCodecUnavailable, "OpenH264 not available")
 	}
 
 	srcFile, err := openTranscodeSource(src)
@@ -490,6 +518,15 @@ func transcodeFile(src, dst string, outW, outH int) error {
 		return err
 	}
 	defer srcFile.file.Close()
+
+	// Recompression reads moof blocks. A file with none parsed as a
+	// container and still holds nothing this path can work with, which is
+	// what a progressive (non-fragmented) MP4 looks like from here. Say so
+	// before building a decoder and an encoder for zero frames.
+	if len(srcFile.blocks) == 0 {
+		return transcodeError(TranscodeSourceNotFragmented,
+			"source has no moof fragments")
+	}
 
 	in := srcFile.file
 	srcInit := srcFile.init
@@ -563,6 +600,7 @@ func transcodeFile(src, dst string, outW, outH int) error {
 	var gops []encodedGOP
 	var outSPS, outPPS []byte
 	var seqNum uint32 = 1
+	var tally gopTally
 
 	// GC-SAFE ENCODER I/O BUFFERS — DO NOT "SIMPLIFY" TO TYPED STRUCTS.
 	//
@@ -603,10 +641,12 @@ func transcodeFile(src, dst string, outW, outH int) error {
 		if len(videoAVCC) == 0 {
 			continue
 		}
+		tally.withVideo++
 
 		// Convert AVCC samples to Annex B for the decoder
 		annexB, err := avccToAnnexB(videoAVCC)
 		if err != nil {
+			tally.unparsable++
 			continue
 		}
 
@@ -621,6 +661,7 @@ func transcodeFile(src, dst string, outW, outH int) error {
 
 		idrAU := extractIDRAccessUnit(annexB)
 		if len(idrAU) == 0 {
+			tally.unparsable++
 			continue
 		}
 
@@ -629,7 +670,9 @@ func transcodeFile(src, dst string, outW, outH int) error {
 			frame = dec.Flush()
 		}
 
-		if frame != nil {
+		if frame == nil {
+			tally.undecodable++
+		} else {
 			scaled := scaleYCbCr(frame, outW, outH)
 
 			// Defense-in-depth at the cgo encoder boundary: never hand the C
@@ -640,6 +683,7 @@ func transcodeFile(src, dst string, outW, outH int) error {
 			// smoking gun for the recompression-path corruptor and the
 			// prerequisite signal before tiered storage may be re-enabled.
 			if !encoderInputValid(scaled, outW, outH) {
+				tally.badGeometry++
 				slog.Warn("transcode: skipping frame with invalid encoder input geometry",
 					"outW", outW, "outH", outH,
 					"yStride", scaled.YStride, "cStride", scaled.CStride,
@@ -757,8 +801,9 @@ func transcodeFile(src, dst string, outW, outH int) error {
 				}
 			}
 
-			if encRet == openh264.CmResultSuccess && encFrameType != openh264.VideoFrameTypeSkip {
-
+			if encRet != openh264.CmResultSuccess || encFrameType == openh264.VideoFrameTypeSkip {
+				tally.encodeFailed++
+			} else {
 				if outSPS == nil {
 					outSPS, outPPS = extractSPSPPS(nalBytes)
 				}
@@ -771,6 +816,8 @@ func transcodeFile(src, dst string, outW, outH int) error {
 						Payload:         avccPayloadOut,
 						IsNonSyncSample: isNonSync,
 					})
+				} else {
+					tally.encodeFailed++
 				}
 			}
 		}
@@ -789,7 +836,7 @@ func transcodeFile(src, dst string, outW, outH int) error {
 	}
 
 	if len(gops) == 0 || outSPS == nil {
-		return fmt.Errorf("no frames encoded successfully")
+		return tally.classify()
 	}
 
 	outInit := buildOutputInit(srcInit, videoTrackID, audioTrackID, videoTS, outSPS, outPPS)

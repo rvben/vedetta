@@ -1169,9 +1169,16 @@ func TestHandleRecordingsCalendar_EmptyMonth(t *testing.T) {
 func TestHandleRecordingsCalendar_DefaultsToCurrentMonth(t *testing.T) {
 	srv, db := newTestServer(t)
 
-	// Seed a segment for today
+	// Seed a segment for today. The calendar aggregates in UTC when no tz is
+	// given, and a segment spanning the hour before "now" straddles UTC
+	// midnight whenever the suite runs in the first hour of a day. Two calendar
+	// days is the right answer for such a segment, so a fixture shaped that way
+	// fails this assertion once a day against correct code. Anchor it inside
+	// today instead, so what is under test is the default month and not the
+	// hour the suite happens to run at.
 	now := time.Now().UTC()
-	seedSegment(t, db, "cam1", "/tmp/cal-today.mp4", now.Add(-time.Hour), now, 1024)
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	seedSegment(t, db, "cam1", "/tmp/cal-today.mp4", dayStart.Add(time.Hour), dayStart.Add(2*time.Hour), 1024)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/recordings/calendar", nil)
 	w := httptest.NewRecorder()

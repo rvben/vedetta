@@ -572,6 +572,19 @@ type MSEManager struct {
 // client buffers across all cameras.
 func (m *MSEManager) DroppedFrames() int64 { return m.dropped.Load() }
 
+// disconnectAll closes every viewer on this consumer and forgets them. The
+// close surfaces to the browser as a WebSocket onclose, which it already
+// handles by reconnecting, so a viewer stranded on a replaced consumer lands
+// on the live one instead of watching a frozen picture.
+func (mc *mseConsumer) disconnectAll() {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	for _, c := range mc.clients {
+		c.close()
+	}
+	mc.clients = nil
+}
+
 // ClientCounts returns the number of connected MSE clients per camera name.
 // Consumers are keyed by RTSP URL, so a camera with distinct main and sub
 // streams contributes from two consumers; counts are summed by camera name.
@@ -673,6 +686,10 @@ func (m *MSEManager) getOrCreateConsumer(cameraName, rtspURL string) *mseConsume
 			return c
 		}
 		c.detachFromSource(c)
+		// The viewers on it are watching a consumer that will never receive
+		// another packet, and writePump's pings keep their sockets alive, so
+		// nothing would ever tell them.
+		c.disconnectAll()
 		delete(m.consumers, rtspURL)
 	}
 
@@ -773,13 +790,7 @@ func (m *MSEManager) Close() {
 	defer m.mu.Unlock()
 
 	for _, consumer := range m.consumers {
-		consumer.mu.Lock()
-		for _, c := range consumer.clients {
-			c.close()
-		}
-		consumer.clients = nil
-		consumer.mu.Unlock()
-
+		consumer.disconnectAll()
 		consumer.detachFromSource(consumer)
 	}
 	m.consumers = make(map[string]*mseConsumer)

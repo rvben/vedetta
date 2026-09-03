@@ -97,19 +97,22 @@ func (r *Recompressor) Start(ctx context.Context) {
 	if !r.cfg.Enabled {
 		return
 	}
-	// Give segments stuck at the 3-failure cap another chance. A common
-	// reason for stuck failures is a transiently missing codec (e.g.
-	// OpenH264 wasn't installed yet during earlier recompression passes);
-	// once the environment is restored, we should retry rather than
-	// permanently excluding every segment that was attempted during the
-	// broken period.
-	if reset, err := r.db.ResetStuckRecompressFailures(); err != nil {
+	// Give targets stuck at the 3-failure cap another chance, unless their
+	// last failure was one nothing can clear. A common reason for stuck
+	// failures is a transiently missing codec (e.g. OpenH264 wasn't installed
+	// yet during earlier recompression passes); once the environment is
+	// restored, we should retry rather than permanently excluding every
+	// segment that was attempted during the broken period. A file whose video
+	// does not decode, or that holds no fragments at all, fails identically on
+	// every attempt, so freeing it only spends three more attempts on it at
+	// every restart, forever.
+	if reset, err := r.db.ResetStuckRecompressFailures(permanentFailureKinds()); err != nil {
 		slog.Warn("recompression: failed to reset stuck failures", "error", err)
 	} else if reset > 0 {
 		slog.Info("recompression: reset stuck failure counters", "segments", reset)
 	}
 
-	if reset, err := r.db.ResetStuckClipRecompressFailures(); err != nil {
+	if reset, err := r.db.ResetStuckClipRecompressFailures(permanentFailureKinds()); err != nil {
 		slog.Warn("recompression: failed to reset stuck clip failures", "error", err)
 	} else if reset > 0 {
 		slog.Info("recompression: reset stuck clip failure counters", "clips", reset)
@@ -408,16 +411,12 @@ func (r *Recompressor) processTarget(best *recompressTarget) bool {
 	start := time.Now()
 	result, err := r.safeTranscode(best.path)
 	if err != nil {
-		failureType := "transcode_error"
-		var workerErr *transcodeWorkerError
-		if errors.As(err, &workerErr) {
-			failureType = string(workerErr.kind)
-		}
+		failureKind := failureKindOf(err)
 		r.recordTranscodeFailure(err)
 		slog.Warn("recompression: failed",
 			"kind", best.kind, "camera", best.camera, "path", best.path,
-			"error", err, "failure_type", failureType, "retry", best.failures+1)
-		r.incrementFailure(best)
+			"error", err, "failure_type", string(failureKind), "retry", best.failures+1)
+		r.incrementFailure(best, failureKind)
 		return true
 	}
 
@@ -544,13 +543,16 @@ func (r *Recompressor) markRecompressed(t *recompressTarget, newSize int64) erro
 	return nil
 }
 
-func (r *Recompressor) incrementFailure(t *recompressTarget) {
+// incrementFailure records one failed attempt against the target, along with why
+// it failed. The cause is what lets the startup reset free a target that failed
+// for a reason a later attempt can clear while leaving one that cannot.
+func (r *Recompressor) incrementFailure(t *recompressTarget, cause transcodeFailureKind) {
 	var err error
 	switch t.kind {
 	case kindSegment:
-		err = r.db.IncrementSegmentRecompressFailures(t.segID)
+		err = r.db.IncrementSegmentRecompressFailures(t.segID, string(cause))
 	case kindClip:
-		err = r.db.IncrementClipRecompressFailures(t.eventID)
+		err = r.db.IncrementClipRecompressFailures(t.eventID, string(cause))
 	}
 	if err != nil {
 		slog.Error("recompression: failed to increment failure count", "kind", t.kind, "error", err)

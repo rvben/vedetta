@@ -11,7 +11,7 @@ import (
 // currentSchemaVersion is the schema version this build expects. It is stored
 // in SQLite's PRAGMA user_version. A database reporting a lower version is
 // upgraded by migrate; databases created before versioning report 0.
-const currentSchemaVersion = 9
+const currentSchemaVersion = 10
 
 // baselineSchema creates every table and index for a fresh database. It is
 // idempotent (CREATE ... IF NOT EXISTS) and a cheap no-op for existing DBs.
@@ -41,6 +41,7 @@ const baselineSchema = `
 		recompressed INTEGER NOT NULL DEFAULT 0,
 		recompressed_at DATETIME,
 		recompress_failures INTEGER NOT NULL DEFAULT 0,
+		recompress_failure_kind TEXT NOT NULL DEFAULT '',
 		clip_size_bytes INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -472,6 +473,28 @@ var migrationSteps = []migrationStep{
 					ON activity_event_corrections(event_id) WHERE restored_at IS NULL;
 			`); err != nil {
 				return 0, fmt.Errorf("create activity evidence corrections: %w", err)
+			}
+			return 0, nil
+		},
+	},
+	{
+		version: 10,
+		// Records why a recompression attempt failed, alongside the count of
+		// how often. The startup reset frees capped rows so a transient cause
+		// (a host that was missing OpenH264) does not retire a file forever;
+		// without a recorded cause it also frees files that can never
+		// recompress, which is how production came to retry the same 18
+		// segments 25 times each. Existing rows default to the empty string,
+		// an unknown cause, which the reset still frees.
+		name: "recompression failure cause",
+		run: func(tx *sql.Tx) (int, error) {
+			for _, c := range []legacyColumn{
+				{"segments", "recompress_failure_kind", "ALTER TABLE segments ADD COLUMN recompress_failure_kind TEXT NOT NULL DEFAULT ''"},
+				{"events", "recompress_failure_kind", "ALTER TABLE events ADD COLUMN recompress_failure_kind TEXT NOT NULL DEFAULT ''"},
+			} {
+				if err := ensureColumn(tx, c.table, c.column, c.ddl); err != nil {
+					return 0, fmt.Errorf("backfill column %s.%s: %w", c.table, c.column, err)
+				}
 			}
 			return 0, nil
 		},

@@ -253,7 +253,7 @@ func TestRecompressionJob_RetriesAfterFailure(t *testing.T) {
 	id := all[0].ID
 
 	for range 3 {
-		if err := db.IncrementSegmentRecompressFailures(id); err != nil {
+		if err := db.IncrementSegmentRecompressFailures(id, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

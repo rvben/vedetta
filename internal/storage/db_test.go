@@ -1357,7 +1357,7 @@ func TestGetSegmentsForRecompression(t *testing.T) {
 	// Not eligible: 3 failures.
 	id3 := saveTestSegment(t, db, "cam1", "/tmp/c.mp4", now.Add(-48*time.Hour), now.Add(-45*time.Hour), 1000)
 	for range 3 {
-		_ = db.IncrementSegmentRecompressFailures(id3)
+		_ = db.IncrementSegmentRecompressFailures(id3, "")
 	}
 
 	// Not eligible: too recent (end_time after cutoff).
@@ -1406,7 +1406,7 @@ func TestIncrementSegmentRecompressFailures(t *testing.T) {
 	id := saveTestSegment(t, db, "cam1", "/tmp/seg.mp4", now.Add(-48*time.Hour), now.Add(-47*time.Hour), 1000)
 
 	for i := range 3 {
-		if err := db.IncrementSegmentRecompressFailures(id); err != nil {
+		if err := db.IncrementSegmentRecompressFailures(id, ""); err != nil {
 			t.Fatalf("increment %d: %v", i, err)
 		}
 	}
@@ -2165,7 +2165,7 @@ func TestClearEventClip_ZeroesPathSizeAndState(t *testing.T) {
 
 	// Drive failure counter to a non-zero value to verify ClearEventClip resets it.
 	for i := 0; i < 2; i++ {
-		if err := db.IncrementClipRecompressFailures("clip-clear"); err != nil {
+		if err := db.IncrementClipRecompressFailures("clip-clear", ""); err != nil {
 			t.Fatalf("IncrementClipRecompressFailures: %v", err)
 		}
 	}
@@ -2212,7 +2212,7 @@ func TestClipCandidates_EligibilityAndOrdering(t *testing.T) {
 	// Ineligible: at the failure cap.
 	mustClipEvent(t, db, "stuck", "cam1", old, 800)
 	for i := 0; i < 3; i++ {
-		if err := db.IncrementClipRecompressFailures("stuck"); err != nil {
+		if err := db.IncrementClipRecompressFailures("stuck", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2284,7 +2284,7 @@ func TestResetStuckClipRecompressFailures_ClearsCappedClips(t *testing.T) {
 	now := time.Now().UTC()
 	mustClipEvent(t, db, "stuck", "cam1", now.Add(-48*time.Hour), 1000)
 	for i := 0; i < 3; i++ {
-		if err := db.IncrementClipRecompressFailures("stuck"); err != nil {
+		if err := db.IncrementClipRecompressFailures("stuck", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2293,7 +2293,7 @@ func TestResetStuckClipRecompressFailures_ClearsCappedClips(t *testing.T) {
 		t.Fatalf("expected 0 eligible at cap, got %d", len(got))
 	}
 
-	reset, err := db.ResetStuckClipRecompressFailures()
+	reset, err := db.ResetStuckClipRecompressFailures(nil)
 	if err != nil {
 		t.Fatalf("ResetStuckClipRecompressFailures: %v", err)
 	}

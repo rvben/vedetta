@@ -916,14 +916,38 @@ func (d *DB) OldestSegmentsUntilBytes(targetBytes int64) ([]SegmentRecord, error
 	return out, nil
 }
 
-// ResetStuckRecompressFailures clears the failure counter for any segments
-// that previously hit the 3-failure cap without being recompressed. Called
-// at recorder startup so transient failures (e.g. a temporarily missing
-// codec) don't permanently exclude segments from future recompression.
-// Returns the number of rows reset.
-func (d *DB) ResetStuckRecompressFailures() (int64, error) {
+// excludeKinds returns the SQL fragment and arguments that keep rows whose last
+// recorded failure kind is one the caller named permanent. An empty list yields
+// no fragment: "nothing is permanent" is a valid policy, and an IN () list is a
+// syntax error rather than a match against nothing.
+//
+// The comparison is over the kind recorded by the most recent failure, so a file
+// that failed permanently and then failed for some other reason is retried
+// again. That is the safe direction: the newest evidence describes the file now.
+func excludeKinds(column string, permanentKinds []string) (string, []any) {
+	if len(permanentKinds) == 0 {
+		return "", nil
+	}
+	args := make([]any, len(permanentKinds))
+	for i, k := range permanentKinds {
+		args[i] = k
+	}
+	return fmt.Sprintf(" AND %s NOT IN (%s)", column,
+		strings.TrimSuffix(strings.Repeat("?,", len(permanentKinds)), ",")), args
+}
+
+// ResetStuckRecompressFailures clears the failure counter for segments that hit
+// the 3-failure cap without being recompressed, except those whose last failure
+// was one of permanentKinds. Called at recorder startup so a transient failure
+// (a host that was temporarily missing OpenH264) does not exclude a segment
+// forever, while a file that cannot be recompressed at all stays retired instead
+// of consuming three attempts on every restart. Returns the number of rows
+// reset.
+func (d *DB) ResetStuckRecompressFailures(permanentKinds []string) (int64, error) {
+	clause, args := excludeKinds("recompress_failure_kind", permanentKinds)
 	res, err := d.db.Exec(
-		"UPDATE segments SET recompress_failures = 0 WHERE recompress_failures >= 3 AND recompressed = FALSE",
+		"UPDATE segments SET recompress_failures = 0 WHERE recompress_failures >= 3 AND recompressed = FALSE"+clause,
+		args...,
 	)
 	if err != nil {
 		return 0, err
@@ -942,12 +966,15 @@ func (d *DB) MarkSegmentRecompressed(id int64, newSizeBytes int64) error {
 	return err
 }
 
-// IncrementSegmentRecompressFailures increments the failure counter for a segment.
-// Once it reaches 3, the segment is excluded from future recompression queries.
-func (d *DB) IncrementSegmentRecompressFailures(id int64) error {
+// IncrementSegmentRecompressFailures increments the failure counter for a
+// segment and records why it failed. Once the counter reaches 3, the segment is
+// excluded from future recompression queries; the recorded kind decides whether
+// the startup reset frees it again. An empty kind means the cause was not
+// identified, which the reset treats as retryable.
+func (d *DB) IncrementSegmentRecompressFailures(id int64, kind string) error {
 	_, err := d.db.Exec(
-		"UPDATE segments SET recompress_failures = recompress_failures + 1 WHERE id = ?",
-		id,
+		"UPDATE segments SET recompress_failures = recompress_failures + 1, recompress_failure_kind = ? WHERE id = ?",
+		kind, id,
 	)
 	return err
 }
@@ -1022,11 +1049,15 @@ func scanClips(rows *sql.Rows) ([]ClipRecord, error) {
 }
 
 // ResetStuckClipRecompressFailures clears the failure counter for clips that
-// hit the 3-failure cap without being recompressed, so a transiently missing
-// codec does not permanently exclude a clip. Returns the number of rows reset.
-func (d *DB) ResetStuckClipRecompressFailures() (int64, error) {
+// hit the 3-failure cap without being recompressed, except those whose last
+// failure was one of permanentKinds, so a transiently missing codec does not
+// exclude a clip forever while an unrecompressable one stays retired. Returns
+// the number of rows reset.
+func (d *DB) ResetStuckClipRecompressFailures(permanentKinds []string) (int64, error) {
+	clause, args := excludeKinds("recompress_failure_kind", permanentKinds)
 	res, err := d.db.Exec(
-		"UPDATE events SET recompress_failures = 0 WHERE recompress_failures >= 3 AND recompressed = FALSE AND clip_available = TRUE",
+		"UPDATE events SET recompress_failures = 0 WHERE recompress_failures >= 3 AND recompressed = FALSE AND clip_available = TRUE"+clause,
+		args...,
 	)
 	if err != nil {
 		return 0, err
@@ -1046,12 +1077,15 @@ func (d *DB) MarkClipRecompressed(eventID string, newSize int64) error {
 	return err
 }
 
-// IncrementClipRecompressFailures increments the failure counter for a clip.
-// Once it reaches 3, the clip is excluded from future recompression queries.
-func (d *DB) IncrementClipRecompressFailures(eventID string) error {
+// IncrementClipRecompressFailures increments the failure counter for a clip and
+// records why it failed. Once the counter reaches 3, the clip is excluded from
+// future recompression queries; the recorded kind decides whether the startup
+// reset frees it again. An empty kind means the cause was not identified, which
+// the reset treats as retryable.
+func (d *DB) IncrementClipRecompressFailures(eventID string, kind string) error {
 	_, err := d.db.Exec(
-		"UPDATE events SET recompress_failures = recompress_failures + 1 WHERE id = ?",
-		eventID,
+		"UPDATE events SET recompress_failures = recompress_failures + 1, recompress_failure_kind = ? WHERE id = ?",
+		kind, eventID,
 	)
 	return err
 }

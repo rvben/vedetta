@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bluenviron/gortsplib/v5"
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
@@ -140,6 +141,37 @@ func (c *rtspServerConsumer) OnAudioRTP(pkt *rtp.Packet) {
 
 func (c *rtspServerConsumer) OnDisconnect() {}
 
+// newServerConsumer builds a consumer that publishes into stream. The H264
+// decode/re-encode pipeline is per-consumer state, so a replacement built here
+// starts from a clean decoder rather than inheriting the one a panic happened
+// in.
+func newServerConsumer(stream rtpStreamWriter, videoMedia, audioMedia *description.Media) *rtspServerConsumer {
+	consumer := &rtspServerConsumer{
+		stream:     stream,
+		videoMedia: videoMedia,
+		audioMedia: audioMedia,
+	}
+	if videoMedia != nil && len(videoMedia.Formats) > 0 {
+		consumer.videoPT = videoMedia.Formats[0].PayloadType()
+
+		if h264Fmt, ok := videoMedia.Formats[0].(*format.H264); ok {
+			consumer.h264Format = h264Fmt
+			dec, err := h264Fmt.CreateDecoder()
+			if err == nil {
+				enc, err := h264Fmt.CreateEncoder()
+				if err == nil {
+					consumer.rtpDecoder = rtsp.NewH264AccessUnitDecoder(dec)
+					consumer.rtpEncoder = enc
+				}
+			}
+		}
+	}
+	if audioMedia != nil && len(audioMedia.Formats) > 0 {
+		consumer.audioPT = audioMedia.Formats[0].PayloadType()
+	}
+	return consumer
+}
+
 // RTSPServer re-publishes camera streams via RTSP.
 type RTSPServer struct {
 	hub     *rtsp.Hub
@@ -147,6 +179,13 @@ type RTSPServer struct {
 	auth    *auth.Checker
 	mu      sync.RWMutex
 	cameras map[string]*cameraStream // camera name → stream
+
+	stop      chan struct{}
+	stopOnce  sync.Once
+	reattachW sync.WaitGroup
+	// reattachInterval overrides rtsp.ReattachInterval. Zero means the
+	// production interval; only tests set it.
+	reattachInterval time.Duration
 }
 
 // NewRTSPServer creates a new RTSP re-publishing server.
@@ -155,6 +194,7 @@ func NewRTSPServer(hub *rtsp.Hub, cfg config.RTSPServerConfig, authChecker *auth
 		hub:     hub,
 		auth:    authChecker,
 		cameras: make(map[string]*cameraStream),
+		stop:    make(chan struct{}),
 	}
 
 	rs.server = &gortsplib.Server{
@@ -219,7 +259,80 @@ func (rs *RTSPServer) Start() error {
 		slog.Info("RTSP server: publishing stream", "camera", name, "path", "/"+name)
 	}
 
+	rs.reattachW.Add(1)
+	go rs.reattachLoop()
+
 	return nil
+}
+
+// reattachLoop restores consumers the Source detached.
+//
+// Source.deliver drops a consumer whose callback panicked. writeRTP contains a
+// panic from gortsplib, but the H264 depacketize/re-packetize pipeline above it
+// runs unguarded, and a detach there is unrecoverable here: initLateCamera
+// re-initializes only when cs.stream is nil, and it is not, so DESCRIBE, SETUP
+// and PLAY all keep succeeding on a stream that will never carry another
+// packet. A client sees a healthy negotiation and then silence.
+func (rs *RTSPServer) reattachLoop() {
+	defer rs.reattachW.Done()
+
+	ticker := time.NewTicker(rs.reattachEvery())
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-rs.stop:
+			return
+		case <-ticker.C:
+			rs.reattachDetached()
+		}
+	}
+}
+
+// reattachEvery is how often the republisher re-checks its consumers. Tests set
+// reattachInterval so a case that has to survive a tick does not cost the
+// production interval in wall time.
+func (rs *RTSPServer) reattachEvery() time.Duration {
+	if rs.reattachInterval > 0 {
+		return rs.reattachInterval
+	}
+	return rtsp.ReattachInterval
+}
+
+func (rs *RTSPServer) reattachDetached() {
+	rs.mu.RLock()
+	streams := make([]*cameraStream, 0, len(rs.cameras))
+	for _, cs := range rs.cameras {
+		streams = append(streams, cs)
+	}
+	rs.mu.RUnlock()
+
+	for _, cs := range streams {
+		cs.mu.RLock()
+		current := cs.consumer
+		cs.mu.RUnlock()
+		// A camera with no consumer yet has never been initialized. That is
+		// OnDescribe's late-init path, not a detach.
+		if current == nil {
+			continue
+		}
+
+		source := rs.hub.Get(cs.rtspURL)
+		next, replaced := rtsp.ReattachIfDetached(source, current, func() (*rtspServerConsumer, bool) {
+			return newServerConsumer(current.stream, current.videoMedia, current.audioMedia), true
+		})
+		if !replaced {
+			continue
+		}
+
+		// This goroutine is the only writer of cs.consumer once the camera is
+		// initialized: initCameraStream assigns it only while cs.stream is nil,
+		// and nothing clears cs.stream.
+		cs.mu.Lock()
+		cs.consumer = next
+		cs.mu.Unlock()
+		slog.Warn("RTSP server: consumer was detached, rebuilt it", "camera", cs.name)
+	}
 }
 
 // initCameraStream atomically initializes a camera's ServerStream and consumer.
@@ -233,29 +346,7 @@ func (rs *RTSPServer) initCameraStream(cs *cameraStream, desc *description.Sessi
 		return false, err
 	}
 
-	consumer := &rtspServerConsumer{
-		stream:     serverStream,
-		videoMedia: videoMedia,
-		audioMedia: audioMedia,
-	}
-	if videoMedia != nil && len(videoMedia.Formats) > 0 {
-		consumer.videoPT = videoMedia.Formats[0].PayloadType()
-
-		if h264Fmt, ok := videoMedia.Formats[0].(*format.H264); ok {
-			consumer.h264Format = h264Fmt
-			dec, err := h264Fmt.CreateDecoder()
-			if err == nil {
-				enc, err := h264Fmt.CreateEncoder()
-				if err == nil {
-					consumer.rtpDecoder = rtsp.NewH264AccessUnitDecoder(dec)
-					consumer.rtpEncoder = enc
-				}
-			}
-		}
-	}
-	if audioMedia != nil && len(audioMedia.Formats) > 0 {
-		consumer.audioPT = audioMedia.Formats[0].PayloadType()
-	}
+	consumer := newServerConsumer(serverStream, videoMedia, audioMedia)
 
 	cs.mu.Lock()
 	if cs.stream != nil {
@@ -273,6 +364,9 @@ func (rs *RTSPServer) initCameraStream(cs *cameraStream, desc *description.Sessi
 
 // Close shuts down the RTSP server and removes all consumers.
 func (rs *RTSPServer) Close() {
+	rs.stopOnce.Do(func() { close(rs.stop) })
+	rs.reattachW.Wait()
+
 	for name, cs := range rs.cameras {
 		cs.mu.RLock()
 		consumer := cs.consumer

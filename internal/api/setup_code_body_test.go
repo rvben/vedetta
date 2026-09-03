@@ -54,9 +54,14 @@ func TestSetupCodeFromBodyReadsABodyExactlyAtTheLimit(t *testing.T) {
 }
 
 // Past the cap the field is not looked for, but the body still belongs to the
-// handler. Handing on a truncated copy would make an oversized request look
-// like a well-sized malformed one: the handler's own MaxBytesReader sees a body
-// that fits and reports invalid JSON instead of a body that is too large.
+// handler, whole. Handing on a truncated copy would make an oversized request
+// look like a well-sized malformed one, so the handler would report invalid
+// JSON instead of a body that is too large.
+//
+// That outcome is not reachable while every setup handler sets the same 1<<20
+// limit this cap uses: such a body is over the handler's limit either way. The
+// assertion is on the contract, which is what lets the two limits be chosen
+// independently, and it is what fails first if a handler's limit is raised.
 func TestSetupCodeFromBodyDoesNotTruncateAnOversizedBody(t *testing.T) {
 	const size = setupCodeBodyLimit + 4096
 	payload := bytes.Repeat([]byte("x"), size)

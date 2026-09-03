@@ -12,6 +12,11 @@ import (
 	"github.com/rvben/vedetta/internal/rtsp"
 )
 
+// A camera URL is operator-supplied and may legitimately be a hostname or a
+// remote address, so this is netguard alone rather than checkDiscoveryTarget,
+// whose private-and-IP-literal conditions describe what a LAN discovery scan
+// may produce. See checkDiscoveryTarget for why the two differ.
+//
 // validateRTSPTarget extracts the host from an RTSP URL and runs it through the
 // SSRF guard so the "test connection" endpoints cannot be pointed at the cloud
 // metadata / link-local range. Private and loopback hosts (real cameras) pass.

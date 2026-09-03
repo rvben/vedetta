@@ -411,6 +411,18 @@ func (h *SetupHandler) AdminConfigured() bool {
 // discovery UI fills with a scanned address, not a third admission policy, and
 // it keeps the answer about a concrete address from being invalidated by a
 // later name lookup.
+//
+// The RTSP test endpoints deliberately do not use this. They take a camera URL
+// an operator typed, which is legitimately a hostname and legitimately remote:
+// a DDNS name for a camera at another site is a normal configuration, and this
+// function would refuse both. They run netguard on the resolved address
+// instead, which is the part that actually stops an SSRF pivot; the private
+// and IP-literal conditions here are about what a LAN scan is allowed to
+// produce, not about what is dangerous to dial.
+//
+// Setup is not the weaker path for it. HandleTestRTSP and the authenticated
+// TestRTSPConnection share validateRTSPTarget, so the wizard admits exactly
+// what the configured server does.
 func checkDiscoveryTarget(ctx context.Context, host string) error {
 	addr, err := netip.ParseAddr(host)
 	if err != nil {

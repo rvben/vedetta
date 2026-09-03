@@ -160,12 +160,21 @@ type bodyReadCloser struct {
 // setupCodeFromBody reads a setup_code field out of a JSON body and puts the
 // body back for the handler.
 //
-// The body always reaches the handler exactly as it arrived. Buffering a prefix
-// and passing that on instead would turn an oversized request into a malformed
-// one: the handler's own size limit would see a body that fits and answer
-// "invalid JSON" for a request that is simply too large. Past the cap the field
-// is not looked for, and a request that carries its code only there is refused
-// like any request with no code, which is the safe direction for a guard.
+// The body always reaches the handler exactly as it arrived, which is what
+// keeps this function's buffering cap independent of the admission limit a
+// handler chooses. Handing on a truncated prefix would make an oversized
+// request look like a well-sized malformed one, so the handler would answer
+// "invalid JSON" for a request that is simply too large.
+//
+// Every setup handler currently sets its MaxBytesReader to the same 1<<20, so
+// a body past this cap is over the handler's limit too and both designs would
+// report it the same way. That is the two numbers happening to match, not a
+// property of either; raising a handler's limit above this cap is what the
+// pass-through protects against.
+//
+// Past the cap the field is not looked for, and a request that carries its code
+// only there is refused like any request with no code, which is the safe
+// direction for a guard.
 func setupCodeFromBody(r *http.Request) string {
 	if r.Body == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return ""

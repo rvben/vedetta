@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.18](https://github.com/rvben/vedetta/compare/v0.7.17...v0.7.18) - 2026-09-03
+
+### Fixed
+
+- **notify**: log push dispatch outcome instead of intent ([eae7fb9](https://github.com/rvben/vedetta/commit/eae7fb9b683d70e2725f9a2d967eb6144bb5090f))
+
 ## [0.7.17](https://github.com/rvben/vedetta/compare/v0.7.16...v0.7.17) - 2026-08-26
 
 ### Fixed

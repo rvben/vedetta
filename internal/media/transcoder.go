@@ -621,9 +621,13 @@ func transcodeFile(src, dst string, outW, outH int) error {
 	// pointer only for field writes; Go's GC scans allocations by their
 	// original type metadata, not by what pointers later alias them.
 	//
-	// Regression test: TestTranscodeSegment_Fixture in transcoder_real_test.go.
-	var encSrcPicBuf [unsafe.Sizeof(openh264.SSourcePicture{})]byte
-	var encInfoBuf [unsafe.Sizeof(openh264.SFrameBSInfo{})]byte
+	// The sizes come from openh264_abi.go, which states the layout of both
+	// structs as the installed library defines it. Regression tests:
+	// TestTranscodeSegment_Fixture in transcoder_real_test.go and
+	// TestEncodeFrameWritesNothingPastDeclaredBufferSizes in
+	// openh264_abi_test.go.
+	encSrcPicBuf := make([]byte, sourcePictureSize)
+	encInfoBuf := make([]byte, frameBSInfoSize)
 
 	for gopIdx, blk := range blocks {
 		parts, err := readGOPBlock(in, blk, gopIdx)
@@ -701,53 +705,44 @@ func transcodeFile(src, dst string, outW, outH int) error {
 			for i := range encInfoBuf {
 				encInfoBuf[i] = 0
 			}
-			encSrcPic := (*openh264.SSourcePicture)(unsafe.Pointer(&encSrcPicBuf[0]))
-			encSrcPic.IColorFormat = openh264.VideoFormatI420
-			encSrcPic.IPicWidth = int32(outW)
-			encSrcPic.IPicHeight = int32(outH)
-			encSrcPic.UiTimeStamp = int64(gopIdx * 1000)
-			encSrcPic.IStride[0] = int32(scaled.YStride)
-			encSrcPic.IStride[1] = int32(scaled.CStride)
-			encSrcPic.IStride[2] = int32(scaled.CStride)
+			encSrcPic := asSourcePicture(encSrcPicBuf)
+			encSrcPic.iColorFormat = openh264.VideoFormatI420
+			encSrcPic.iPicWidth = int32(outW)
+			encSrcPic.iPicHeight = int32(outH)
+			encSrcPic.uiTimeStamp = int64(gopIdx * 1000)
+			encSrcPic.iStride[0] = int32(scaled.YStride)
+			encSrcPic.iStride[1] = int32(scaled.CStride)
+			encSrcPic.iStride[2] = int32(scaled.CStride)
 			pinner.Pin(&scaled.Y[0])
 			pinner.Pin(&scaled.Cb[0])
 			pinner.Pin(&scaled.Cr[0])
-			encSrcPic.PData[0] = (*uint8)(unsafe.Pointer(&scaled.Y[0]))
-			encSrcPic.PData[1] = (*uint8)(unsafe.Pointer(&scaled.Cb[0]))
-			encSrcPic.PData[2] = (*uint8)(unsafe.Pointer(&scaled.Cr[0]))
+			encSrcPic.pData[0] = &scaled.Y[0]
+			encSrcPic.pData[1] = &scaled.Cb[0]
+			encSrcPic.pData[2] = &scaled.Cr[0]
 
-			encInfo := (*openh264.SFrameBSInfo)(unsafe.Pointer(&encInfoBuf[0]))
+			encInfo := asFrameBSInfo(encInfoBuf)
 
 			OpenH264Lock()
-			encRet := ppEnc.EncodeFrame(encSrcPic, encInfo)
-			// Extract the layer count and frame type while still inside the lock,
-			// before the C-owned NAL buffers could be invalidated by another call.
-			nLayers := int(encInfo.ILayerNum)
-			encFrameType := encInfo.EFrameType
-			const maxLayers = 128
-			if nLayers > maxLayers {
-				nLayers = maxLayers
-			}
-			// Capture the encoder's output buffer addresses as uintptr, not as
-			// pointer-typed values. PBsBuf and PNalLengthInByte point into
-			// memory owned by the OpenH264 library (the C library mallocs these
-			// even in the purego/dlopen build), valid until the next
-			// EncodeFrame or destroy call, both serialized by OpenH264Lock.
+			// Recompression keeps one picture per GOP and each lands in its
+			// own fragment, so every picture must be independently
+			// decodable. Left to itself the encoder treats the sequence as
+			// continuous video and emits P-frames that reference a
+			// predecessor no longer adjacent to them, which makes every
+			// fragment after the first unseekable.
+			ppEnc.ForceIntraFrame(true)
+			encRet := ppEnc.EncodeFrame(
+				(*openh264.SSourcePicture)(unsafe.Pointer(encSrcPic)),
+				(*openh264.SFrameBSInfo)(unsafe.Pointer(encInfo)))
+			// Read the layer table while still inside the lock, before the
+			// C-owned NAL buffers could be invalidated by another call. The
+			// layer entries hold addresses OpenH264 owns; readEncoderLayer
+			// keeps them as uintptr so the Go collector never traces them.
 			// Holding such an address in a Go *uint8/*int32 would make the GC
-			// trace it as a Go heap pointer and run span lookups on a foreign
-			// address, which can fault at a wild address. uintptr is not traced
-			// by the GC, so the address stays opaque to it.
-			var (
-				layerBufPtrs   [maxLayers]uintptr
-				layerLenPtrs   [maxLayers]uintptr
-				layerNalCounts [maxLayers]int32
-			)
-			for iLayer := 0; iLayer < nLayers; iLayer++ {
-				layer := &encInfo.SLayerInfo[iLayer]
-				layerBufPtrs[iLayer] = uintptr(unsafe.Pointer(layer.PBsBuf))
-				layerLenPtrs[iLayer] = uintptr(unsafe.Pointer(layer.PNalLengthInByte))
-				layerNalCounts[iLayer] = layer.INalCount
-			}
+			// run span lookups on a foreign address and fault.
+			nLayers := encInfo.layerCount()
+			encFrameType := encInfo.eFrameType
+			var layers [maxEncoderLayers]cLayerBSInfo
+			copy(layers[:nLayers], encInfo.sLayerInfo[:nLayers])
 			OpenH264Unlock()
 
 			// Unpin after the encode call; the C library no longer needs the
@@ -767,9 +762,9 @@ func transcodeFile(src, dst string, outW, outH int) error {
 			var nalBytes []byte
 			if encRet == openh264.CmResultSuccess && encFrameType != openh264.VideoFrameTypeSkip {
 				for iLayer := 0; iLayer < nLayers; iLayer++ {
-					nalCount := layerNalCounts[iLayer]
-					nalLenPtr := layerLenPtrs[iLayer]
-					bufPtr := layerBufPtrs[iLayer]
+					nalCount := layers[iLayer].iNalCount
+					nalLenPtr := layers[iLayer].pNalLengthInByte
+					bufPtr := layers[iLayer].pBsBuf
 					if nalCount <= 0 || nalLenPtr == 0 || bufPtr == 0 {
 						continue
 					}

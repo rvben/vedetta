@@ -413,9 +413,19 @@ func (r *Recompressor) processTarget(best *recompressTarget) bool {
 	if err != nil {
 		failureKind := failureKindOf(err)
 		r.recordTranscodeFailure(err)
-		slog.Warn("recompression: failed",
+		// A source the worker rejected describes what the camera wrote, not a
+		// malfunction here, and no later attempt changes it. Reporting it at
+		// WARN beside real faults is what made every recompression failure
+		// look alike; it is recorded, and left out of the warnings operators
+		// are meant to act on.
+		level := slog.LevelWarn
+		if !failureKind.retryable() {
+			level = slog.LevelInfo
+		}
+		slog.Log(context.Background(), level, "recompression: failed",
 			"kind", best.kind, "camera", best.camera, "path", best.path,
-			"error", err, "failure_type", string(failureKind), "retry", best.failures+1)
+			"error", err, "failure_type", string(failureKind),
+			"retryable", failureKind.retryable(), "retry", best.failures+1)
 		r.incrementFailure(best, failureKind)
 		return true
 	}

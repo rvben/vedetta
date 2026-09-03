@@ -131,37 +131,49 @@ func readTestLogTail(path string, limit int64) string {
 	return string(payload)
 }
 
-func TestScaleYCbCr_PreservesAspectRatio(t *testing.T) {
-	// 1920x800 source, target 1280x720 → should output 1280x532
-	// scale = min(1280/1920, 720/800) = min(0.666, 0.9) = 0.666
-	// out_width  = floor(1920 * 0.6666 / 2) * 2 = floor(639.99) * 2 = 639*2 = 1278 → hmm
-	// Actually: scale = 1280/1920 = 0.6666...
-	// out_width  = floor(1920 * 0.6666 / 2) * 2 = floor(639.99) * 2 = 639*2 = 1278
-	// Wait, let me recalculate per spec:
+func TestFitDimensions_PreservesAspectRatio(t *testing.T) {
+	// 1920x800 source into a 1280x720 box:
 	// scale = min(1280/1920, 720/800) = min(0.6666, 0.9) = 0.6666
-	// out_width = floor(1920 * 0.6666 / 2) * 2
-	// 1920 * 0.6666... = 1280 exactly → floor(1280/2)*2 = 640*2 = 1280
-	// out_height = floor(800 * 0.6666 / 2) * 2
-	// 800 * 0.6666... = 533.33 → floor(533.33/2)*2 = floor(266.66)*2 = 266*2 = 532
-	src := image.NewYCbCr(image.Rect(0, 0, 1920, 800), image.YCbCrSubsampleRatio420)
-	got := scaleYCbCr(src, 1280, 720)
-	if got.Rect.Dx() != 1280 {
-		t.Errorf("width = %d, want 1280", got.Rect.Dx())
+	// width  = floor(1920 * 0.6666 / 2) * 2 = floor(640) * 2   = 1280
+	// height = floor(800 * 0.6666 / 2) * 2  = floor(266.6) * 2 = 532
+	gotW, gotH := fitDimensions(1920, 800, 1280, 720)
+	if gotW != 1280 {
+		t.Errorf("width = %d, want 1280", gotW)
 	}
-	if got.Rect.Dy() != 532 {
-		t.Errorf("height = %d, want 532", got.Rect.Dy())
+	if gotH != 532 {
+		t.Errorf("height = %d, want 532", gotH)
 	}
 }
 
-func TestScaleYCbCr_EvenDimensions(t *testing.T) {
+func TestFitDimensions_EvenDimensions(t *testing.T) {
 	// Output must always have even width and height (H264 requirement)
-	src := image.NewYCbCr(image.Rect(0, 0, 1921, 1081), image.YCbCrSubsampleRatio420)
-	got := scaleYCbCr(src, 1280, 720)
-	if got.Rect.Dx()%2 != 0 {
-		t.Errorf("width %d is not even", got.Rect.Dx())
+	gotW, gotH := fitDimensions(1921, 1081, 1280, 720)
+	if gotW%2 != 0 {
+		t.Errorf("width %d is not even", gotW)
 	}
-	if got.Rect.Dy()%2 != 0 {
-		t.Errorf("height %d is not even", got.Rect.Dy())
+	if gotH%2 != 0 {
+		t.Errorf("height %d is not even", gotH)
+	}
+}
+
+func TestScaleYCbCr_ProducesExactlyTheRequestedSize(t *testing.T) {
+	// scaleYCbCr resamples to the dimensions it is given; it does not
+	// re-derive them. The encoder is told these same numbers, so any
+	// reinterpretation here would leave it reading past the planes.
+	src := image.NewYCbCr(image.Rect(0, 0, 1920, 800), image.YCbCrSubsampleRatio420)
+	got := scaleYCbCr(src, 1280, 532)
+	if got.Rect.Dx() != 1280 || got.Rect.Dy() != 532 {
+		t.Errorf("got %dx%d, want 1280x532", got.Rect.Dx(), got.Rect.Dy())
+	}
+}
+
+func TestScaleYCbCr_ForcesEvenDimensions(t *testing.T) {
+	// I420 chroma is half-resolution in both axes, so an odd request is
+	// rounded down rather than producing a half-populated chroma row.
+	src := image.NewYCbCr(image.Rect(0, 0, 1920, 800), image.YCbCrSubsampleRatio420)
+	got := scaleYCbCr(src, 641, 267)
+	if got.Rect.Dx() != 640 || got.Rect.Dy() != 266 {
+		t.Errorf("got %dx%d, want 640x266", got.Rect.Dx(), got.Rect.Dy())
 	}
 }
 

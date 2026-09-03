@@ -15,24 +15,47 @@ import (
 	openh264 "github.com/y9o/go-openh264"
 )
 
-// scaleYCbCr scales a YCbCr I420 image to fit within (targetW, targetH) while
-// preserving aspect ratio. Output dimensions are always even (required by H264).
-// Uses nearest-neighbour sampling — sufficient for downscaling security footage.
-func scaleYCbCr(src *image.YCbCr, targetW, targetH int) *image.YCbCr {
-	srcW := src.Rect.Dx()
-	srcH := src.Rect.Dy()
-
-	// Compute scale to fit within target box, preserve aspect ratio
-	scaleW := float64(targetW) / float64(srcW)
-	scaleH := float64(targetH) / float64(srcH)
-	scale := scaleW
-	if scaleH < scaleW {
+// fitDimensions returns the largest even-sided box with the aspect ratio of
+// (srcW, srcH) that fits inside (targetW, targetH).
+//
+// This is the single place output geometry is derived. Deriving it twice, once
+// to tell the encoder how large the picture is and once to produce the picture,
+// is not equivalent: the second derivation starts from dimensions the first
+// already rounded down, and rounds them down again. A 2688x1520 source aimed at
+// 1280x720 is declared 1272x720 and scaled to 1272x718 that way. The declared
+// size is what the encoder reads by, so encoderInputValid rejects every such
+// picture and the file recompresses to nothing.
+func fitDimensions(srcW, srcH, targetW, targetH int) (outW, outH int) {
+	scale := float64(targetW) / float64(srcW)
+	if scaleH := float64(targetH) / float64(srcH); scaleH < scale {
 		scale = scaleH
 	}
 
-	outW := int(float64(srcW)*scale/2) * 2 // round down to even
-	outH := int(float64(srcH)*scale/2) * 2
+	outW = int(float64(srcW)*scale/2) * 2 // round down to even
+	outH = int(float64(srcH)*scale/2) * 2
 
+	if outW <= 0 {
+		outW = 2
+	}
+	if outH <= 0 {
+		outH = 2
+	}
+	return outW, outH
+}
+
+// scaleYCbCr resamples a YCbCr I420 image to exactly (outW, outH), which the
+// caller obtains from fitDimensions. Dimensions are forced even, as H264
+// requires. Uses nearest-neighbour sampling, sufficient for downscaling
+// security footage.
+//
+// The result is exactly the size asked for, because the same numbers are given
+// to the encoder as iPicWidth/iPicHeight and it reads the planes accordingly.
+func scaleYCbCr(src *image.YCbCr, outW, outH int) *image.YCbCr {
+	srcW := src.Rect.Dx()
+	srcH := src.Rect.Dy()
+
+	outW -= outW % 2
+	outH -= outH % 2
 	if outW <= 0 {
 		outW = 2
 	}
@@ -102,21 +125,7 @@ func shouldTranscode(srcW, srcH, targetW, targetH int) (skip bool, outW, outH in
 		return true, 0, 0
 	}
 
-	// Compute output dimensions preserving aspect ratio
-	scaleW := float64(targetW) / float64(srcW)
-	scaleH := float64(targetH) / float64(srcH)
-	scale := scaleW
-	if scaleH < scaleW {
-		scale = scaleH
-	}
-	outW = int(float64(srcW)*scale/2) * 2
-	outH = int(float64(srcH)*scale/2) * 2
-	if outW <= 0 {
-		outW = 2
-	}
-	if outH <= 0 {
-		outH = 2
-	}
+	outW, outH = fitDimensions(srcW, srcH, targetW, targetH)
 
 	// Skip if area reduction is less than 25%
 	srcArea := srcW * srcH

@@ -106,7 +106,7 @@ jobs:
       # VERSION is the tag being released. Passing it explicitly rather than
       # letting the image derive one keeps a shallow runner checkout from
       # publishing an image that calls itself "dev".
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           push: true
           platforms: linux/amd64,linux/arm64
@@ -119,7 +119,7 @@ jobs:
       # Hardware-accelerated variant (VA-API for Intel/AMD, NVDEC for NVIDIA),
       # linux/amd64 only - this is x86 GPU territory and the image links
       # libavcodec/libva.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           push: true
           file: Dockerfile.hwaccel

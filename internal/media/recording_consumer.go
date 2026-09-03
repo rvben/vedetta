@@ -30,6 +30,15 @@ const dropLogInterval = time.Minute
 // packet, which costs far more than the hole it is trying to isolate. Beyond
 // the first rotation the stream is understood to be degraded, and the drop
 // counter is what reports it.
+//
+// The bound is on the rotation rate, not on one storm, so a second and
+// unrelated gap inside the window is spliced into the open segment instead of
+// being isolated. That is the accepted cost rather than an oversight: telling
+// an unrelated gap from a continuing one means rotating on drops that arrive
+// after a quiet run, which is precisely a rotation sooner than this interval,
+// and the rate bound is the only thing stopping a degraded volume from
+// producing a file and a DB row per packet. A splice costs artifacts until the
+// next keyframe; unbounded rotation costs the recording.
 const dropRotateInterval = 5 * time.Second
 
 // segmentWriterCreateTimeout bounds segment-file creation. A stalled storage

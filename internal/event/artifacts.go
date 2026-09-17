@@ -34,6 +34,15 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 	saver SnapshotSaver, publisher ArtifactPublisher, notifier Enqueuer,
 	snapshotQuality int, submitted camera.Event) {
 
+	var afterSnapshot func(camera.Event) bool
+	plannedDoorbell := false
+	if submitted.Kind == camera.EventKindDoorbell && submitted.Category != camera.CategoryDetection {
+		if early, ok := notifier.(EarlyDoorbellEnqueuer); ok {
+			afterSnapshot = early.EnqueueDoorbellEarly(submitted)
+			plannedDoorbell = true
+		}
+	}
+
 	if saver != nil && submitted.SnapshotImage != nil && submitted.SnapshotPath != "" {
 		_, snapshotSpan := tracer.Start(ctx, "snapshot.save")
 		resolved, err := saver.SaveEventSnapshot(submitted, submitted.SnapshotImage, submitted.SnapshotPath)
@@ -46,6 +55,16 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 			submitted.SnapshotAvailable = true
 		}
 		snapshotSpan.End()
+	}
+
+	// Notify before preparing MQTT images. Web push still gets a persisted
+	// snapshot URL; inline-photo providers have already started their upload.
+	if plannedDoorbell {
+		if afterSnapshot != nil {
+			afterSnapshot(submitted)
+		}
+	} else {
+		enqueueArtifactNotification(notifier, submitted)
 	}
 
 	if publisher != nil {
@@ -87,7 +106,9 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 
 		mqttSpan.End()
 	}
+}
 
+func enqueueArtifactNotification(notifier Enqueuer, submitted camera.Event) {
 	if notifier != nil && submitted.Category != camera.CategoryDetection {
 		// A doorbell press is actionable now, not after the incident quiet
 		// period. Enqueue it only after snapshot persistence so the push can

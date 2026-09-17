@@ -105,6 +105,7 @@ type queuedPublisher struct {
 func (p *queuedPublisher) PublishEvent(event camera.Event, matchedObjects []string) error {
 	event.SnapshotImage = nil
 	event.AnnotatedImage = nil
+	event.NotificationJPEG = nil
 	objects := append([]string(nil), matchedObjects...)
 	return p.dispatcher.enqueue(p.ctx, "event", func(publisher Publisher) error {
 		return publisher.PublishEvent(event, objects)
@@ -142,6 +143,7 @@ func (p *queuedPublisher) PublishPresence(presence camera.PresenceEvent, objectN
 func (p *queuedPublisher) PublishObjectSighting(objectName string, event camera.Event) {
 	event.SnapshotImage = nil
 	event.AnnotatedImage = nil
+	event.NotificationJPEG = nil
 	_ = p.dispatcher.enqueue(p.ctx, "object_sighting", func(publisher Publisher) error {
 		publisher.PublishObjectSighting(objectName, event)
 		return nil

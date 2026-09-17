@@ -13,6 +13,7 @@ build/
 
 # Config
 config.yml
+secrets/
 
 # Recordings and snapshots
 recordings/

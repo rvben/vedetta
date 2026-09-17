@@ -83,3 +83,11 @@ type ObjectEmbedder interface {
 type FaceRecognizer interface {
 	MatchThreshold() float64
 }
+
+// EarlyDoorbellEnqueuer sends inline-photo destinations before snapshot storage.
+// It is called only after the event is persisted. The returned callback delivers
+// any remaining destinations once the snapshot is saved; nil means all were
+// handled. A provider accepted early must not be included in that callback.
+type EarlyDoorbellEnqueuer interface {
+	EnqueueDoorbellEarly(camera.Event) (afterSnapshot func(camera.Event) bool)
+}

@@ -52,8 +52,10 @@ type RuntimeConfig struct {
 	MemoryLimitMB int `yaml:"memory_limit_mb"`
 }
 
-// NotificationsConfig controls web push notification delivery.
+// NotificationsConfig controls supported notification delivery methods.
 type NotificationsConfig struct {
+	Pushover PushoverConfig `yaml:"pushover"`
+
 	// VAPIDSubscriber is the contact identifier embedded in every VAPID
 	// JWT as the `sub` claim, per RFC 8292. The push service operator
 	// (Apple, Google, Mozilla) uses it to reach the application server
@@ -621,6 +623,9 @@ func Load(path string) (*Config, error) {
 	}
 	resolvePaths(cfg, filepath.Dir(path))
 	if err := validateCameras(cfg); err != nil {
+		return nil, err
+	}
+	if err := validatePushover(cfg, filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	if err := normalizeTelemetry(cfg); err != nil {

@@ -183,6 +183,22 @@ notifications:
   # with a startup warning; set a real contact for production.
   vapid_subscriber: admin@example.com
 
+  # Optional Pushover delivery, independent of browser push subscriptions.
+  # See docs/notifications.md. Keep credential files private (chmod 600).
+  # Relative file paths are resolved beside this config file. Restart to apply.
+  pushover:
+    enabled: false
+    app_token_file: ./secrets/pushover-app-token
+    user_key_file: ./secrets/pushover-user-key
+    # Empty cameras means all cameras. Omitted events means doorbell + activity.
+    cameras: [front_door]
+    events: [doorbell]
+    # Optional device name; empty sends to all devices on the Pushover account.
+    device: ""
+    priority: 0
+    sound: ""                  # use the user's default sound
+    base_url: ""               # e.g. https://vedetta.example.com, for event links
+
 # WebRTC ICE servers offered to live-view browsers. By default Vedetta offers
 # NONE: LAN viewers connect via local host candidates, and remote viewers fall
 # back to MSE/HLS over the TLS tunnel. This avoids leaking each viewer's IP to a

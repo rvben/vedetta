@@ -135,12 +135,7 @@ func runFullMode(ctx context.Context, cancel context.CancelFunc, cfg *config.Con
 
 	dispatcher := setupNotifier(db, cfg)
 	wireNotifier(ctx, server, dispatcher, cfg)
-	// Avoid the typed-nil-in-interface trap: only store a non-nil dispatcher,
-	// so the emit path's `sub.notifier != nil` check is correct when push is
-	// disabled.
-	if dispatcher != nil {
-		sub.notifier = dispatcher
-	}
+	sub.notifier = setupNotificationProviders(ctx, cfg, dispatcher)
 
 	processorDrained := runEventLoop(ctx, cfg, db, sub, server, tp.Tracer())
 	startOnvifSubscribers(ctx, cfg, sub.manager)

@@ -185,6 +185,36 @@ func (fr *FaceRecognizer) DetectAndEmbed(frame *image.RGBA, personBox [4]int, cr
 	return results
 }
 
+// TryDetectFaces finds visible faces for background snapshot selection without
+// computing identity embeddings or writing crops. Busy recognition takes
+// precedence: this optional quality signal is skipped instead of queued.
+func (fr *FaceRecognizer) TryDetectFaces(frame *image.RGBA, personBox [4]int) (results []FaceResult) {
+	if frame == nil || !fr.mu.TryLock() {
+		return nil
+	}
+	defer fr.mu.Unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("snapshot face detection panic recovered", "error", r)
+			results = nil
+		}
+	}()
+	crop := cropRegion(frame, personBox)
+	if crop.Bounds().Dx() < fr.minFaceSize || crop.Bounds().Dy() < fr.minFaceSize {
+		return nil
+	}
+	for _, face := range fr.detectFaces(crop) {
+		if face.box[3]-face.box[1] < fr.minFaceSize {
+			continue
+		}
+		box, landmarks, ok := faceInFrame(face, crop, frame.Bounds())
+		if ok {
+			results = append(results, FaceResult{Box: box, Landmarks: landmarks, Confidence: face.score})
+		}
+	}
+	return results
+}
+
 // faceInFrame maps a face detected inside a person crop back to frame
 // coordinates and clamps the box to the frame. It reports false when the box
 // covers no pixel of the frame, which leaves nothing to align, embed or draw.

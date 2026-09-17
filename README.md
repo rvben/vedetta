@@ -22,6 +22,8 @@ before choosing cameras or hardware for a production installation.
   recording streams, ONVIF discovery and PTZ, immediate image-rich doorbell
   alerts, manual doorbell entry from the camera grid, a dedicated answer view,
   ONVIF Profile T talkback, and on-demand handling for sleeping battery cameras.
+- **Notifications:** [web push and Pushover](docs/notifications.md), with event
+  photos, immediate doorbell alerts, and finalized detection incidents.
 - **Local intelligence:** motion-gated YOLOv8 detection, greedy IoU object
   tracking, zones and presence, face recognition, and object re-identification.
 - **Operations:** guided setup, an installable web app, Prometheus metrics,

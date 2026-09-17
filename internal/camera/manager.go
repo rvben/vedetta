@@ -298,9 +298,10 @@ func (m *Manager) IsStopped(name string) bool {
 }
 
 // SubmitDoorbellPress synthesizes a doorbell event for the named camera and
-// injects it into the event pipeline. It prefers the camera's full-resolution
-// main-stream frame and falls back to the detection frame when the main stream
-// has not produced a snapshot yet. Returns the event ID and true on success,
+// injects it into the event pipeline. It selects an already-scored visitor
+// image from the preceding two seconds, falling back to the latest main-stream
+// frame or detection frame when no suitable visitor image is available.
+// Returns the event ID and true on success,
 // or an empty string and false when the camera is unknown or has no frame yet.
 func (m *Manager) SubmitDoorbellPress(cameraName string) (string, bool) {
 	cam := m.GetCamera(cameraName)
@@ -308,12 +309,12 @@ func (m *Manager) SubmitDoorbellPress(cameraName string) (string, bool) {
 		return "", false
 	}
 
-	rgba := cam.LiveFrame()
+	now := time.Now()
+	rgba, preview := cam.doorbellFrame(now)
 	if rgba == nil {
 		return "", false
 	}
 
-	now := time.Now()
 	eventID := fmt.Sprintf("%s-doorbell-%d", cameraName, now.UnixMilli())
 
 	bounds := rgba.Bounds()
@@ -326,16 +327,17 @@ func (m *Manager) SubmitDoorbellPress(cameraName string) (string, bool) {
 	}
 
 	ev := Event{
-		ID:            eventID,
-		CameraName:    cameraName,
-		Label:         "doorbell",
-		Kind:          EventKindDoorbell,
-		Category:      CategoryAlert,
-		Score:         1.0,
-		Box:           [4]int{0, 0, w, h},
-		Timestamp:     now,
-		SnapshotImage: rgba,
-		SnapshotPath:  snapPath,
+		ID:               eventID,
+		CameraName:       cameraName,
+		Label:            "doorbell",
+		Kind:             EventKindDoorbell,
+		Category:         CategoryAlert,
+		Score:            1.0,
+		Box:              [4]int{0, 0, w, h},
+		Timestamp:        now,
+		SnapshotImage:    rgba,
+		NotificationJPEG: preview,
+		SnapshotPath:     snapPath,
 	}
 
 	select {

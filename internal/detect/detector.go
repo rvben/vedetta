@@ -80,8 +80,18 @@ func (d *Detector) Available() bool {
 // Detect runs object detection on a frame and returns detections above threshold.
 // Safe for concurrent use — serializes access to the backend.
 // Recovers from panics in the inference backend to prevent server crashes.
-func (d *Detector) Detect(img *image.RGBA) (result []Detection) {
-	if !d.enabled {
+func (d *Detector) Detect(img *image.RGBA) []Detection {
+	return d.detectImage(img, false)
+}
+
+// TryDetect performs optional background analysis only when the inference
+// backend is idle. Recording/detection work already in progress takes priority.
+func (d *Detector) TryDetect(img *image.RGBA) []Detection {
+	return d.detectImage(img, true)
+}
+
+func (d *Detector) detectImage(img *image.RGBA, bestEffort bool) (result []Detection) {
+	if !d.Available() || img == nil {
 		return nil
 	}
 
@@ -92,7 +102,13 @@ func (d *Detector) Detect(img *image.RGBA) (result []Detection) {
 		}
 	}()
 
-	d.mu.Lock()
+	if bestEffort {
+		if !d.mu.TryLock() {
+			return nil
+		}
+	} else {
+		d.mu.Lock()
+	}
 	defer d.mu.Unlock()
 
 	if d.inputBuf == nil {

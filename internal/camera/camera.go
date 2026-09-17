@@ -42,6 +42,7 @@ type Event struct {
 	AnsweredBy        string      `json:"answered_by,omitempty"` // doorbell rings: who acknowledged
 	Category          string      `json:"category,omitempty"`    // "alert" (notify) or "detection" (low priority)
 	SnapshotImage     *image.RGBA `json:"-"`                     // clean frame for disk/embeddings
+	NotificationJPEG  []byte      `json:"-"`                     // immutable, bounded inline notification attachment
 	AnnotatedImage    *image.RGBA `json:"-"`                     // annotated frame for MQTT display
 }
 
@@ -142,6 +143,7 @@ type Camera struct {
 	eventSnapQuality   int
 	latestSnapshotPath string
 	snapConsumer       *media.SnapshotConsumer
+	doorbellSnapshots  *doorbellSnapshots
 	// reattachInterval overrides consumerReattachInterval. Zero means the
 	// production interval; only tests set it.
 	reattachInterval     time.Duration
@@ -260,6 +262,9 @@ func NewCamera(cfg config.CameraConfig, detector *detect.Detector, motion config
 		faceCropDir:          faceCropDir,
 		faceProcessed:        make(map[int]time.Time),
 		detections:           detections,
+	}
+	if cfg.Doorbell.Enabled {
+		cam.doorbellSnapshots = newDoorbellSnapshots(detector, faceRecognizer)
 	}
 	if cam.detectEnabled && !detector.Available() {
 		cam.degradedReason = "object detector unavailable"
@@ -527,6 +532,13 @@ func (c *Camera) Start(ctx context.Context) <-chan struct{} {
 
 	var running sync.WaitGroup
 	running.Add(2)
+	if c.doorbellSnapshots != nil {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			c.doorbellSnapshots.run(ctx)
+		}()
+	}
 
 	// Load the cached snapshot off the start path. Manager.Start calls
 	// Camera.Start synchronously inside initSubsystems before the API is
@@ -742,6 +754,7 @@ func (c *Camera) setSnapshotConsumer(sc *media.SnapshotConsumer) {
 // processFrame handles a decoded RGB24 frame — motion detection + YOLO.
 func (c *Camera) processFrame(buf []byte, w, h int) {
 	frameSize := w * h * 3
+	frameAt := time.Now()
 
 	// Store raw RGB24 frame for on-demand snapshot conversion.
 	c.mu.Lock()
@@ -751,13 +764,14 @@ func (c *Camera) processFrame(buf []byte, w, h int) {
 	copy(c.rawFrame, buf)
 	c.frameW = w
 	c.frameH = h
-	c.lastFrameTime = time.Now()
+	c.lastFrameTime = frameAt
 	c.mu.Unlock()
 
 	// Periodically save snapshot to disk for offline display
 	c.saveCachedSnapshot()
 
 	if !c.detectEnabled {
+		c.offerDoorbellFrame(buf, w, h, frameAt, nil)
 		return
 	}
 	metrics.FramesProcessed.Inc(c.config.Name)
@@ -818,6 +832,8 @@ func (c *Camera) processFrame(buf []byte, w, h int) {
 		detections = c.detector.DetectRGB24(buf, w, h)
 		metrics.YOLOInferenceDuration.Observe(c.config.Name, time.Since(yoloStart))
 	}
+
+	c.offerDoorbellFrame(buf, w, h, frameAt, detections)
 
 	// Run the tracking pipeline every frame (with detections=nil during quiet
 	// periods) so unmatched tracks keep aging and eventually decay. Otherwise

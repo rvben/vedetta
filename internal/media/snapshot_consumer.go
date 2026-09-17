@@ -109,9 +109,15 @@ func (sc *SnapshotConsumer) decodeLoop() {
 
 // LastFrame returns the most recently decoded full-resolution frame, or nil.
 func (sc *SnapshotConsumer) LastFrame() *image.RGBA {
+	frame, _ := sc.LastFrameAt()
+	return frame
+}
+
+// LastFrameAt pairs immutable pixels with their decode timestamp atomically.
+func (sc *SnapshotConsumer) LastFrameAt() (*image.RGBA, time.Time) {
 	sc.mu.RLock()
 	defer sc.mu.RUnlock()
-	return sc.lastFrame
+	return sc.lastFrame, sc.lastTime
 }
 
 // Close releases decoder resources. Safe to call more than once.

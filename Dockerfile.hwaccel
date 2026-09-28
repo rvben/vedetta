@@ -11,7 +11,7 @@
 #               (requires the NVIDIA Container Toolkit on the host)
 
 # Build stage
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.27-bookworm AS builder
 
 # libavcodec/libavutil headers (cgo pkg-config) and libva for VA-API.
 RUN apt-get update && \

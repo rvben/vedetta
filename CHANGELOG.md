@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.20](https://github.com/rvben/vedetta/compare/v0.7.19...v0.7.20) - 2026-09-28
+
+### Fixed
+
+- **ci**: pin lint-install toolchain to go.mod's go version ([08307aa](https://github.com/rvben/vedetta/commit/08307aafafdd6a7eb1dda258d86ea8ea115fdb7c))
+
 ## [0.7.19](https://github.com/rvben/vedetta/compare/v0.7.18...v0.7.19) - 2026-09-28
 
 ### Fixed

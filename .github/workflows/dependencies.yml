@@ -19,7 +19,7 @@ jobs:
       lock: true
       min-age: 7d
       max-bump: minor
-      prepare-command: make lint-install
+      prepare-command: make lint-install && echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       validation-command: make check
       fail-on-blocked: false
       branch: deps/upd

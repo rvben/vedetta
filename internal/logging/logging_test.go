@@ -122,6 +122,7 @@ func TestInitExportsToOTLPReceiverWithResourceAndCorrelation(t *testing.T) {
 			t.Errorf("OTLP/HTTP logs must POST to /v1/logs, got %q", c.path)
 		}
 		assertHasLog(t, c.req, "hello-loki", "vedetta-test", "v9.9.9", tid[:], sid[:])
+		assertHasAttr(t, c.req, "camera", "front")
 	case <-time.After(5 * time.Second):
 		t.Fatal("no OTLP export received")
 	}
@@ -246,6 +247,28 @@ func assertHasLog(t *testing.T, req *collogspb.ExportLogsServiceRequest, body, s
 	if !sawSpan {
 		t.Error("exported logs missing the correlated span_id")
 	}
+}
+
+// assertHasAttr proves an slog key-value attribute passed at the call site
+// (e.g. slog.InfoContext(ctx, msg, key, value)) survives the otelslog ->
+// otel/sdk/log -> OTLP conversion pipeline and reaches the exported log
+// record's own Attributes (not the resource's). This is what an otelslog or
+// otel/log version bump could silently break if the two ever drift apart on
+// their key/value representation.
+func assertHasAttr(t *testing.T, req *collogspb.ExportLogsServiceRequest, key, value string) {
+	t.Helper()
+	for _, rl := range req.GetResourceLogs() {
+		for _, sl := range rl.GetScopeLogs() {
+			for _, lr := range sl.GetLogRecords() {
+				for _, kv := range lr.GetAttributes() {
+					if kv.GetKey() == key && kv.GetValue().GetStringValue() == value {
+						return
+					}
+				}
+			}
+		}
+	}
+	t.Errorf("exported log record missing attribute %s=%q", key, value)
 }
 
 func TestEnsureLogsPath(t *testing.T) {

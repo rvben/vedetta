@@ -135,6 +135,8 @@ func (w *recordingStreamWriter) WritePacketRTP(_ *description.Media, pkt *rtp.Pa
 	return nil
 }
 
+func (w *recordingStreamWriter) ReloadDesc() {}
+
 // The republished RTSP stream feeds clients as strict as iOS, so it has to be
 // normalized the same way every other transport is.
 func TestRTSPServerConsumer_StripsSEIFromRepublishedPackets(t *testing.T) {

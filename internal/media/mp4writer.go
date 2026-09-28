@@ -254,11 +254,14 @@ func (sw *SegmentWriter) writeVideoAccessUnit(au [][]byte, sampleDuration uint32
 		sampleDuration = sw.videoTimeScale / 30
 	}
 
-	sample := &fmp4.Sample{
-		Duration: sampleDuration,
-	}
-	if err := sample.FillH264(0, au); err != nil {
+	avcc, err := h264.AVCC(au).Marshal()
+	if err != nil {
 		return fmt.Errorf("fill H264 sample: %w", err)
+	}
+	sample := &fmp4.Sample{
+		Duration:        sampleDuration,
+		IsNonSyncSample: !h264.IsRandomAccess(au),
+		Payload:         avcc,
 	}
 
 	// On keyframe: flush the previous GOP before starting a new one

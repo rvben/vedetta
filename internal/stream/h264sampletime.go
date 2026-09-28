@@ -99,11 +99,16 @@ func (t *h264SampleTimer) push(au [][]byte, rtpTS uint32) (finalized *fmp4.Sampl
 		}
 	}
 
-	next := &fmp4.Sample{}
-	// PTSOffset is the composition time (PTS-DTS): zero for B-frame-free
-	// streams, non-zero wherever the encoder reordered frames.
-	if err := next.FillH264(int32(pts-dts), au); err != nil {
+	avcc, err := h264.AVCC(au).Marshal()
+	if err != nil {
 		return nil, 0, false
+	}
+	next := &fmp4.Sample{
+		// PTSOffset is the composition time (PTS-DTS): zero for B-frame-free
+		// streams, non-zero wherever the encoder reordered frames.
+		PTSOffset:       int32(pts - dts),
+		IsNonSyncSample: !h264.IsRandomAccess(au),
+		Payload:         avcc,
 	}
 
 	if t.hasInFlight {

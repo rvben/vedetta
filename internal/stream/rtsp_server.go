@@ -34,9 +34,13 @@ type cameraStream struct {
 
 // rtpStreamWriter is the part of gortsplib.ServerStream the consumer uses. It
 // is an interface so a test can observe the packets that are actually published
-// rather than reconstruct them.
+// rather than reconstruct them. ReloadDesc is required alongside WritePacketRTP
+// because gortsplib decouples the live H264 format (written by OnVideoRTP) from
+// the SDP snapshot served in DESCRIBE responses; without reloading, a new SPS/PPS
+// never reaches new clients.
 type rtpStreamWriter interface {
 	WritePacketRTP(*description.Media, *rtp.Packet) error
+	ReloadDesc()
 }
 
 // rtspServerConsumer implements rtsp.Consumer and writes RTP into a gortsplib ServerStream.
@@ -105,17 +109,21 @@ func (c *rtspServerConsumer) OnVideoRTP(pkt *rtp.Packet) {
 		return
 	}
 
-	// Update SPS/PPS from in-band parameters.
+	// Update SPS/PPS from in-band parameters. OnVideoRTP is only ever driven by
+	// one goroutine per consumer, so the format's own fields need no locking;
+	// ReloadDesc snapshots them for DESCRIBE responses, which is what keeps a
+	// client that connects after a parameter change from getting stale SDP.
 	sps, pps, _ := h264au.TrackParameterSets(au, nil, nil)
 	if sps != nil || pps != nil {
-		curSPS, curPPS := c.h264Format.SafeParams()
 		if sps == nil {
-			sps = curSPS
+			sps = c.h264Format.SPS
 		}
 		if pps == nil {
-			pps = curPPS
+			pps = c.h264Format.PPS
 		}
-		c.h264Format.SafeSetParams(sps, pps)
+		c.h264Format.SPS = sps
+		c.h264Format.PPS = pps
+		c.stream.ReloadDesc()
 	}
 
 	// Re-packetize into properly-sized RTP packets.

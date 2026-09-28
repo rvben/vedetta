@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.19](https://github.com/rvben/vedetta/compare/v0.7.18...v0.7.19) - 2026-09-28
+
+### Fixed
+
+- **stream**: migrate off deprecated gortsplib and mediacommon APIs ([b600519](https://github.com/rvben/vedetta/commit/b6005199fac304e42b4220f4b3619a205ce81875))
+- **deps**: bump google.golang.org/grpc to v1.84.0 ([2e80294](https://github.com/rvben/vedetta/commit/2e80294a85f4757bed7043a59c6caecdcd925ad1))
+- **build**: move to Go 1.26.6 for 19 reachable stdlib advisories ([3ffdea9](https://github.com/rvben/vedetta/commit/3ffdea912a8de99a901b599d910cdf835ed07509))
+- **recording**: log an unrecompressable source below WARN ([69798db](https://github.com/rvben/vedetta/commit/69798db261fdd2a76d77a79cbe7354ab35e92d29))
+- **recording**: stop retrying recordings that can never be recompressed ([249c9b1](https://github.com/rvben/vedetta/commit/249c9b16ce02b07c43633c0c402be44767f68a34))
+- **recording**: read the transcode failure cause from the worker ([0f99790](https://github.com/rvben/vedetta/commit/0f997902cb34747a96e5a0badfe8922df82d8f06))
+- **media**: match the OpenH264 encoder ABI at the purego boundary ([47f37fc](https://github.com/rvben/vedetta/commit/47f37fc64e96aee1f96c757a37ed5dc4f855e1e4))
+- **media**: name why a recompression produced no frames ([bd5ec97](https://github.com/rvben/vedetta/commit/bd5ec97d25411dce02008a9fff70ce70b5940a10))
+- **media**: derive recompression output geometry once ([634d7c1](https://github.com/rvben/vedetta/commit/634d7c13e40d47390bd50eb79ba2e582f0ed0ba9))
+- **stream**: disconnect MSE viewers stranded on a replaced consumer ([093995d](https://github.com/rvben/vedetta/commit/093995d8e2d51b4a7c05042d91cf395c12a8155d))
+- **stream**: restore RTSP republisher consumers the source detached ([f7ea494](https://github.com/rvben/vedetta/commit/f7ea494b2c72359a670755f5ee7a300fe9d36e3a))
+- **rtsp**: restore consumers the source detached after a panic ([61f6287](https://github.com/rvben/vedetta/commit/61f62876bc6910378db107af5fdf414bbd3ea52e))
+- **api**: redact setup codes the parsed query cannot see ([3eaefa1](https://github.com/rvben/vedetta/commit/3eaefa13bf960719f9ce304b1d6bef8d3a69adfa))
+- **api**: redact an encoded setup code and stop truncating the setup body ([ba01112](https://github.com/rvben/vedetta/commit/ba01112c972bd42f17988e1d5f15fdb287970977))
+- **setup**: refuse a discovery target outside the local network ([308e682](https://github.com/rvben/vedetta/commit/308e682add9ce90710db7d69dd853586ff7a026b))
+- **events**: make the since filter exclusive and normalize timestamp bounds ([77e0db2](https://github.com/rvben/vedetta/commit/77e0db24f067e298a719331250d6c7696b1b469c))
+- **recording**: bound segment rotation at a packet-drop gap ([1717001](https://github.com/rvben/vedetta/commit/1717001c366f6bf47212b3226bd761701fc323b5))
+- **recording**: start a trimmed clip on a keyframe ([d76a9c6](https://github.com/rvben/vedetta/commit/d76a9c6fd73bbddda766f5ae863f91a6ad3b4384))
+- **stream**: keep live transports alive after a consumer panic or SSRC rewrite ([f145d42](https://github.com/rvben/vedetta/commit/f145d42fb19d92ebd46acf7b730bddf38849cfa7))
+- **build**: stamp the version on every build path and scan dependencies ([3d913f1](https://github.com/rvben/vedetta/commit/3d913f15abf6861ab3381551266ac3f1ebb09025))
+- **startup**: one startup path, one MQTT client, and a shutdown that waits ([3b3b948](https://github.com/rvben/vedetta/commit/3b3b9480160cfb619f3b058d75801de48fbaf278))
+- **api**: gate every mutating route on admin scope and guard first-run setup ([81ec4b6](https://github.com/rvben/vedetta/commit/81ec4b619c91e7227082e4e7bb1b6fdfd1a1f2ba))
+- **ui**: apply the theme before the stylesheet and handle an expired session ([d10a419](https://github.com/rvben/vedetta/commit/d10a419f4a2a46a6c54cc30f8e6bc177a7812f0c))
+- **events**: keep event ends, and give MQTT a single owner ([1280a69](https://github.com/rvben/vedetta/commit/1280a698a6807186eeb2ed68ad538781a560c435))
+- **detect**: fail loudly on a model the runtime cannot use ([c9bf78b](https://github.com/rvben/vedetta/commit/c9bf78bdf08fe55587ec01f7da012ce0e0b26de4))
+- **config**: write config.yml atomically and refuse one the next start cannot read ([e9e0f3f](https://github.com/rvben/vedetta/commit/e9e0f3f032b1ad2a49288756b6744ae1f10877d2))
+- **recording**: one recorder per camera, and stop losing segment data silently ([e28a3eb](https://github.com/rvben/vedetta/commit/e28a3eb69c6e812796faa670535a27b4d4510754))
+- **stream**: contain consumer panics and share H.264 access-unit rewriting ([af5ad51](https://github.com/rvben/vedetta/commit/af5ad510a66e90d5dc9d37411c0746b7a2af5df0))
+
 ## [0.7.18](https://github.com/rvben/vedetta/compare/v0.7.17...v0.7.18) - 2026-09-03
 
 ### Fixed

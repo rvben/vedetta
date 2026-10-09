@@ -60,19 +60,23 @@ type SegmentWriter struct {
 	videoSPS    []byte
 	videoPPS    []byte
 
-	aacFormat  *format.MPEG4Audio
-	aacDecoder *rtpmpeg4audio.Decoder
-	aacConfig  *mpeg4audio.AudioSpecificConfig
+	aacFormat      *format.MPEG4Audio
+	aacDecoder     *rtpmpeg4audio.Decoder
+	aacConfig      *mpeg4audio.AudioSpecificConfig
+	recordingAudio *recordingAudio
+	audioErr       error
+	preAudio       []timedAudio
 
-	initWritten     bool
-	seqNum          uint32
-	videoDTS        uint64
-	audioDTS        uint64
-	startTime       time.Time
-	firstSampleTime time.Time // wall time of the keyframe that opened the file
-	hasAudio        bool
-	videoTimeScale  uint32
-	audioTimeScale  uint32
+	initWritten       bool
+	seqNum            uint32
+	videoDTS          uint64
+	lastVideoDuration uint32
+	audioDTS          uint64
+	startTime         time.Time
+	firstSampleTime   time.Time // wall time of the keyframe that opened the file
+	hasAudio          bool
+	videoTimeScale    uint32
+	audioTimeScale    uint32
 
 	pendingVideoTimestamp uint32
 	pendingVideoTime      time.Time
@@ -162,6 +166,20 @@ func NewSegmentWriter(path string, video, audio *rtsp.TrackInfo) (*SegmentWriter
 		}
 	}
 
+	if audio != nil && (audio.Codec == "PCMA" || audio.Codec == "PCMU") {
+		r, err := newRecordingAudio(audio)
+		if err != nil {
+			sw.failAudio(err)
+		} else {
+			sw.recordingAudio = r
+			sw.hasAudio = true
+			sw.audioTimeScale = recordingAudioRate
+			sw.aacConfig = &mpeg4audio.AudioSpecificConfig{Type: mpeg4audio.ObjectTypeAACLC, SampleRate: recordingAudioRate, ChannelConfig: 1}
+		}
+	}
+	if audio != nil && audio.Codec != "AAC" && audio.Codec != "PCMA" && audio.Codec != "PCMU" {
+		sw.failAudio(fmt.Errorf("unsupported recording audio codec: %s", audio.Codec))
+	}
 	return sw, nil
 }
 
@@ -238,6 +256,7 @@ func (sw *SegmentWriter) writeVideoAccessUnit(au [][]byte, sampleDuration uint32
 	// Write the init segment on first keyframe
 	if !sw.initWritten {
 		if !h264.IsRandomAccess(au) {
+			sw.preAudio = nil
 			return nil
 		}
 		if sw.videoSPS == nil || sw.videoPPS == nil {
@@ -248,6 +267,15 @@ func (sw *SegmentWriter) writeVideoAccessUnit(au [][]byte, sampleDuration uint32
 		}
 		sw.initWritten = true
 		sw.firstSampleTime = sampleTime
+		queued := sw.preAudio
+		sw.preAudio = nil
+		for _, p := range queued {
+			if !p.received.Before(sampleTime) {
+				if err := sw.writeG711Audio(p.packet); err != nil {
+					return err
+				}
+			}
+		}
 	}
 
 	if sampleDuration == 0 {
@@ -279,6 +307,7 @@ func (sw *SegmentWriter) writeVideoAccessUnit(au [][]byte, sampleDuration uint32
 	sw.pendingVideoSamples = append(sw.pendingVideoSamples, sample)
 	sw.pendingBytes += len(sample.Payload)
 	sw.videoDTS += uint64(sample.Duration)
+	sw.lastVideoDuration = sample.Duration
 
 	return sw.capPendingPart()
 }
@@ -319,6 +348,11 @@ func (sw *SegmentWriter) capPendingPart() error {
 
 // WriteAudio processes an audio RTP packet into the fMP4 segment.
 func (sw *SegmentWriter) WriteAudio(pkt *rtp.Packet) error {
+	if sw.recordingAudio != nil {
+		sw.mu.Lock()
+		defer sw.mu.Unlock()
+		return sw.writeG711Audio(pkt)
+	}
 	if sw.aacDecoder == nil {
 		return nil
 	}
@@ -395,18 +429,27 @@ func (sw *SegmentWriter) FlushedDuration() time.Duration {
 // whenever the stream stalled), else wall time since creation.
 func (sw *SegmentWriter) Close() (time.Duration, error) {
 	var flushErr error
+	sw.mu.Lock()
+	lastVideoDuration := sw.lastVideoDuration
+	sw.mu.Unlock()
+	if lastVideoDuration == 0 {
+		lastVideoDuration = sw.videoTimeScale / 30
+	}
 	if sw.h264Decoder != nil && !sw.skipDecoderFlush {
 		if au, _, err := sw.h264Decoder.Flush(); err != nil {
 			flushErr = err
 		} else if len(au) > 0 {
 			sw.mu.Lock()
-			flushErr = sw.writeVideoAccessUnit(au, sw.videoTimeScale/30, sw.pendingVideoTime)
+			flushErr = sw.writeVideoAccessUnit(au, lastVideoDuration, sw.pendingVideoTime)
 			sw.mu.Unlock()
 		}
 	}
 
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
+
+	sw.finishRecordingAudio()
+	sw.preAudio = nil
 
 	// Flush any remaining buffered samples. This is the only write for the
 	// last GOP of the segment, so its failure must reach the caller: silently

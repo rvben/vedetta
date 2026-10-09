@@ -44,6 +44,7 @@ internal/camera/test/
 node_modules/
 test-results/
 playwright-report/
+__pycache__/
 
 # Superpowers docs (local specs/plans) and working state. These hold session
 # notes that quote real host addresses and credentials, so they must never be

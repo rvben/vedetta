@@ -1,7 +1,8 @@
-package stream
+package aac
 
 import (
 	"math"
+	"os"
 	"testing"
 )
 
@@ -13,6 +14,9 @@ import (
 func ensureFDKForTest(t *testing.T) {
 	t.Helper()
 	if !ensureFDK() {
+		if os.Getenv("VEDETTA_REQUIRE_AAC") == "1" {
+			t.Fatalf("required libfdk-aac unavailable: %v", fdkLoadErr)
+		}
 		t.Skipf("libfdk-aac not available, skipping native encoder test: %v", fdkLoadErr)
 	}
 }
@@ -60,5 +64,36 @@ func TestFDKEncodesPCMToAAC(t *testing.T) {
 func TestFDKRejectsNonMono(t *testing.T) {
 	if _, err := newFDKAACEncoder(8000, 2); err == nil {
 		t.Fatal("newFDKAACEncoder must reject a non-mono channel count")
+	}
+}
+
+func TestFDKRecordingDrain(t *testing.T) {
+	ensureFDKForTest(t)
+	enc, err := New(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	t.Logf("AAC priming: %d samples", enc.Delay())
+	if enc.Delay() < 1024 || enc.Delay() > 4096 {
+		t.Fatalf("unexpected priming: %d", enc.Delay())
+	}
+	frames, err := enc.Encode(make([]int16, 48000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail, err := enc.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := len(frames) + len(tail) - enc.Delay()/1024
+	if count < 47 {
+		t.Fatalf("lost audio tail: %d frames", count)
+	}
+	if again, err := enc.Flush(); err != nil || len(again) != 0 {
+		t.Fatalf("second flush: %d %v", len(again), err)
+	}
+	if _, err := enc.Encode([]int16{1}); err == nil {
+		t.Fatal("encode after flush succeeded")
 	}
 }

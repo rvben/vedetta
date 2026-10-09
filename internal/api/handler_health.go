@@ -96,12 +96,17 @@ func (s *Server) GetHealth(w http.ResponseWriter, _ *http.Request) {
 		detectionCheck["openh264_version"] = openH264.Version
 	}
 
+	audioErrors := s.recorder.AudioErrors()
+	if len(audioErrors) > 0 {
+		status = "degraded"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": status,
 		"checks": map[string]any{
-			"database":  dbStatus,
-			"mqtt":      mqttStatus,
-			"detection": detectionCheck,
+			"database":               dbStatus,
+			"mqtt":                   mqttStatus,
+			"detection":              detectionCheck,
+			"recording_audio_errors": audioErrors,
 			"cameras": map[string]any{
 				"total":    len(statuses),
 				"online":   onlineCount,
@@ -232,6 +237,11 @@ func (s *Server) GetMetrics(w http.ResponseWriter, _ *http.Request) {
 
 	var b strings.Builder
 
+	audioErrors := 0
+	if s.recorder != nil {
+		audioErrors = len(s.recorder.AudioErrors())
+	}
+	writePromScalar(&b, "gauge", "vedetta_recording_audio_errors", "Number of cameras whose recording audio codec failed.", int64(audioErrors))
 	// Scalar gauges and counters: one HELP+TYPE per family, one sample.
 	writePromScalar(&b, "gauge", "vedetta_up", "Whether the Vedetta process is running (always 1).", 1)
 	writePromScalar(&b, "gauge", "vedetta_ready", "Whether all subsystems have finished initializing.", int64(boolMetric(s.ready.Load())))

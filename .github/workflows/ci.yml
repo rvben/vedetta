@@ -16,9 +16,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - run: make lint-install
 
+      - name: Install native AAC and audio decoder test dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfdk-aac2 ffmpeg
+
       - run: make check
+        env:
+          VEDETTA_REQUIRE_AAC: '1'
 
   # Dependency vulnerability scan. A separate job on purpose: its verdict turns
   # on advisories published upstream rather than on anything in this tree, so a

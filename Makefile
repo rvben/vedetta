@@ -1,4 +1,4 @@
-.PHONY: build build-capi build-hwaccel require-deploy-config build-deploy build-release verify-version run test test-js test-browser test-race bench lint lint-install vet vulncheck vulncheck-install clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
+.PHONY: build build-capi build-hwaccel require-deploy-config build-deploy build-release verify-version run test test-js test-audio-bench test-browser test-race bench lint lint-install vet vulncheck vulncheck-install clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
 
 BINARY := vedetta
 BUILD_DIR := ./build
@@ -92,8 +92,12 @@ build-hwaccel:
 run: build
 	$(BUILD_DIR)/$(BINARY) -config config.example.yml
 
-test: test-js
+test: test-js test-audio-bench
 	go test ./...
+
+# Evaluation logic needs no ML packages or model downloads in CI.
+test-audio-bench:
+	python3 -m unittest discover -s tools/audiobench -p 'test_*.py'
 
 # Browser-side pure logic (no DOM) is extracted into standalone modules and
 # unit-tested with the Node built-in test runner so it runs locally and in CI
@@ -183,7 +187,7 @@ generate:
 # the network and on advisories published after the code was written, so a
 # newly disclosed CVE would redden an unchanged tree and, because the release
 # job needs this target, silently block publication.
-check: lint vet test-js test-race
+check: lint vet test-js test-audio-bench test-race
 
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) -t $(DOCKER_IMAGE):$(VERSION) -t $(DOCKER_IMAGE):latest .

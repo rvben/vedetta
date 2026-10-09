@@ -70,6 +70,15 @@ make build
 ./build/vedetta -config config.yml
 ```
 
+Tapo and other mono G.711 cameras record audio as 48 kHz AAC-LC. Native
+installations need `libfdk-aac`: `brew install fdk-aac` on macOS, or
+`sudo apt install libfdk-aac2` on Ubuntu. Debian requires the `non-free`
+repository component. Both container variants include it. AAC camera audio
+passes through without this library. If audio encoding fails, video continues;
+`/api/health` reports the camera under `checks.recording_audio_errors` and
+`/metrics` exposes `vedetta_recording_audio_errors`. Existing recordings that
+omitted audio cannot be repaired retroactively.
+
 Go 1.26 or newer is required to build the current tree. Release artifacts are
 available on the [GitHub Releases page](https://github.com/rvben/vedetta/releases).
 

@@ -3340,6 +3340,11 @@ components:
       type: object
       required: [database, mqtt, cameras, storage]
       properties:
+        recording_audio_errors:
+          type: object
+          description: Camera names mapped to recording audio failure reasons; video continues.
+          additionalProperties:
+            type: string
         database:
           type: string
           enum: [ok, error]

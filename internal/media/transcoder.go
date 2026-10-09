@@ -583,6 +583,17 @@ func transcodeFile(src, dst string, outW, outH int) error {
 		OpenH264Unlock()
 	}()
 
+	// avc1 stores one parameter-set pair in its init segment. Keep IDs fixed
+	// across forced IDRs; increasing PPS IDs would reference sets stripped from
+	// later samples by annexBToAVCC and make those pictures undecodable.
+	strategy := int(openh264.CONSTANT_ID)
+	OpenH264Lock()
+	optionResult := ppEnc.SetOption(openh264.ENCODER_OPTION_SPS_PPS_ID_STRATEGY, &strategy)
+	OpenH264Unlock()
+	if optionResult != 0 {
+		return fmt.Errorf("encoder constant parameter-set IDs: %d", optionResult)
+	}
+
 	out, err := os.Create(dst)
 	if err != nil {
 		return fmt.Errorf("create dst: %w", err)
@@ -641,6 +652,14 @@ func transcodeFile(src, dst string, outW, outH int) error {
 		videoDuration := gop.videoDuration
 		newAudioSamples := gop.audioSamples
 		audioBase := gop.audioBase
+		// Preserve audio even in audio-only tails or video blocks that cannot be
+		// recompressed independently. Its original timestamps carry RTP gaps.
+		audioGOPIndex := -1
+		if len(newAudioSamples) > 0 {
+			audioGOPIndex = len(gops)
+			gops = append(gops, encodedGOP{audioSamples: newAudioSamples, audioBase: audioBase, seqNum: seqNum})
+			seqNum++
+		}
 
 		if len(videoAVCC) == 0 {
 			continue
@@ -819,6 +838,11 @@ func transcodeFile(src, dst string, outW, outH int) error {
 		pinner.Unpin()
 
 		if len(newVideoSamples) > 0 {
+			if audioGOPIndex >= 0 {
+				gops[audioGOPIndex].videoSamples = newVideoSamples
+				gops[audioGOPIndex].videoBase = videoBase
+				continue
+			}
 			gops = append(gops, encodedGOP{
 				videoSamples: newVideoSamples,
 				audioSamples: newAudioSamples,
@@ -848,12 +872,9 @@ func transcodeFile(src, dst string, outW, outH int) error {
 				validVideo = append(validVideo, s)
 			}
 		}
-		if len(validVideo) == 0 {
-			continue
-		}
-
-		tracks := []*fmp4.PartTrack{
-			{ID: videoTrackID, BaseTime: gop.videoBase, Samples: validVideo},
+		var tracks []*fmp4.PartTrack
+		if len(validVideo) > 0 {
+			tracks = append(tracks, &fmp4.PartTrack{ID: videoTrackID, BaseTime: gop.videoBase, Samples: validVideo})
 		}
 		if audioTrackID != 0 && len(gop.audioSamples) > 0 {
 			validAudio := make([]*fmp4.Sample, 0, len(gop.audioSamples))
@@ -869,6 +890,9 @@ func transcodeFile(src, dst string, outW, outH int) error {
 					Samples:  validAudio,
 				})
 			}
+		}
+		if len(tracks) == 0 {
+			continue
 		}
 		part := fmp4.Part{SequenceNumber: gop.seqNum, Tracks: tracks}
 		if err := part.Marshal(out); err != nil {

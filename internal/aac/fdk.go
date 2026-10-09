@@ -1,4 +1,4 @@
-package stream
+package aac
 
 import (
 	"errors"
@@ -18,15 +18,13 @@ import (
 // shared library is discovered and loaded once, lazily, and its absence
 // degrades gracefully to video-only HLS rather than failing the stream.
 //
-// Only the four symbols needed to encode raw AAC-LC are bound. The
-// AudioSpecificConfig for the fMP4 init segment is constructed from the
-// sample rate and channel count (standard for AAC-LC), so aacEncInfo and
-// its larger struct are deliberately not bound.
+// Bind encoding, configuration and encoder-info symbols. Recording needs
+// aacEncInfo to remove codec priming before muxing its raw AAC-LC frames.
 
 // FDK AACENC_ERROR codes.
 const (
 	fdkAACEncOK        = 0x0000
-	fdkAACEncEncodeEOF = 0x0040
+	fdkAACEncEncodeEOF = 0x0080
 )
 
 // FDK AACENC_PARAM identifiers.
@@ -76,6 +74,14 @@ type fdkOutArgs struct {
 	bitResState  int32
 }
 
+type fdkInfo struct {
+	_                                 [3]uint32 // maxOutBufBytes, maxAncBytes, inBufFillLevel
+	inputChannels, frameLength, delay uint32
+	_                                 uint32   // delayCore
+	_                                 [64]byte // configBuf
+	_                                 uint32   // configSize
+}
+
 var (
 	fdkMu      sync.Mutex
 	fdkAttempt bool
@@ -86,6 +92,7 @@ var (
 	fdkAacEncClose        func(ph *uintptr) int32
 	fdkAacEncoderSetParam func(h uintptr, param uint32, value uint32) int32
 	fdkAacEncEncode       func(h uintptr, inDesc, outDesc, inArgs, outArgs unsafe.Pointer) int32
+	fdkAacEncInfo         func(h uintptr, info *fdkInfo) int32
 
 	// Overridable for tests.
 	fdkDlopen = func(path string) (uintptr, error) {
@@ -157,13 +164,13 @@ func ensureFDK() bool {
 		}
 	}
 
-	base := "libfdk-aac not found; G.711 cameras will stream without audio. Set FDKAAC_LIB or install fdk-aac"
+	base := "libfdk-aac not found; G.711 cameras cannot encode AAC audio. Set FDKAAC_LIB or install fdk-aac"
 	if len(attempts) > 0 {
 		fdkLoadErr = fmt.Errorf("%s (attempts: %s)", base, strings.Join(attempts, "; "))
 	} else {
 		fdkLoadErr = errors.New(base)
 	}
-	slog.Warn("HLS G.711->AAC transcode unavailable", "error", fdkLoadErr)
+	slog.Warn("G.711->AAC transcode unavailable", "error", fdkLoadErr)
 	return false
 }
 
@@ -177,6 +184,7 @@ func bindFDK(lib uintptr) (err error) {
 	purego.RegisterLibFunc(&fdkAacEncClose, lib, "aacEncClose")
 	purego.RegisterLibFunc(&fdkAacEncoderSetParam, lib, "aacEncoder_SetParam")
 	purego.RegisterLibFunc(&fdkAacEncEncode, lib, "aacEncEncode")
+	purego.RegisterLibFunc(&fdkAacEncInfo, lib, "aacEncInfo")
 	return nil
 }
 
@@ -186,9 +194,11 @@ type fdkAACEncoder struct {
 	handle  uintptr
 	scratch []byte // reusable PCM byte buffer
 	out     []byte // reusable bitstream buffer
+	delay   int
+	drained bool
 }
 
-func newFDKAACEncoder(sampleRate, channels int) (aacEncoder, error) {
+func newFDKAACEncoder(sampleRate, channels int) (*fdkAACEncoder, error) {
 	if channels != 1 {
 		// Camera G.711 is always mono; refuse anything else rather than
 		// emit a misconfigured track.
@@ -228,14 +238,23 @@ func newFDKAACEncoder(sampleRate, channels int) (aacEncoder, error) {
 		fdkAacEncClose(&handle)
 		return nil, fmt.Errorf("aacEncEncode init failed: 0x%x", rc)
 	}
+	var info fdkInfo
+	if rc := fdkAacEncInfo(handle, &info); rc != fdkAACEncOK || info.inputChannels != 1 || info.frameLength != 1024 || info.delay > 16384 {
+		fdkAacEncClose(&handle)
+		return nil, fmt.Errorf("aacEncInfo: invalid AAC-LC configuration (code=0x%x, frame=%d, delay=%d)", rc, info.frameLength, info.delay)
+	}
 
 	return &fdkAACEncoder{
 		handle: handle,
 		out:    make([]byte, 8192),
+		delay:  int(info.delay),
 	}, nil
 }
 
 func (e *fdkAACEncoder) Encode(pcm []int16) ([][]byte, error) {
+	if e.handle == 0 || e.drained {
+		return nil, errors.New("AAC encoder is closed or drained")
+	}
 	if len(pcm) == 0 {
 		return nil, nil
 	}
@@ -299,17 +318,57 @@ func (e *fdkAACEncoder) Encode(pcm []int16) ([][]byte, error) {
 			return frames, fmt.Errorf("aacEncEncode failed: 0x%x", rc)
 		}
 
+		if outArgs.numOutBytes < 0 || outArgs.numOutBytes > int32(len(e.out)) {
+			return frames, errors.New("AAC encoder returned invalid output size")
+		}
 		if outArgs.numOutBytes > 0 {
 			au := make([]byte, outArgs.numOutBytes)
 			copy(au, e.out[:outArgs.numOutBytes])
 			frames = append(frames, au)
 		}
-		if outArgs.numInSamples <= 0 {
-			break
+		if outArgs.numInSamples <= 0 || outArgs.numInSamples > totalSamples-consumed {
+			return frames, errors.New("AAC encoder did not consume valid input")
 		}
 		consumed += outArgs.numInSamples
 	}
 	return frames, nil
+}
+
+func (e *fdkAACEncoder) Delay() int { return e.delay }
+
+// Flush drains buffered PCM and the codec tail. FDK requires numInSamples=-1
+// until EOF. Bound the calls so a broken codec cannot spin in the recorder.
+func (e *fdkAACEncoder) Flush() ([][]byte, error) {
+	if e.handle == 0 {
+		return nil, errors.New("AAC encoder is closed")
+	}
+	if e.drained {
+		return nil, nil
+	}
+	e.drained = true
+	var frames [][]byte
+	for range 20 {
+		outPtr := unsafe.Pointer(&e.out[0])
+		outSize, outElSize, outID := int32(len(e.out)), int32(1), int32(fdkOutBitstream)
+		outDesc := fdkBufDesc{numBufs: 1, bufs: &outPtr, bufferIdentifiers: &outID, bufSizes: &outSize, bufElSizes: &outElSize}
+		inArgs := fdkInArgs{numInSamples: -1}
+		var outArgs fdkOutArgs
+		rc := fdkAacEncEncode(e.handle, nil, unsafe.Pointer(&outDesc), unsafe.Pointer(&inArgs), unsafe.Pointer(&outArgs))
+		runtime.KeepAlive(e.out)
+		if rc == fdkAACEncEncodeEOF {
+			return frames, nil
+		}
+		if rc != fdkAACEncOK {
+			return frames, fmt.Errorf("flush AAC encoder: 0x%x", rc)
+		}
+		if outArgs.numOutBytes < 0 || outArgs.numOutBytes > int32(len(e.out)) {
+			return frames, errors.New("AAC encoder returned invalid drain output")
+		}
+		if outArgs.numOutBytes > 0 {
+			frames = append(frames, append([]byte(nil), e.out[:outArgs.numOutBytes]...))
+		}
+	}
+	return frames, errors.New("AAC encoder drain did not terminate")
 }
 
 func (e *fdkAACEncoder) Close() {

@@ -320,13 +320,8 @@ func TrimMP4(inputPath, outputPath string, start, duration time.Duration) error 
 	// video traf since the requested [start, start+duration) is in wall time
 	// and the video timeline is the canonical clock.
 	var newSeqNum uint32 = 1
-	// Pre-populate base times so the first kept fragment's tfdt is rewritten to 0.
-	// patchTraf skips trafs whose trackID is missing from this map.
-	newBaseTimes := make(map[uint32]uint64)
-	for trackID := range trackTimeScales {
-		newBaseTimes[trackID] = 0
-	}
 	firstIdx := firstFragmentForStart(fragments, videoTrackID, trackTimeScales, start)
+	origin, originTS := trimTimelineOrigin(fragments, firstIdx, videoTrackID, trackTimeScales)
 	for i, frag := range fragments {
 		// The lower bound is an index, not a timestamp: it is the overlapping
 		// fragment backed up to the last one that opens on a keyframe.
@@ -347,13 +342,10 @@ func TrimMP4(inputPath, outputPath string, start, duration time.Duration) error 
 			continue
 		}
 
-		if err := copyFragmentAdjusted(in, out, frag, newSeqNum, newBaseTimes); err != nil {
+		if err := copyFragmentAdjusted(in, out, frag, newSeqNum, adjustedFragmentTimes(frag, trackTimeScales, origin, originTS, 0)); err != nil {
 			return fmt.Errorf("copy fragment: %w", err)
 		}
 		newSeqNum++
-		for _, tr := range frag.trafs {
-			newBaseTimes[tr.trackID] += uint64(tr.duration)
-		}
 	}
 
 	return nil
@@ -453,11 +445,8 @@ func TrimMP4ToWriter(inputPath string, w io.Writer, start time.Duration) error {
 
 	// Copy fragments from the start offset onward
 	var newSeqNum uint32 = 1
-	newBaseTimes := make(map[uint32]uint64)
-	for trackID := range trackTimeScales {
-		newBaseTimes[trackID] = 0
-	}
 	firstIdx := firstFragmentForStart(fragments, videoTrackID, trackTimeScales, start)
+	origin, originTS := trimTimelineOrigin(fragments, firstIdx, videoTrackID, trackTimeScales)
 	for i, frag := range fragments {
 		if i < firstIdx {
 			continue
@@ -466,13 +455,10 @@ func TrimMP4ToWriter(inputPath string, w io.Writer, start time.Duration) error {
 			continue
 		}
 
-		if err := copyFragmentAdjusted(in, w, frag, newSeqNum, newBaseTimes); err != nil {
+		if err := copyFragmentAdjusted(in, w, frag, newSeqNum, adjustedFragmentTimes(frag, trackTimeScales, origin, originTS, 0)); err != nil {
 			return fmt.Errorf("copy fragment: %w", err)
 		}
 		newSeqNum++
-		for _, tr := range frag.trafs {
-			newBaseTimes[tr.trackID] += uint64(tr.duration)
-		}
 	}
 
 	return nil
@@ -532,14 +518,19 @@ func ConcatMP4(inputs []string, outputPath string, start, duration time.Duration
 			initWritten = true
 		}
 
+		fileStart := globalBaseTimes[videoTrackID]
+		origin, originTS := trimTimelineOrigin(fragments, 0, videoTrackID, trackTimeScales)
 		for _, frag := range fragments {
-			if err := copyFragmentAdjusted(in, out, frag, globalSeqNum, globalBaseTimes); err != nil {
+			bases := adjustedFragmentTimes(frag, trackTimeScales, origin, originTS, fileStart)
+			if err := copyFragmentAdjusted(in, out, frag, globalSeqNum, bases); err != nil {
 				in.Close()
 				return fmt.Errorf("copy fragment from %s: %w", path, err)
 			}
 			globalSeqNum++
 			for _, tr := range frag.trafs {
-				globalBaseTimes[tr.trackID] += uint64(tr.duration)
+				if end := bases[tr.trackID] + uint64(tr.duration); end > globalBaseTimes[tr.trackID] {
+					globalBaseTimes[tr.trackID] = end
+				}
 			}
 		}
 
@@ -1084,6 +1075,17 @@ func ServeHLSSegment(w io.Writer, filePath string, byteStart, byteEnd int64) err
 	}
 	defer f.Close()
 
+	// Audio payloads are opaque AAC, and can resemble length-prefixed H264.
+	// Determine video tracks from the init segment before inspecting NAL units.
+	init, _, err := readRecordingInit(f)
+	if err != nil {
+		return fmt.Errorf("read segment init: %w", err)
+	}
+	videoTracks := make(map[int]bool)
+	for _, track := range init.Tracks {
+		videoTracks[track.ID] = track.Codec.IsVideo()
+	}
+
 	size := byteEnd - byteStart
 	if _, err := f.Seek(byteStart, io.SeekStart); err != nil {
 		return fmt.Errorf("seek: %w", err)
@@ -1109,7 +1111,9 @@ func ServeHLSSegment(w io.Writer, filePath string, byteStart, byteEnd int64) err
 		tracks := p.Tracks
 		if len(tracks) > 1 {
 			for _, tr := range tracks {
-				stripInBandParamSets(tr)
+				if videoTracks[tr.ID] {
+					stripInBandParamSets(tr)
+				}
 				singleTrackParts = append(singleTrackParts, &fmp4.Part{
 					SequenceNumber: p.SequenceNumber,
 					Tracks:         []*fmp4.PartTrack{tr},
@@ -1117,7 +1121,9 @@ func ServeHLSSegment(w io.Writer, filePath string, byteStart, byteEnd int64) err
 			}
 		} else {
 			for _, tr := range tracks {
-				stripInBandParamSets(tr)
+				if videoTracks[tr.ID] {
+					stripInBandParamSets(tr)
+				}
 			}
 			singleTrackParts = append(singleTrackParts, p)
 		}
@@ -1316,4 +1322,65 @@ func patchTraf(data []byte, baseTimes map[uint32]uint64) {
 
 		i += boxSize
 	}
+}
+
+// readRecordingInit bounds work to the initialization boxes, independent of
+// recording length. Init.Unmarshal itself scans to EOF when given a whole file.
+func readRecordingInit(f *os.File) (*fmp4.Init, int64, error) {
+	var offset int64
+	for offset < 8<<20 {
+		var header [16]byte
+		if _, err := f.ReadAt(header[:8], offset); err != nil {
+			return nil, 0, err
+		}
+		size := uint64(binary.BigEndian.Uint32(header[:4]))
+		minSize := uint64(8)
+		if size == 1 {
+			if _, err := f.ReadAt(header[8:], offset+8); err != nil {
+				return nil, 0, err
+			}
+			size = binary.BigEndian.Uint64(header[8:])
+			minSize = 16
+		}
+		if size < minSize || size > uint64(8<<20-offset) {
+			return nil, 0, fmt.Errorf("invalid recording init box size: %d", size)
+		}
+		offset += int64(size)
+		if string(header[4:8]) == "moov" {
+			var init fmp4.Init
+			if err := init.Unmarshal(io.NewSectionReader(f, 0, offset)); err != nil {
+				return nil, 0, err
+			}
+			return &init, offset, nil
+		}
+	}
+	return nil, 0, fmt.Errorf("recording init exceeds 8 MiB")
+}
+
+// Use one origin for every track. Summing sample durations independently would
+// erase RTP loss gaps and move late-starting audio to the beginning of a clip.
+func trimTimelineOrigin(fragments []fragment, first int, videoID uint32, scales map[uint32]uint32) (uint64, uint32) {
+	for i := first; i < len(fragments); i++ {
+		if tr := fragments[i].traf(videoID); tr != nil {
+			return tr.decodeTime, scales[videoID]
+		}
+	}
+	return 0, 90000
+}
+
+func adjustedFragmentTimes(frag fragment, scales map[uint32]uint32, origin uint64, originTS uint32, offset uint64) map[uint32]uint64 {
+	if originTS == 0 {
+		originTS = 90000
+	}
+	bases := make(map[uint32]uint64, len(frag.trafs))
+	for _, tr := range frag.trafs {
+		scale := uint64(scales[tr.trackID])
+		shift := origin * scale / uint64(originTS)
+		var base uint64
+		if tr.decodeTime > shift {
+			base = tr.decodeTime - shift
+		}
+		bases[tr.trackID] = base + offset*scale/uint64(originTS)
+	}
+	return bases
 }

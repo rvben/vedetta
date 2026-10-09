@@ -26,6 +26,10 @@ func TestGetHealth_RecompressionStats(t *testing.T) {
 	if !ok {
 		t.Fatalf("health response missing checks map")
 	}
+	audioErrors, ok := checks["recording_audio_errors"].(map[string]any)
+	if !ok || len(audioErrors) != 0 {
+		t.Fatalf("unexpected recording audio health: %v", checks["recording_audio_errors"])
+	}
 	storageMap, ok := checks["storage"].(map[string]any)
 	if !ok {
 		t.Fatalf("health checks missing storage map")

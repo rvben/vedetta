@@ -1,6 +1,6 @@
 # Hardware-accelerated image variant: VA-API (Intel/AMD) and NVDEC (NVIDIA).
 #
-# Unlike the default image (a single static binary, no external codec deps),
+# In addition to the shared FDK AAC runtime used by both images,
 # this one links libavcodec/libavutil/libva and is built with cgo and
 # -tags hwaccel. Both backends build against the ffmpeg dev libraries only;
 # NVDEC loads the NVIDIA driver dynamically at runtime, so no CUDA toolkit is
@@ -36,9 +36,12 @@ LABEL org.opencontainers.image.description="Vedetta NVR - hardware-accelerated (
 LABEL org.opencontainers.image.licenses=Apache-2.0
 
 # Runtime shared libraries plus the VA-API drivers (Intel + Mesa/AMD).
-RUN apt-get update && \
+# FDK AAC is used through purego for G.711 live playback and recordings.
+# Debian ships it in non-free; its redistribution notice stays in the image.
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
-        ca-certificates \
+        ca-certificates libfdk-aac2 \
         libavcodec59 libavutil57 libva2 libva-drm2 \
         va-driver-all && \
     rm -rf /var/lib/apt/lists/*

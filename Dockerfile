@@ -20,8 +20,11 @@ LABEL org.opencontainers.image.source=https://github.com/rvben/vedetta
 LABEL org.opencontainers.image.description="Vedetta NVR - lightweight network video recorder"
 LABEL org.opencontainers.image.licenses=Apache-2.0
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+# FDK AAC is used through purego for G.711 live playback and recordings.
+# Debian ships it in non-free; its redistribution notice stays in the image.
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates libfdk-aac2 && \
     rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r vedetta && useradd -r -g vedetta -d /data -s /sbin/nologin vedetta

@@ -619,3 +619,11 @@ func (r *Recorder) ReextractClip(ctx context.Context, event camera.Event) error 
 	_, err := r.saveClipLocked(ctx, event)
 	return err
 }
+
+// AudioErrors reports cameras whose recording audio is unavailable.
+func (r *Recorder) AudioErrors() map[string]string {
+	if r.segments == nil {
+		return map[string]string{}
+	}
+	return r.segments.AudioErrors()
+}

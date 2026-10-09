@@ -1,9 +1,8 @@
 package stream
 
 import (
-	"encoding/binary"
-
-	"github.com/bluenviron/mediacommon/v2/pkg/codecs/g711"
+	"github.com/rvben/vedetta/internal/aac"
+	"github.com/rvben/vedetta/internal/audio"
 )
 
 // hlsTranscodeSampleRate is the AAC sample rate used for G.711 cameras on
@@ -54,7 +53,7 @@ type aacEncoder interface {
 // production it is the libfdk-aac-backed encoder. An error means no usable
 // encoder is available, in which case the caller serves video only.
 var newAACEncoder = func(sampleRate, channels int) (aacEncoder, error) {
-	return newFDKAACEncoder(sampleRate, channels)
+	return aac.New(sampleRate, channels)
 }
 
 // g711IsALaw reports whether an RTSP audio codec name denotes A-law (PCMA)
@@ -65,19 +64,5 @@ func g711IsALaw(codec string) bool { return codec == "PCMA" }
 // The mediacommon decoders emit big-endian 16-bit LPCM bytes; we widen them
 // back to int16 for the encoder.
 func decodeG711ToPCM(payload []byte, aLaw bool) []int16 {
-	var raw []byte
-	if aLaw {
-		var lpcm g711.Alaw
-		lpcm.Unmarshal(payload)
-		raw = lpcm
-	} else {
-		var lpcm g711.Mulaw
-		lpcm.Unmarshal(payload)
-		raw = lpcm
-	}
-	pcm := make([]int16, len(raw)/2)
-	for i := range pcm {
-		pcm[i] = int16(binary.BigEndian.Uint16(raw[i*2 : i*2+2]))
-	}
-	return pcm
+	return audio.DecodeG711(payload, aLaw)
 }

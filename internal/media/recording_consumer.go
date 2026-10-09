@@ -117,6 +117,7 @@ type RecordingConsumer struct {
 	lastSegBase     string // timestamp base of the last segment filename
 	segDupCount     int    // disambiguates same-second rotations (gap rotation is instant)
 	paused          bool
+	audioError      atomic.Pointer[string]
 	pausedAtomic    atomic.Bool // lock-free read for external status checks
 	pausedSince     time.Time
 	lastDiskWarning time.Time
@@ -391,6 +392,7 @@ func (rc *RecordingConsumer) handlePaused() {
 }
 
 func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
+	defer rc.updateAudioError()
 	if err := rc.ensureSegment(); err != nil {
 		rc.handleWriteError(err)
 		return
@@ -430,6 +432,7 @@ func (rc *RecordingConsumer) processAudio(pkt *rtp.Packet) {
 	if err := rc.writer.WriteAudio(pkt); err != nil {
 		rc.handleWriteError(err)
 	}
+	rc.updateAudioError()
 }
 
 // handleWriteError handles write failures. On repeated errors (likely disk full),
@@ -523,6 +526,7 @@ func (rc *RecordingConsumer) ensureSegment() error {
 			return fmt.Errorf("create segment writer: %w", res.err)
 		}
 		rc.writer = res.w
+		rc.updateAudioError()
 	case <-time.After(rc.createTimeout):
 		// Stalled volume: os.Create is wedged in the kernel and will not
 		// return until the device errors or recovers. Abandon it (one
@@ -573,6 +577,7 @@ func (rc *RecordingConsumer) closeCurrentSegment() {
 	}
 
 	duration, closeErr := rc.writer.Close()
+	rc.updateAudioError()
 	// Honest times: the writer's first sample (the keyframe that opened the
 	// file, media tick 0) plus the media duration actually written. The
 	// projected record from ensureSegment used file-creation time and the
@@ -638,4 +643,24 @@ func (rc *RecordingConsumer) SetTestState(camera, path string) {
 	defer rc.mu.Unlock()
 	rc.camera = camera
 	rc.currentPath = path
+}
+
+// AudioError is a lock-free snapshot, safe even when the recording volume stalls.
+func (rc *RecordingConsumer) AudioError() string {
+	if p := rc.audioError.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func (rc *RecordingConsumer) updateAudioError() {
+	if rc.writer == nil {
+		return
+	}
+	if err := rc.writer.AudioError(); err != nil {
+		reason := err.Error()
+		rc.audioError.Store(&reason)
+	} else {
+		rc.audioError.Store(nil)
+	}
 }

@@ -709,6 +709,11 @@ func (s *Source) SimulateVideoRTPForTest(pkt *rtp.Packet) {
 	s.fanOutVideo(pkt)
 }
 
+// SimulateAudioRTPForTest drives the real cloned audio fan-out path.
+func (s *Source) SimulateAudioRTPForTest(pkt *rtp.Packet) {
+	s.fanOutAudio(pkt)
+}
+
 // LatestVideoGOP returns an isolated copy of the newest complete-start H.264
 // GOP. It returns nil until an IDR has been observed. Callers may safely
 // rewrite the returned packet headers without affecting the source cache.

@@ -574,3 +574,16 @@ func (sr *SegmentRecorder) ScanExistingSegments(cameraName, segDir string) {
 func probeDuration(path string) (time.Duration, error) {
 	return media.ProbeDuration(path)
 }
+
+// AudioErrors reports current codec failures without waiting on recording I/O.
+func (sr *SegmentRecorder) AudioErrors() map[string]string {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	errors := make(map[string]string)
+	for _, c := range sr.consumers {
+		if reason := c.AudioError(); reason != "" {
+			errors[c.Camera()] = reason
+		}
+	}
+	return errors
+}

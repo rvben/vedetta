@@ -21,7 +21,7 @@ Run this once before merging PWA-related changes, and once after any change to
 
 5. Launch the app from the home screen. Confirm it opens in standalone mode
    (no Safari chrome, full-screen status bar).
-6. Navigate to Settings → Notifications → **Enable notifications on this device**.
+6. Navigate to Settings → Connections → Push notifications → **Enable notifications on this device**.
 7. Grant the permission prompt.
 8. Tap **Send test notification**. A notification should arrive on every
    subscribed device belonging to the current operator within 5 seconds.
@@ -79,7 +79,7 @@ intact.
 
 24. Log out of the test account in the PWA; log in as a second test account
     on the same device.
-25. Go to Settings → Notifications → Enable notifications. The browser will
+25. Go to Settings → Connections → Push notifications → Enable notifications. The browser will
     produce a fresh subscription endpoint; the POST should succeed as a new
     row for the second user.
 26. As a deliberate attack simulation, use `curl` or the browser dev tools to
@@ -88,7 +88,7 @@ intact.
 
 ## Device removal
 
-27. In Settings → Notifications → Devices, tap Remove on the current device.
+27. In Settings → Connections → Push notifications → Devices, tap Remove on the current device.
 28. Trigger a detection. Expect: **no notification**.
 29. Re-enable: tap Enable notifications again. Confirm device reappears.
 

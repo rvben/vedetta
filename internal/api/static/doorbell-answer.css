@@ -21,12 +21,12 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; min-height: 100%; background: #020408; color: var(--text); }
-body { min-height: 100svh; overflow: hidden; }
+body { min-height: 100svh; min-height: 560px; overflow: hidden; }
 button, a { font: inherit; }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 ::selection { color: var(--deep); background: var(--cyan); }
 
-.doorstep { position: relative; width: 100vw; height: 100svh; overflow: hidden; background: var(--deep); isolation: isolate; }
+.doorstep { position: relative; width: 100vw; height: 100svh; min-height: 560px; overflow: hidden; background: var(--deep); isolation: isolate; }
 .doorstep-camera { position: absolute; inset: 0 0 36%; overflow: hidden; background: #101722; }
 .doorstep-camera::before { content: ""; position: absolute; inset: 0; z-index: 2; background: linear-gradient(180deg, rgba(5,8,16,.68), transparent 25%, transparent 68%, rgba(5,8,16,.74)); pointer-events: none; }
 .doorstep-camera::after { content: ""; position: absolute; inset: auto 0 0; height: 24%; z-index: 2; background: linear-gradient(180deg, transparent, var(--panel)); pointer-events: none; }
@@ -76,7 +76,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--cyan); outline-
 .doorstep-error { margin-top: 10px; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px; border-radius: 8px; background: rgba(255,82,82,.08); color: #ffc7cb; font-size: 12px; line-height: 1.4; }
 .doorstep-error strong { color: #fff; }
 .doorstep-error span { grid-column: 1; }
-.doorstep-error button { grid-column: 2; grid-row: 1 / 3; align-self: center; min-height: 36px; border: 1px solid rgba(255,82,82,.32); border-radius: 6px; color: #fff; background: rgba(255,82,82,.14); cursor: pointer; }
+.doorstep-error button { grid-column: 2; grid-row: 1 / 3; align-self: center; min-height: 44px; border: 1px solid rgba(255,82,82,.32); border-radius: 6px; color: #fff; background: rgba(255,82,82,.14); cursor: pointer; }
 
 .doorstep-controls { margin-top: auto; display: grid; grid-template-columns: 72px minmax(0,1fr) 72px; align-items: end; gap: 12px; }
 .doorstep-control { min-width: 0; border: 0; color: var(--text); background: transparent; cursor: pointer; display: grid; justify-items: center; gap: 7px; font-size: 12px; font-weight: 580; }
@@ -135,4 +135,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--cyan); outline-
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+/* Keep the call controls reachable with large text and a landscape phone. */
+@media (max-height: 559px) and (max-width: 759px) {
+  .doorstep { height: auto; min-height: 100svh; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 1fr); }
+  .doorstep-camera, .doorstep-dock { position: relative; inset: auto !important; }
+  .doorstep-camera { min-height: 360px; }
+  .doorstep-dock { padding: 16px; border-left: 1px solid var(--border); }
+  .doorstep-controls { margin-top: 20px; }
+}
+@media (max-width: 359px) {
+  .doorstep-identity-row { flex-wrap: wrap; gap: 8px; }
+  .doorstep-dock { overflow-y: auto; }
 }

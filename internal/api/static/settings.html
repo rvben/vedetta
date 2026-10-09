@@ -406,6 +406,7 @@
   var validSections = Array.prototype.map.call(tabs, function(t){ return t.dataset.section; });
   var sectionAliases = {
     notifications: 'connections',
+    'notifications-card': 'connections',
     integrations: 'connections',
     updates: 'system',
     account: 'system',
@@ -428,9 +429,9 @@
       active.scrollIntoView({ block: 'nearest', inline: 'center' });
     }
     if (requested && requested !== section) {
-      var requestedPanel = document.querySelector('.settings-panel[data-section="' + requested + '"]');
+      var requestedPanel = document.getElementById(requested) || document.querySelector('.settings-panel[data-section="' + requested + '"]');
       if (requestedPanel) requestAnimationFrame(function() {
-        requestedPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        requestedPanel.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
       });
     }
   }

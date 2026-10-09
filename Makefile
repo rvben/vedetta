@@ -102,7 +102,7 @@ test-js:
 	node --test internal/api/static/*.test.js
 
 # Real camera-page interaction coverage in mobile Chromium and WebKit. Install
-# the pinned browser runtimes once with: npx playwright install chromium webkit
+# the pinned browser runtimes once with: npx playwright install chromium webkit firefox
 test-browser:
 	npm run test:browser
 

@@ -56,7 +56,11 @@
     </div>
 
     <div class="recordings-layout">
-      <aside>
+      <aside class="recordings-dates">
+        <label class="recordings-date-label" for="recordings-date">Recording date</label>
+        <input id="recordings-date" type="date" class="input" data-action-change="selectRecordingDate(this.value)">
+        <details class="recordings-calendar" id="recordings-calendar" open>
+          <summary>Browse calendar</summary>
         <div class="calendar-card">
           <div class="calendar-header">
             <button class="btn btn-icon btn-sm" data-action-click="calendarNav(-1)" aria-label="Previous month">
@@ -78,6 +82,7 @@
           </div>
           <div id="calendar-error" class="calendar-error" aria-live="polite" hidden></div>
         </div>
+        </details>
       </aside>
 
       <div class="recordings-detail" id="recordings-detail">

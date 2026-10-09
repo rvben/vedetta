@@ -374,6 +374,7 @@ var allowedDataActionFunctions = new Set([
   'acSubmit',
   'acVerify',
   'calendarNav',
+  'selectRecordingDate',
   'closeAccountModal',
   'closeAssignModal',
   'closeConfirmModal',
@@ -3778,16 +3779,41 @@ function toggleChip(chipEl, filterType) {
 
 // ─── Calendar & Recordings page ───
 function initCalendar() {
-  calendarDate = new Date();
-  renderCalendar();
+  var requested = new URLSearchParams(location.search).get('date');
+  var date = parseRecordingDate(requested);
+  calendarDate = date || new Date();
+  var disclosure = el('recordings-calendar');
+  if (disclosure) disclosure.open = !window.matchMedia('(max-width: 1024px)').matches;
+  renderCalendar(date);
+}
+
+function parseRecordingDate(value) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  var parts = value.split('-').map(Number);
+  var date = new Date(parts[0], parts[1] - 1, parts[2]);
+  return date.getFullYear() === parts[0] && date.getMonth() === parts[1] - 1 && date.getDate() === parts[2] ? date : null;
+}
+
+function selectRecordingDate(value) {
+  var date = parseRecordingDate(value);
+  if (!date) return;
+  calendarDate = date;
+  renderCalendar(date);
 }
 
 function calendarNav(delta) {
+  calendarDate.setDate(1);
   calendarDate.setMonth(calendarDate.getMonth() + delta);
   renderCalendar();
 }
 
-function renderCalendar() {
+var calendarRequest = 0;
+var recordingsSummaryRequest = 0;
+
+function renderCalendar(preferredDate) {
+  var request = ++calendarRequest;
+  ++recordingsSummaryRequest;
+  if (preferredDate instanceof Date) loadRecordingsSummary(preferredDate);
   var grid = el('calendar-grid');
   var monthLabel = el('calendar-month');
   if (!grid || !monthLabel) return;
@@ -3854,6 +3880,7 @@ function renderCalendar() {
   fetch(url)
     .then(readJSONResponse)
     .then(function(data) {
+      if (request !== calendarRequest) return;
       var daysWithData = new Set(data.days || []);
       grid.querySelectorAll('.calendar-day[data-day]').forEach(function(cell) {
         if (daysWithData.has(parseInt(cell.dataset.day, 10))) {
@@ -3863,7 +3890,9 @@ function renderCalendar() {
 
       var todayDay = (today.getFullYear() === year && today.getMonth() === month) ? today.getDate() : null;
       var selectDay = null;
-      if (todayDay && daysWithData.has(todayDay)) {
+      if (preferredDate instanceof Date) {
+        selectDay = preferredDate.getDate();
+      } else if (todayDay && daysWithData.has(todayDay)) {
         selectDay = todayDay;
       } else if (daysWithData.size > 0) {
         selectDay = Math.max.apply(null, Array.from(daysWithData));
@@ -3871,15 +3900,26 @@ function renderCalendar() {
 
       if (selectDay) {
         var btn = grid.querySelector('.calendar-day[data-day="' + selectDay + '"]');
-        if (btn) btn.click();
+        if (btn) {
+          if (preferredDate instanceof Date) {
+            btn.classList.add('selected');
+            btn.setAttribute('aria-pressed', 'true');
+          } else {
+            btn.click();
+          }
+        }
       } else {
         var monthName = calendarDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+        updateRecordingDateContext(new Date(year, month, 1));
         renderEmptyRecordings('No recordings in ' + monthName + '.');
       }
     })
     .catch(function(err) {
+      if (request !== calendarRequest) return;
       console.error('Failed to load calendar data:', err);
       if (calendarError) calendarError.hidden = false;
+      var disclosure = el('recordings-calendar');
+      if (disclosure) disclosure.open = true;
       renderInlineError(calendarError, {
         title: 'Could not load the recording calendar',
         message: 'Recording dates could not be checked. Any selected recording remains available.',
@@ -3907,8 +3947,19 @@ function renderEmptyRecordings(label) {
   if (cards) cards.innerHTML = '<div class="empty-state"><p>' + msg + '</p></div>';
 }
 
-function loadRecordingsSummary(date) {
+function updateRecordingDateContext(date) {
   var dateStr = date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+  var input = el('recordings-date');
+  if (input) input.value = dateStr;
+  var url = new URL(location.href);
+  url.searchParams.set('date', dateStr);
+  history.replaceState(null, '', url.pathname + url.search + url.hash);
+  return dateStr;
+}
+
+function loadRecordingsSummary(date) {
+  var request = ++recordingsSummaryRequest;
+  var dateStr = updateRecordingDateContext(date);
 
   // Show a loading state while the fetch is in flight.
   var summary = el('day-summary');
@@ -3919,9 +3970,11 @@ function loadRecordingsSummary(date) {
   fetch('/api/recordings/summary?date=' + dateStr + tzQuerySuffix())
     .then(readJSONResponse)
     .then(function(data) {
+      if (request !== recordingsSummaryRequest) return;
       renderRecordingsSummary(data, date);
     })
     .catch(function(err) {
+      if (request !== recordingsSummaryRequest) return;
       console.error('Failed to load recordings summary:', err);
       renderInlineError(cards, {
         title: 'Could not load recordings',
@@ -5872,11 +5925,9 @@ function renderAxisLabels() {
     // End-of-day tick reads as 24:00, not a second 00:00.
     var hh = (sec === TLW.SECONDS_PER_DAY) ? '24' : String(Math.floor(sec / 3600) % 24).padStart(2, '0');
     var mm = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
-    // Nudge labels at the very edges inward so they do not overflow the strip.
-    var tx = 'translateX(-50%)';
-    if (pct < 2) tx = 'translateX(0)';
-    else if (pct > 98) tx = 'translateX(-100%)';
-    html += '<span style="left:' + pct + '%;transform:' + tx + '">' + hh + ':' + mm + '</span>';
+    // Clamp the full five-character label, including ticks just inside an edge.
+    // Percentage cutoffs alone miss overflow on narrow or enlarged-text strips.
+    html += '<span style="left:clamp(0px, calc(' + pct + '% - 2.5ch), calc(100% - 5ch))">' + hh + ':' + mm + '</span>';
   });
   labels.innerHTML = html;
 }
@@ -6614,7 +6665,8 @@ function addObjectReference(objectId, objectName, eventId) {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
     if (!('Notification' in window)) return false;
     if (Notification.permission !== 'default') return false;
-    if (location.pathname === '/settings.html') return false;
+    // Offer alerts once, on Cameras, without covering active evidence review.
+    if (location.pathname !== '/' && location.pathname !== '/index.html') return false;
     if (localStorage.getItem('vedetta-push-prompt-dismissed') === '1') return false;
     return true;
   }
@@ -6624,7 +6676,7 @@ function addObjectReference(objectId, objectName, eventId) {
     if (document.getElementById('push-prompt')) return;
     var bar = document.createElement('div');
     bar.id = 'push-prompt';
-    bar.className = 'push-prompt';
+    bar.className = 'push-prompt push-prompt-inline';
     bar.setAttribute('role', 'status');
     bar.innerHTML =
       '<span>Get alerts for new detections on this device.</span>' +
@@ -6634,14 +6686,8 @@ function addObjectReference(objectId, objectName, eventId) {
       localStorage.setItem('vedetta-push-prompt-dismissed', '1');
       bar.remove();
     });
-    var activitySurface = document.body.classList.contains('activity-surface');
-    if (activitySurface) bar.classList.add('push-prompt-inline');
-    var activityAnchor = activitySurface && document.querySelector('.events-toolbar, #activity-detail');
-    if (activityAnchor) {
-      activityAnchor.insertAdjacentElement('afterend', bar);
-    } else {
-      document.body.appendChild(bar);
-    }
+    var main = document.querySelector('main');
+    if (main) main.appendChild(bar);
   }
 
   if (document.readyState === 'loading') {

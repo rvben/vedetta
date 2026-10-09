@@ -387,6 +387,17 @@ $("#free-space-btn")?.addEventListener("click", () => {
   confirmAndDelete({ target: "free_bytes", free_bytes_target: target });
 });
 
+function describeStorageScope(scope) {
+  scope = scope || {};
+  const target = { segments: 'Recordings', clips: 'Event clips', all: 'All evidence', free_bytes: 'Free space' }[scope.target];
+  const parts = target ? [target] : [];
+  parts.push(scope.camera ? humanizeName(scope.camera) : 'All cameras');
+  if (scope.older_than_days) parts.push('Older than ' + scope.older_than_days + ' days');
+  if (scope.from || scope.to) parts.push((scope.from || 'Beginning') + ' → ' + (scope.to || 'Now'));
+  if (scope.free_bytes_target) parts.push(fmtBytes(scope.free_bytes_target) + ' target');
+  return parts.join(' · ');
+}
+
 async function loadAudit() {
   const list = $("#audit-list");
   let rows;
@@ -422,7 +433,7 @@ async function loadAudit() {
       <span class="storage-audit-time mono">${esc(ts)}</span>
       <span class="storage-audit-actor">${esc(row.actor)}</span>
       <span class="storage-audit-files">${row.files} files · ${fmtBytes(row.bytes)}</span>
-      <code class="storage-audit-scope">${esc(JSON.stringify(row.scope))}</code>
+      <details class="storage-audit-scope"><summary>${esc(describeStorageScope(row.scope))}</summary><code>${esc(JSON.stringify(row.scope))}</code></details>
     </li>`;
   }).join("");
   return true;

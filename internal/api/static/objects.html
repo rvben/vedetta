@@ -67,10 +67,10 @@
       <a class="section-nav-link" href="/objects.html" aria-current="page">Tracked objects</a>
     </nav>
 
-    <div class="trust-note" role="note">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-      <span>Object matching runs on this Vedetta server. Reference crops and visual fingerprints are not sent to a cloud recognition service. Deleting a tracked object removes its recognition profile; original events and recordings remain until their retention period ends.</span>
-    </div>
+    <details class="trust-note">
+      <summary><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg><span>Object matching stays on your server</span></summary>
+      <p>Object matching runs on this Vedetta server. Reference crops and visual fingerprints are not sent to a cloud recognition service. Deleting a tracked object removes its recognition profile; original events and recordings remain until their retention period ends.</p>
+    </details>
 
     <div class="objects-help" id="objects-help" hidden>
       <p>Tracked objects let Vedetta recognize specific things — your car, a delivery van, a family member's bike — across your cameras using a visual fingerprint. When the system sees a known object again, it links the sighting back to its identity.</p>
@@ -131,6 +131,8 @@
       <p class="thumb-picker-empty">Loading…</p>
     </div>
   </div>
+
+  <div class="toast-container" id="toasts"></div>
 
   <script src="/safehref.js"></script>
   <script src="/session.js"></script>
@@ -299,8 +301,8 @@
           +         '<span class="object-thresh-value" id="thresh-val-' + obj.id + '">' + threshPct + '%</span>'
           +       '</div>'
           +       '<div class="object-thresh-row">'
-          +         '<input type="range" min="0.3" max="0.95" step="0.05" value="' + threshold + '" '
-          +           'aria-label="Match threshold" '
+          +         '<input id="thresh-' + obj.id + '" type="range" min="0.3" max="0.95" step="0.01" value="' + threshold + '" '
+          +           'aria-label="Match threshold" aria-valuetext="' + threshPct + '%" '
           +           'data-action-input="onThresholdInput(' + obj.id + ', this.value)" '
           +           'data-action-change="updateThreshold(' + obj.id + ', parseFloat(this.value))">'
           +       '</div>'
@@ -368,7 +370,10 @@
 
     function onThresholdInput(id, val) {
       var el = document.getElementById('thresh-val-' + id);
-      if (el) el.textContent = Math.round(parseFloat(val) * 100) + '%';
+      var text = Math.round(parseFloat(val) * 100) + '%';
+      if (el) el.textContent = text;
+      var slider = document.getElementById('thresh-' + id);
+      if (slider) slider.setAttribute('aria-valuetext', text);
     }
 
     function loadReferences(objectId) {
@@ -645,13 +650,24 @@
     }
 
     function updateThreshold(id, value) {
-      fetch('/api/objects/' + id, {
+      var local = objectsData.find(function(o) { return o.id === id; });
+      var previous = local && local.match_threshold != null ? local.match_threshold : 0.65;
+      var slider = document.getElementById('thresh-' + id);
+      if (slider) slider.disabled = true;
+      return fetch('/api/objects/' + id, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({match_threshold: value})
       }).then(function(r) {
         if (!r.ok) throw new Error('Failed');
+        if (local) local.match_threshold = value;
         if (typeof toast === 'function') toast('Threshold set to ' + Math.round(value * 100) + '%');
+      }).catch(function() {
+        if (slider) slider.value = previous;
+        onThresholdInput(id, previous);
+        if (typeof toast === 'function') toast('Could not save threshold. Previous value restored.', 'error');
+      }).finally(function() {
+        if (slider) slider.disabled = false;
       });
     }
 

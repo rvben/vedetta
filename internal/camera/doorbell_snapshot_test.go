@@ -18,7 +18,9 @@ func TestPressUsesSelectedVisitorForSharedEvent(t *testing.T) {
 	current := image.NewRGBA(image.Rect(0, 0, 640, 480))
 	cam.SetTestFrame(current)
 	cam.doorbellSnapshots = newDoorbellSnapshots(nil, nil)
-	selected := image.NewRGBA(image.Rect(0, 0, 2560, 1920))
+	// Keep the selected frame larger than the fallback without spending the
+	// two-second freshness window encoding a 5 MP JPEG under race instrumentation.
+	selected := image.NewRGBA(image.Rect(0, 0, 800, 600))
 	cam.doorbellSnapshots.buffer.Add(selected, time.Now().Add(-500*time.Millisecond), []snapshot.Subject{{Box: image.Rect(400, 100, 700, 500), Confidence: 0.95, Face: true, Frontalness: 1}})
 	m.RegisterForTest(cam)
 	before := time.Now()
@@ -33,7 +35,7 @@ func TestPressUsesSelectedVisitorForSharedEvent(t *testing.T) {
 	if event.Timestamp.Before(before) {
 		t.Fatal("press timestamp was replaced by older photo timestamp")
 	}
-	if event.Box != [4]int{0, 0, 2560, 1920} {
+	if event.Box != [4]int{0, 0, 800, 600} {
 		t.Fatalf("event dimensions: %v", event.Box)
 	}
 }

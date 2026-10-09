@@ -100,10 +100,10 @@
       <a class="section-nav-link" href="/objects.html">Tracked objects</a>
     </nav>
 
-    <div class="trust-note" role="note">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-      <span>Face matching runs on this Vedetta server. Face crops, visual fingerprints, and names are not sent to a cloud recognition service. Deleting an identity removes its recognition profile; original events and recordings remain until their retention period ends.</span>
-    </div>
+    <details class="trust-note">
+      <summary><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg><span>Face matching stays on your server</span></summary>
+      <p>Face matching runs on this Vedetta server. Face crops, visual fingerprints, and names are not sent to a cloud recognition service. Deleting an identity removes its recognition profile; original events and recordings remain until their retention period ends.</p>
+    </details>
 
     <div class="people-help" id="people-help" hidden>
       <p><strong>People</strong> are identities Vedetta has learned. Each card groups face crops that look like the same person — rename a card to lock in their identity.</p>
@@ -342,6 +342,7 @@
           + (p.appearance_count > 0 ? '<span class="badge badge-sm">' + p.appearance_count + ' appearance' + (p.appearance_count !== 1 ? 's' : '') + '</span>' : '')
           + (!p.face_count && !p.appearance_count ? '<span class="badge-empty">No sightings yet</span>' : '')
           + (isDupe ? '<span class="badge badge-sm badge-warning" title="Another person with this name exists. Rename one or use Merge to combine them.">duplicate name</span>' : '')
+          + '</div><div class="person-card-actions">'
           + '<button class="btn btn-xs ' + (p.ignore ? 'btn-primary' : 'btn-ghost') + '" data-action-click="toggleIgnore(' + p.id + ', ' + !p.ignore + ')" title="' + (p.ignore ? 'Include this person in recognition again' : 'Exclude this person from recognition') + '">'
           + (p.ignore ? 'Excluded' : 'Exclude') + '</button>'
           + '<button class="btn btn-xs btn-ghost btn-danger" data-action-click="deletePerson(' + p.id + ', ' + jsStringArg(p.name) + ')">Delete</button>'

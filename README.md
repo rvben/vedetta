@@ -202,13 +202,16 @@ deployment expectations.
 make build          # build the default binary
 make build-capi     # build with the C ONNX Runtime binding
 make test           # JavaScript unit tests and Go tests
-make test-browser   # Playwright browser tests
+make test-browser   # Five browser/device projects and real Go API acceptance
 make bench          # detector benchmarks
 make lint           # golangci-lint
 make vet            # go vet
 make vulncheck      # govulncheck, reachable vulnerabilities only
 make check          # lint, vet, and both test suites, offline
 ```
+
+Browser setup, coverage, and physical-device acceptance are documented in
+[Browser acceptance](docs/testing/browser-acceptance.md).
 
 `make check` is the pre-push gate and runs offline. `make vulncheck` is
 separate because it downloads the Go vulnerability database and its result

@@ -49,24 +49,38 @@ test('recognition and recording settings persist through the real API', async ({
   await signIn(page);
   await page.goto('/objects.html');
   const slider = page.locator('#thresh-1');
-  await expect(slider).toHaveValue('0.72');
+  // A retry shares the disposable server with the failed attempt. Change the
+  // value in either state so persistence is still exercised on every attempt.
+  await expect(slider).toHaveValue(/^0\.7[23]$/);
+  const threshold = await slider.inputValue() === '0.72' ? '0.73' : '0.72';
   await slider.focus();
-  await slider.press('ArrowRight');
-  await expect(page.locator('#toasts')).toContainText('Threshold set to 73%');
+  await slider.press(threshold === '0.73' ? 'ArrowRight' : 'ArrowLeft');
+  await expect(page.locator('#toasts')).toContainText(`Threshold set to ${Math.round(Number(threshold) * 100)}%`);
   await page.reload();
-  await expect(slider).toHaveValue('0.73');
+  await expect(slider).toHaveValue(threshold);
   await page.goto('/people.html');
-  await page.locator('#name-input-1').fill('Known visitor');
-  await page.locator('#name-input-1').press('Tab');
-  await expect(page.locator('#toasts')).toContainText('Known visitor');
+  const name = page.locator('#name-input-1');
+  await expect(name).toHaveValue(/^(Visitor|Known visitor)$/);
+  const visitor = await name.inputValue() === 'Visitor' ? 'Known visitor' : 'Visitor';
+  await name.fill(visitor);
+  await name.press('Tab');
+  await expect(page.locator('#toasts')).toContainText(visitor);
   await page.reload();
-  await expect(page.locator('#name-input-1')).toHaveValue('Known visitor');
+  await expect(name).toHaveValue(visitor);
+  // The form appears before its initial settings request completes. Wait for
+  // hydration before editing, or that response can overwrite the new value.
+  const settingsResponse = page.waitForResponse(response =>
+    response.url().endsWith('/api/settings/recording') && response.request().method() === 'GET');
   await page.goto('/settings.html#recording');
-  await page.getByLabel('Continuous retention (days)', { exact: true }).fill('14');
+  const settings = await (await settingsResponse).json();
+  const retention = page.getByLabel('Continuous retention (days)', { exact: true });
+  await expect(retention).toHaveValue(String(settings.retain_days));
+  const days = Number(settings.retain_days) === 14 ? '15' : '14';
+  await retention.fill(days);
   await page.locator('#recording-form').getByRole('button', { name: 'Save changes' }).click();
   await expect(page.locator('#rec-status')).toContainText('Saved');
   await page.reload();
-  await expect(page.getByLabel('Continuous retention (days)', { exact: true })).toHaveValue('14');
+  await expect(retention).toHaveValue(days);
 });
 
 

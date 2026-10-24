@@ -14,14 +14,14 @@ async function signIn(page) {
 
 test('real authentication rejects invalid credentials and signs in', async ({ page }) => {
   await page.goto('/events.html');
-  await expect(page).toHaveURL(/login.html/);
+  await expect(page).toHaveURL(url => url.pathname === '/login.html' && url.searchParams.get('next') === '/events.html');
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page.getByLabel('Password', { exact: true }).fill('wrong');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.locator('#status')).toHaveText('invalid credentials');
   await page.getByLabel('Password', { exact: true }).fill('secret');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page).toHaveURL(/events.html/);
+  await page.waitForURL(url => url.pathname === '/events.html', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('.activity-card')).toHaveCount(2);
 });
 

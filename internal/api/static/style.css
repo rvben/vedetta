@@ -600,25 +600,24 @@ input, select { font-family: inherit; }
   color: var(--text-primary);
 }
 
+/* A camera card shows a periodically refreshed snapshot, not a stream, so its
+   status dot stays still. Only the player's stream badge pulses, where frames
+   really are arriving. */
 .cam-live-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--green);
-  animation: pulse-dot 2s ease-in-out infinite;
 }
 
 .cam-live-dot.offline {
   background: var(--red);
-  animation: none;
 }
 
 /* An on-demand battery camera resting between events. Blue rather than red
-   because this is normal, and still breathing (slower than live) because the
-   camera is dormant rather than dead: it wakes itself on motion. */
+   because this is normal: it wakes itself on motion. */
 .cam-live-dot.sleeping {
   background: var(--blue);
-  animation: pulse-dot 4s ease-in-out infinite;
 }
 
 /* Dim cards that are not showing live video, so the last snapshot reads as a
@@ -2263,7 +2262,7 @@ body.activity-surface input[type="search"] {
   pointer-events: none;
 }
 .timeline-minimap-now { background: rgba(255, 255, 255, 0.5); }
-.timeline-minimap-playhead { background: var(--cyan); box-shadow: 0 0 4px var(--cyan); }
+.timeline-minimap-playhead { background: var(--cyan); }
 
 #timeline-canvas {
   position: absolute;
@@ -2284,7 +2283,6 @@ body.activity-surface input[type="search"] {
   background: var(--cyan);
   z-index: 5;
   pointer-events: none;
-  box-shadow: 0 0 6px var(--cyan);
 }
 
 .timeline-playhead::before {
@@ -4404,7 +4402,6 @@ kbd {
 
 .action-card.primary:hover {
   background: rgba(0, 229, 255, 0.14);
-  box-shadow: 0 4px 20px rgba(0, 229, 255, 0.1);
 }
 
 .action-icon {

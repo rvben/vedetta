@@ -45,20 +45,25 @@ function initialLiveState(status) {
 // first (instant on the LAN or when TURN is configured), then let its bounded
 // watchdog fall through to native HLS on remote networks. Both are real video;
 // snapshots are only a connecting backdrop.
-function preferredLiveTransport(iosWebKit) {
-  return iosWebKit ? 'webrtc' : 'mse';
+function preferredLiveTransport(iosWebKit, needsLiveAudio) {
+  return iosWebKit || needsLiveAudio ? 'webrtc' : 'mse';
 }
 
 // A play() failure only proves that the browser requires a user gesture when
 // it is the policy-specific NotAllowedError. AbortError and NotSupportedError
 // are transport/lifecycle failures; presenting "Tap to watch live" for those
 // would hide the real recovery path behind a button that cannot fix it.
+function fallbackLiveTransport(iosWebKit, needsLiveAudio) {
+  return iosWebKit || needsLiveAudio ? 'hls' : 'mjpeg';
+}
+
 function autoplayNeedsUserGesture(error) {
   return !!error && error.name === 'NotAllowedError';
 }
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    fallbackLiveTransport: fallbackLiveTransport,
     nextWebrtcAction: nextWebrtcAction,
     liveOverlayState: liveOverlayState,
     initialLiveState: initialLiveState,

@@ -99,10 +99,22 @@ test('other platforms retain the high-frame-rate MSE cascade', () => {
   assert.equal(preferredLiveTransport(false), 'mse');
 });
 
+test('baby monitors choose the audio-capable transport on desktop and Android', () => {
+  assert.equal(preferredLiveTransport(false, true), 'webrtc');
+  assert.equal(preferredLiveTransport(true, true), 'webrtc');
+});
+
 test('only an autoplay policy rejection asks the user to tap', () => {
   assert.equal(autoplayNeedsUserGesture({ name: 'NotAllowedError' }), true);
   assert.equal(autoplayNeedsUserGesture({ name: 'AbortError' }), false);
   assert.equal(autoplayNeedsUserGesture({ name: 'NotSupportedError' }), false);
   assert.equal(autoplayNeedsUserGesture(new Error('network failed')), false);
   assert.equal(autoplayNeedsUserGesture(null), false);
+});
+
+const { fallbackLiveTransport } = require('./livecascade');
+test('baby monitors keep an audio-capable fallback on every platform', () => {
+  assert.equal(fallbackLiveTransport(false, true), 'hls');
+  assert.equal(fallbackLiveTransport(true, true), 'hls');
+  assert.equal(fallbackLiveTransport(false, false), 'mjpeg');
 });

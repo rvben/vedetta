@@ -1079,9 +1079,10 @@ function scheduleDegradedRetry(name) {
 // native HLS; other clients retain the MSE -> WebRTC -> MJPEG cascade.
 // Snapshot polling is never called live: a snapshot is only a backdrop while
 // genuine video connects.
+var needsLiveAudio = false;
 function startLiveStream() {
   clearCameraAvailabilityWatch();
-  if (preferredLiveTransport(isIOSWebKit()) === 'webrtc') {
+  if (preferredLiveTransport(isIOSWebKit(), needsLiveAudio) === 'webrtc') {
     startWebRTC();
     return;
   }
@@ -1109,7 +1110,9 @@ var nativeHLSHasDecodedFrame = false;
 var nativeHLSLastDecodedFrameAt = 0;
 var nativeHLSVideo = null;
 
+var liveHlsPlayer = null;
 function clearNativeHLS() {
+  if (liveHlsPlayer) { liveHlsPlayer.destroy(); liveHlsPlayer = null; }
   hlsSeq++;
   if (hlsWarmupTimer) { clearTimeout(hlsWarmupTimer); hlsWarmupTimer = null; }
   if (hlsStallTimer) { clearTimeout(hlsStallTimer); hlsStallTimer = null; }
@@ -1123,10 +1126,9 @@ function clearNativeHLS() {
   nativeHLSLastDecodedFrameAt = 0;
 }
 
-// Native HLS playback for iOS WebKit. The <video> element plays the live
-// .m3u8 directly (no MediaSource, no JS muxing). iOS blocks autoplay with
-// sound, so we start muted and expose the mute button so the user can enable
-// the camera's AAC audio with one tap. A warmup loop tolerates the initial
+// Live HLS uses native playback on Safari and hls.js on other browsers.
+// Start muted and expose the audio button for one-tap listening. A warmup
+// loop tolerates the initial
 // 503s while the server builds a player-ready live window; a stall watchdog
 // returns to an honest reconnecting state if playback freezes.
 function startNativeHLS() {
@@ -1175,9 +1177,8 @@ function startNativeHLS() {
 
   currentStream = 'hls';
   updateStreamButtons();
-  // The high-quality tier is the main/record stream, which carries AAC audio
-  // (the low fallback tier may be silent). Advertise audio so the mute button
-  // is tappable; unmuting a silent camera is harmless.
+  // Live HLS converts supported camera audio to AAC. Keep listening available
+  // while the playlist warms up; an absent audio track remains silent.
   updateMuteButton(true);
   attachAutoplayBlockedDetector(video);
 
@@ -1277,6 +1278,7 @@ function startNativeHLS() {
   // EXT-X-MEDIA-SEQUENCE). Used to recover an iOS suspend/resume stall
   // without changing quality tier or stranding in a stale media session.
   function restartHLS() {
+    if (liveHlsPlayer) { liveHlsPlayer.destroy(); liveHlsPlayer = null; }
     if (hlsStallTimer) { clearTimeout(hlsStallTimer); hlsStallTimer = null; }
     showStreamConnecting('Live');
     started = false;
@@ -1329,8 +1331,25 @@ function startNativeHLS() {
           return r.text().then(function (playlist) {
             if (seq !== hlsSeq) return;
             nativeHLSTargetDuration = liveHlsTargetDuration(playlist) || 1;
-            video.src = url;
-            requestMutedAutoplay(video);
+            if (video.canPlayType('application/vnd.apple.mpegurl')) {
+              video.src = url;
+              requestMutedAutoplay(video);
+            } else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+              if (liveHlsPlayer) liveHlsPlayer.destroy();
+              var player = new Hls({ lowLatencyMode: true, backBufferLength: 10 });
+              liveHlsPlayer = player;
+              player.on(Hls.Events.MANIFEST_PARSED, function() {
+                if (seq === hlsSeq && liveHlsPlayer === player) requestMutedAutoplay(video);
+              });
+              player.on(Hls.Events.ERROR, function(_, data) {
+                if (seq === hlsSeq && liveHlsPlayer === player && data.fatal) onError();
+              });
+              player.loadSource(url);
+              player.attachMedia(video);
+            } else {
+              fallback();
+              return;
+            }
             armStallWatchdog();
           });
         }
@@ -1685,11 +1704,8 @@ async function startWebRTC() {
   function fallbackToNextVideo(message) {
     if (message) console.warn(message);
     stopStream();
-    if (isIOSWebKit()) {
-      startNativeHLS();
-    } else {
-      startMJPEG();
-    }
+    if (fallbackLiveTransport(isIOSWebKit(), needsLiveAudio) === 'hls') startNativeHLS();
+    else startMJPEG();
   }
 
   try {
@@ -1718,7 +1734,7 @@ async function startWebRTC() {
         viewport.classList.remove('live-snapshot-fallback');
       }
       updatePauseUI();
-      toast('WebRTC connected');
+      toast('Live connected');
     }
 
     pc.addTransceiver('video', { direction: 'recvonly' });
@@ -1766,7 +1782,7 @@ async function startWebRTC() {
       if (state === 'failed' || state === 'disconnected') {
         // A public iPhone connection often has no route to host candidates
         // when TURN is not configured. Native HLS is the real-video fallback.
-        if (isIOSWebKit()) {
+        if (isIOSWebKit() || needsLiveAudio) {
           fallbackToNextVideo('WebRTC unavailable; switching to native HLS');
           return;
         }
@@ -1822,8 +1838,8 @@ async function startWebRTC() {
   } catch (err) {
     if (attemptedPeer && peerConnection !== attemptedPeer) return;
     console.error('WebRTC error:', err);
-    if (isIOSWebKit()) {
-      fallbackToNextVideo('WebRTC failed; switching to native HLS');
+    if (isIOSWebKit() || needsLiveAudio) {
+      fallbackToNextVideo('Live connection failed; retrying video and audio');
     } else {
       stopStream();
       startMJPEG();
@@ -1835,7 +1851,7 @@ async function startWebRTC() {
 // manual MJPEG request back to native HLS there so every path still produces
 // genuine video rather than relabeling a JPEG polling loop as Live.
 function startMJPEG() {
-  if (isIOSWebKit()) {
+  if (isIOSWebKit() || needsLiveAudio) {
     startNativeHLS();
     return;
   }
@@ -2330,7 +2346,7 @@ function showStreamConnecting(label) {
   var ov = el('stream-connecting');
   if (!ov) return;
   var lbl = el('stream-connecting-label');
-  if (lbl) lbl.textContent = 'Connecting ' + (label || '') + '...';
+  if (lbl) lbl.textContent = 'Connecting live…';
   ov.classList.remove('hidden');
 }
 
@@ -2585,6 +2601,8 @@ function updateMuteIcon() {
   if (!iconOff || !iconOn) return;
 
   var muted = !video || video.muted || !audioAvailable;
+	var audioButton=el('btn-mute');
+	if (audioButton) audioButton.setAttribute('aria-pressed', String(!muted));
   iconOff.style.display = muted ? '' : 'none';
   iconOn.style.display = muted ? 'none' : '';
 }
@@ -6204,7 +6222,7 @@ function webrtcAutoReconnect() {
   // connectivity: a STUN-only camera that answers every SDP offer but never
   // connects ICE must still reach this cap and fall through to MJPEG.
   if (nextWebrtcAction({ attempts: webrtcReconnectAttempts, maxAttempts: webrtcMaxReconnect }) === 'fallback') {
-    toast('WebRTC unavailable, falling back to MJPEG', 'error');
+    toast(needsLiveAudio ? 'Reconnecting video and audio' : 'Reconnecting live', 'error');
     webrtcReconnectAttempts = 0;
     startMJPEG();
     return;
@@ -6212,7 +6230,7 @@ function webrtcAutoReconnect() {
 
   webrtcReconnectAttempts++;
   var delay = Math.min(1000 * Math.pow(2, webrtcReconnectAttempts - 1), 8000);
-  toast('Reconnecting WebRTC (' + webrtcReconnectAttempts + '/' + webrtcMaxReconnect + ')...');
+  toast('Reconnecting live…');
 
   webrtcReconnectTimer = setTimeout(function() {
     startWebRTC().catch(function() {

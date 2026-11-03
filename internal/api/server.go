@@ -137,6 +137,7 @@ type Server struct {
 	// cameraNamesCached is populated by main.go after config load so the
 	// prefs handler can render the full (camera × class) grid without
 	// walking the live camera.Manager on every request.
+	cryDelivery       atomic.Value // stores func(string) notify.DeliveryStatus
 	notifier          *notify.NotificationDispatcher
 	cameraNamesCached []string
 

@@ -31,7 +31,7 @@ def validate_manifest(rows, require_subject_holdout=True):
             seen[key] = row["split"]
 
 
-def episodes(windows, threshold, hits=2, release=3, hop=0.48):
+def episodes(windows, threshold, hits=2, release=3, hop=0.48, cooldown=0):
     """Onset after consecutive hits; close after consecutive low scores.
 
     Windows carry end timestamps: no future samples may contribute. A gap
@@ -57,24 +57,32 @@ def episodes(windows, threshold, hits=2, release=3, hop=0.48):
             low = 0
             if active is None and high >= hits:
                 active = end  # decision time, not retrospectively backdated onset
-        else:
+        elif score < threshold * .7:
             high = 0
             low += 1
             if active is not None and low >= release:
                 result.append((active, end))
                 active, low = None, 0
+        else:
+            high = low = 0
     if active is not None:
         result.append((active, prev))
-    return result
+    # Confirmation always records every episode. Only notification onsets are
+    # suppressed by cooldown; expiration cannot resend an ongoing episode.
+    notified = []
+    for onset, end in result:
+        if not notified or onset-notified[-1][0] >= cooldown:
+            notified.append((onset, end))
+    return notified
 
 
-def summarize(rows, scores, threshold, hop=0.48):
+def summarize(rows, scores, threshold, hop=0.48, cooldown=60):
     missed = total = false = 0
     negative_seconds = 0
     latencies = []
     for row, windows in zip(rows, scores, strict=True):
         truth = row["cry_intervals"]
-        detected = episodes(windows, threshold, hop=hop)
+        detected = episodes(windows, threshold, hop=hop, cooldown=cooldown)
         total += len(truth)
         negative_seconds += row["duration"] - sum(b-a for a, b in truth)
         for start, end in truth:
@@ -89,6 +97,8 @@ def summarize(rows, scores, threshold, hop=0.48):
     latencies.sort()
     return {
         "threshold": threshold,
+        "release_threshold": threshold * .7,
+        "cooldown_s": cooldown,
         "cry_episodes": total,
         "missed_episodes": missed,
         "false_episodes": false,

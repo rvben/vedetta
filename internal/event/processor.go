@@ -205,7 +205,7 @@ func (p *Processor) Run(ctx context.Context) {
 }
 
 func (p *Processor) acceptEvent(ctx context.Context, submitted camera.Event) {
-	if submitted.Kind != camera.EventKindDoorbell {
+	if submitted.Kind != camera.EventKindDoorbell && submitted.Kind != camera.EventKindCry {
 		if until, exists := p.cooldowns[cooldownKey(submitted)]; exists &&
 			time.Since(until) < time.Duration(p.options.Config.Events.CooldownSeconds)*time.Second {
 			slog.Info("event suppressed by cooldown", "camera", submitted.CameraName,
@@ -235,7 +235,7 @@ func (p *Processor) acceptEvent(ctx context.Context, submitted camera.Event) {
 	}
 
 	publisher := p.publisher(eventCtx)
-	if publisher != nil && submitted.Kind != camera.EventKindDoorbell {
+	if publisher != nil && submitted.Kind != camera.EventKindDoorbell && submitted.Kind != camera.EventKindCry {
 		if p.objectCounts[submitted.CameraName] == nil {
 			p.objectCounts[submitted.CameraName] = make(map[string]int)
 		}
@@ -410,7 +410,7 @@ func (p *Processor) finalizeEvent(ctx context.Context, active *activeEvent, endT
 	// only the resulting value crosses to the publishing goroutine.
 	objectCount := -1
 	var objectCountSeq uint64
-	if event.Kind != camera.EventKindDoorbell {
+	if event.Kind != camera.EventKindDoorbell && event.Kind != camera.EventKindCry {
 		if counts, exists := p.objectCounts[event.CameraName]; exists {
 			counts[event.Label]--
 			if counts[event.Label] < 0 {

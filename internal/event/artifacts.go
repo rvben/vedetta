@@ -35,11 +35,21 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 	snapshotQuality int, submitted camera.Event) {
 
 	var afterSnapshot func(camera.Event) bool
+	var afterCrySnapshot func(camera.Event) bool
+	plannedCry := false
 	plannedDoorbell := false
 	if submitted.Kind == camera.EventKindDoorbell && submitted.Category != camera.CategoryDetection {
 		if early, ok := notifier.(EarlyDoorbellEnqueuer); ok {
 			afterSnapshot = early.EnqueueDoorbellEarly(submitted)
 			plannedDoorbell = true
+		}
+	}
+	if submitted.Kind == camera.EventKindCry && submitted.Category != camera.CategoryDetection {
+		if early, ok := notifier.(interface {
+			EnqueueCryEarly(camera.Event) func(camera.Event) bool
+		}); ok {
+			afterCrySnapshot = early.EnqueueCryEarly(submitted)
+			plannedCry = true
 		}
 	}
 
@@ -64,7 +74,39 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 			afterSnapshot(submitted)
 		}
 	} else {
-		enqueueArtifactNotification(notifier, submitted)
+		if submitted.Kind == camera.EventKindCry && submitted.Category != camera.CategoryDetection && notifier != nil {
+			immediate, hasImmediate := notifier.(interface{ EnqueueCry(camera.Event) bool })
+			if plannedCry || hasImmediate {
+				if release, ok := notifier.(interface{ ReleaseCry(string) }); ok {
+					defer release.ReleaseCry(submitted.ID)
+				}
+				accepted := false
+				for attempt := 0; attempt < 10; attempt++ {
+					complete := false
+					if plannedCry {
+						complete = afterCrySnapshot == nil || afterCrySnapshot(submitted)
+					} else {
+						complete = immediate.EnqueueCry(submitted)
+					}
+					if complete {
+						accepted = true
+						break
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(200 * time.Millisecond):
+					}
+				}
+				if !accepted {
+					slog.Error("cry notification queue unavailable", "event", submitted.ID, "camera", submitted.CameraName)
+				}
+			} else {
+				enqueueArtifactNotification(notifier, submitted)
+			}
+		} else {
+			enqueueArtifactNotification(notifier, submitted)
+		}
 	}
 
 	if publisher != nil {
@@ -110,6 +152,14 @@ func EmitEventArtifacts(ctx context.Context, tracer trace.Tracer,
 
 func enqueueArtifactNotification(notifier Enqueuer, submitted camera.Event) {
 	if notifier != nil && submitted.Category != camera.CategoryDetection {
+		if submitted.Kind == camera.EventKindCry {
+			if immediate, ok := notifier.(interface{ EnqueueCry(camera.Event) bool }); ok {
+				immediate.EnqueueCry(submitted)
+			} else {
+				notifier.Enqueue(submitted)
+			}
+			return
+		}
 		// A doorbell press is actionable now, not after the incident quiet
 		// period. Enqueue it only after snapshot persistence so the push can
 		// carry a valid image. The finalized Activity notification later uses

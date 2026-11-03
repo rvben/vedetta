@@ -437,6 +437,7 @@ func initSubsystems(ctx context.Context, cfg *config.Config, db *storage.DB) *su
 	initHub(ctx, cfg, &sub)
 	stoppedCameras := initRecording(ctx, cfg, db, &sub)
 	initCameraManager(cfg, &sub)
+	initCryRecognition(cfg, db, &sub)
 
 	// Continuous recording starts after the manager is built: NewManager (via
 	// NewCamera) registers each camera's reconnect sink with the hub, and

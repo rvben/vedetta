@@ -1,0 +1,30 @@
+.camera-page-header { gap: 8px 24px; flex-wrap: wrap; }
+.cry-monitor { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 16px; font-size: var(--text-sm, 14px); }
+.cry-monitor[hidden] { display: none; }
+.cry-monitor-status { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
+.cry-monitor-status svg { flex-shrink: 0; color: var(--muted); }
+.cry-monitor[data-state="crying"] .cry-monitor-status { color: var(--warning); }
+.cry-monitor[data-state="unavailable"] .cry-monitor-status,
+.cry-monitor[data-state="unsupported"] .cry-monitor-status,
+.cry-monitor[data-state="overloaded"] .cry-monitor-status,
+.cry-monitor[data-state="unknown"] .cry-monitor-status { color: var(--danger); }
+.cry-monitor-mode { color: var(--muted); }
+.cry-monitor .btn { min-height: 44px; }
+.cry-monitor-message { flex-basis: 100%; color: var(--danger); }
+@media (max-width: 600px) {
+  .camera-page-header { align-items: flex-start; gap: 0; }
+  .cry-monitor { display: grid; grid-template-columns: auto 1fr; width: 100%; gap: 0 12px; }
+  .cry-monitor-mode { justify-self: end; }
+  .cry-monitor .btn { margin-left: 0; padding-inline: 0; }
+  #cry-events { justify-self: start; }
+  #cry-snooze { justify-self: end; }
+}
+
+.camera-tools-toggle { display: none; }
+.camera-tools-toggle:not(.hidden) { display: inline-flex; min-height: 44px; }
+.live-container:not(.camera-tools-open) .ptz-controls { display: none; }
+.baby-monitor-view .stream-stats { display: none; }
+
+.cry-monitor[data-delivery="failed"] .cry-monitor-mode,
+.cry-monitor[data-delivery="unavailable"] .cry-monitor-mode,
+.cry-monitor[data-delivery="excluded"] .cry-monitor-mode { color: var(--danger); }

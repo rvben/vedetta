@@ -15,6 +15,11 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(episodes([(2, .8), (4, .8)], .5), [])
         self.assertEqual(episodes([(2, .8), (2.48, .8), (4, .8), (4.48, .8)], .5), [(2.48, 2.48), (4.48, 4.48)])
 
+    def test_notification_cooldown_does_not_delay_an_ongoing_episode(self):
+        windows = [(2, .8), (2.48, .8), (2.96, 0), (3.44, 0), (3.92, 0), (4.4, .8), (4.88, .8)]
+        self.assertEqual(len(episodes(windows, .5)), 2)
+        self.assertEqual(episodes(windows, .5, cooldown=60), [(2.48, 3.92)])
+
     def test_long_false_episode_cannot_claim_future_cry(self):
         result = summarize([self.row()], [[(1, .8), (1.48, .8), (1.96, .8), (2.44, .8)]], .5)
         self.assertEqual(result["missed_episodes"], 1)

@@ -68,8 +68,9 @@ var routeScopes = map[string]scopeClass{
 
 	// Starting and stopping a camera turns recording for that camera off. That
 	// is an operator action, not a data write.
-	"POST /api/cameras/{name}/start": classAdmin,
-	"POST /api/cameras/{name}/stop":  classAdmin,
+	"POST /api/cameras/{name}/start":      classAdmin,
+	"POST /api/cameras/{name}/stop":       classAdmin,
+	"POST /api/cameras/{name}/cry/snooze": classAdmin,
 
 	// Destructive: these delete recordings, clips, people, or object history.
 	"POST /api/storage/delete":            classAdmin,

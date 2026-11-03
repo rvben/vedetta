@@ -46,6 +46,12 @@ func BuildPayload(ev camera.Event, signer *SnapshotSigner) []byte {
 		p.Tag = ev.CameraName + ":doorbell"
 		p.URL = doorbellAnswerURL(ev.CameraName, ev.ID)
 	}
+	if ev.Kind == camera.EventKindCry {
+		p.Title = "Crying heard"
+		p.Body = friendlyCameraName(ev.CameraName) + " · Open to listen"
+		p.Tag = ev.CameraName + ":cry"
+		p.URL = "/camera.html?name=" + url.QueryEscape(ev.CameraName)
+	}
 	if ev.SnapshotAvailable && signer != nil {
 		p.Image = signer.Sign(ev.ID)
 	}

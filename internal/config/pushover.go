@@ -38,10 +38,10 @@ func validatePushover(cfg *Config, dir string) error {
 		return fmt.Errorf("notifications.pushover.priority must be between -2 and 1 (emergency retries are not supported)")
 	}
 	if len(p.Events) == 0 {
-		p.Events = []string{"doorbell", "activity"}
+		p.Events = []string{"doorbell", "activity", "cry"}
 	}
 	for _, kind := range p.Events {
-		if kind != "doorbell" && kind != "activity" {
+		if kind != "doorbell" && kind != "activity" && kind != "cry" {
 			return fmt.Errorf("notifications.pushover.events: unknown event type %q", kind)
 		}
 	}

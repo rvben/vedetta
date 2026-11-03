@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rvben/vedetta/internal/config"
+	"github.com/rvben/vedetta/internal/cry"
 	"github.com/rvben/vedetta/internal/detect"
 	"github.com/rvben/vedetta/internal/media"
 	"github.com/rvben/vedetta/internal/metrics"
@@ -62,6 +63,7 @@ const (
 const (
 	EventKindObject   = "object"
 	EventKindDoorbell = "doorbell"
+	EventKindCry      = "cry"
 )
 
 // stationaryTierLabels are the labels whose events drop to the detection tier
@@ -131,6 +133,7 @@ type DetectionFrame struct {
 
 // Camera manages a single RTSP camera stream.
 type Camera struct {
+	cry                *cry.Monitor
 	config             config.CameraConfig
 	detector           *detect.Detector
 	tracker            *detect.Tracker
@@ -195,10 +198,11 @@ type Camera struct {
 
 // CameraStatus represents the current status of a camera.
 type CameraStatus struct {
-	Name      string    `json:"name"`
-	Online    bool      `json:"online"`
-	HasMotion bool      `json:"has_motion"`
-	LastFrame time.Time `json:"last_frame"`
+	Cry       *cry.Status `json:"cry,omitempty"`
+	Name      string      `json:"name"`
+	Online    bool        `json:"online"`
+	HasMotion bool        `json:"has_motion"`
+	LastFrame time.Time   `json:"last_frame"`
 	// LastSeen dates the last-known frame still available to display (live
 	// decode time, or the cached disk snapshot's mtime after a restart). Unlike
 	// LastFrame it is non-zero for an offline camera whose only frame came from
@@ -532,6 +536,10 @@ func (c *Camera) Start(ctx context.Context) <-chan struct{} {
 
 	var running sync.WaitGroup
 	running.Add(2)
+	if c.cry != nil {
+		running.Add(1)
+		go func() { defer running.Done(); c.runCry(ctx) }()
+	}
 	if c.doorbellSnapshots != nil {
 		running.Add(1)
 		go func() {
@@ -1189,7 +1197,13 @@ func (c *Camera) Status() CameraStatus {
 		}
 	}
 
+	var cryStatus *cry.Status
+	if c.cry != nil {
+		st := c.cry.Status()
+		cryStatus = &st
+	}
 	return CameraStatus{
+		Cry:            cryStatus,
 		Name:           c.config.Name,
 		Online:         online,
 		HasMotion:      !c.lastMotion.IsZero() && time.Since(c.lastMotion) < 5*time.Second,

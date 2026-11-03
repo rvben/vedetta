@@ -100,6 +100,15 @@ func (s *Server) GetHealth(w http.ResponseWriter, _ *http.Request) {
 	if len(audioErrors) > 0 {
 		status = "degraded"
 	}
+	cryChecks := map[string]any{}
+	for _, st := range statuses {
+		if st.Cry != nil {
+			cryChecks[st.Name] = st.Cry
+			if !st.Stopped && (st.Cry.State == "unavailable" || st.Cry.State == "unsupported" || st.Cry.State == "overloaded") {
+				status = "degraded"
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": status,
 		"checks": map[string]any{
@@ -107,6 +116,7 @@ func (s *Server) GetHealth(w http.ResponseWriter, _ *http.Request) {
 			"mqtt":                   mqttStatus,
 			"detection":              detectionCheck,
 			"recording_audio_errors": audioErrors,
+			"cry_recognition":        cryChecks,
 			"cameras": map[string]any{
 				"total":    len(statuses),
 				"online":   onlineCount,

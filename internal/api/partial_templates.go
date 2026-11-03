@@ -112,7 +112,7 @@ var eventsGalleryTmpl = template.Must(template.New("gallery").Funcs(partialFuncs
 
 var eventDetailTmpl = template.Must(template.New("detail").Funcs(partialFuncs).Parse(
 	`<div class="event-detail-root" data-event-camera="{{.CameraName}}" data-event-label="{{.Label}}" data-event-time="{{.Timestamp.UTC.Format "2006-01-02 15:04:05 UTC"}}"></div>` +
-		`<div class="page-header"><h1>{{displayName .Label}} Detection</h1></div>` +
+		`<div class="page-header"><h1>{{if eq .Kind "cry"}}{{if eq .Category "detection"}}Candidate cry{{else}}Crying heard{{end}}{{else}}{{displayName .Label}} Detection{{end}}</h1></div>` +
 		`<div class="event-detail-layout">` +
 		`<div class="event-media">` +
 		`{{if .SnapshotAvailable}}<div class="detection-overlay-wrap" id="detection-wrap">` +
@@ -148,7 +148,7 @@ var eventDetailTmpl = template.Must(template.New("detail").Funcs(partialFuncs).P
 		`<div class="meta-row"><span class="key">Camera</span><span class="val">{{.CameraName}}</span></div>` +
 		`<div class="meta-row"><span class="key">Label</span><span class="val">{{.Label}}</span></div>` +
 		`{{if .SubLabel}}<div class="meta-row"><span class="key">Identity</span><span class="val">{{.SubLabel}}</span></div>{{end}}` +
-		`<div class="meta-row"><span class="key">Confidence</span><span class="val">{{scorePercent .Score}}</span></div>` +
+		`{{if eq .Kind "cry"}}<div class="meta-row"><span class="key">Cry score</span><span class="val">{{printf "%.3f" .Score}} · uncalibrated</span></div>{{else}}<div class="meta-row"><span class="key">Confidence</span><span class="val">{{scorePercent .Score}}</span></div>{{end}}` +
 		`<div class="meta-row"><span class="key">Time</span><span class="val">{{formatTime .Timestamp}} <span class="text-tertiary">({{timeAgo .Timestamp}})</span></span></div>` +
 		`{{if .Duration}}<div class="meta-row"><span class="key">Duration</span><span class="val">{{.Duration}}</span></div>{{end}}` +
 		`<div class="meta-row"><span class="key">Event ID</span><span class="val mono">{{.ID}}</span></div>` +

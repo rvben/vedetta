@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strconv"
 
 	"github.com/rvben/vedetta/internal/config"
@@ -12,6 +13,7 @@ import (
 
 func (s *Server) ListCamerasManage(w http.ResponseWriter, _ *http.Request) {
 	type cameraEntry struct {
+		Cry            config.CryCameraConfig    `json:"cry"`
 		Index          int                       `json:"index"`
 		Name           string                    `json:"name"`
 		URL            string                    `json:"url"`
@@ -22,6 +24,10 @@ func (s *Server) ListCamerasManage(w http.ResponseWriter, _ *http.Request) {
 		Record         config.StreamConfig       `json:"record"`
 	}
 
+	globalCry := config.CryConfig{Threshold: .2, CooldownSeconds: 60}
+	if cfg, err := config.Load(s.configPath); err == nil {
+		globalCry = cfg.Cry
+	}
 	entries := make([]cameraEntry, len(s.cameraConfigs))
 	for i, cam := range s.cameraConfigs {
 		// Never ship RTSP credentials to the browser. Return the
@@ -30,6 +36,7 @@ func (s *Server) ListCamerasManage(w http.ResponseWriter, _ *http.Request) {
 		cleanURL, urlHasCred := config.StripURLCredentials(cam.URL)
 		cleanRecordURL, recordHasCred := config.StripURLCredentials(cam.RecordURL)
 		entries[i] = cameraEntry{
+			Cry:            cam.Cry.Effective(globalCry),
 			Index:          i,
 			Name:           cam.Name,
 			URL:            cleanURL,
@@ -111,6 +118,7 @@ func (s *Server) UpdateCameraManage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		Cry       *config.CryCameraConfig   `json:"cry"`
 		Name      string                    `json:"name"`
 		URL       string                    `json:"url"`
 		RecordURL string                    `json:"record_url"`
@@ -150,6 +158,23 @@ func (s *Server) UpdateCameraManage(w http.ResponseWriter, r *http.Request) {
 	cam.Enabled = &req.Enabled
 	cam.Detect = req.Detect
 	cam.Record = req.Record
+	if req.Cry != nil {
+		cam.Cry = *req.Cry
+		cfg, err := config.Load(s.configPath)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not read recognition configuration"})
+			return
+		}
+		if index >= len(cfg.Cameras) || cfg.Cameras[index].Name != existing.Name {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "Camera configuration changed. Reload before saving."})
+			return
+		}
+		cfg.Cameras[index] = cam
+		if err := config.ValidateCrySettings(cfg, filepath.Dir(s.configPath)); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 
 	if err := config.UpdateCamera(s.configPath, index, cam); err != nil {
 		if errors.Is(err, config.ErrDuplicateCameraName) {

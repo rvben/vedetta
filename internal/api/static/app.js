@@ -6101,7 +6101,7 @@ function buildEventSkeletonHTML() {
 
 function collectEventFilterParams() {
   var params = new URLSearchParams();
-  ['label', 'camera', 'object', 'category', 'state'].forEach(function(type) {
+  ['kind', 'label', 'camera', 'object', 'category', 'state'].forEach(function(type) {
     var chip = document.querySelector('.chip[data-filter="' + type + '"].active');
     if (chip && chip.dataset.value) params.set(type, chip.dataset.value);
   });
@@ -6174,6 +6174,7 @@ function eventGalleryRequestURL(params) {
   if (before) request.set('before', before);
   var gallery = el('events-gallery');
   var partial = gallery && gallery.dataset.partial ? gallery.dataset.partial : '/partials/events-gallery';
+  if (request.get('kind') === 'cry') partial = '/partials/events-gallery';
   return partial + '?' + request.toString();
 }
 

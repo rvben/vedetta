@@ -1,3 +1,11 @@
+# Cry recognition is opt-in per camera. Provision a verified model bundle first
+# (see tools/audiobench/README.md), then add cry: {enabled: true, alerts: false}
+# to a continuously streaming camera. Observation is the recommended first step.
+# cry:
+#   model_path: models/yamnet/manifest.json
+#   model_sha256: "<SHA-256 printed by export_yamnet.py>"
+#   threshold: 0.2
+#   cooldown_seconds: 60
 cameras:
   - name: front_door
     url: rtsp://user:pass@192.168.1.100:554/stream1

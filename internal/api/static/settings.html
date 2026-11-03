@@ -247,7 +247,7 @@
                 <p class="form-help">Minimum time between repeat notifications for the same camera and object.</p>
               </div>
               <div class="form-field">
-                <span class="form-field-label">Cameras &amp; object classes</span>
+                <span class="form-field-label">Cameras &amp; alert types</span>
                 <div id="push-prefs-grid" class="push-prefs-grid">Loading…</div>
               </div>
               <div class="form-field">
@@ -997,7 +997,7 @@
         cb.dataset.class = cls;
         cb.addEventListener('change', savePrefs);
         wrap.appendChild(cb);
-        wrap.appendChild(document.createTextNode(' ' + cls));
+        wrap.appendChild(document.createTextNode(' ' + (cls === 'baby_cry' ? 'Crying' : cls)));
         row.appendChild(wrap);
       });
       grid.appendChild(row);

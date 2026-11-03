@@ -245,3 +245,19 @@ Camera reports have their own structured issue template.
 ## License
 
 Vedetta is licensed under the [Apache License 2.0](LICENSE).
+
+### Local crying recognition
+
+Optional YAMNet recognition runs locally on the existing mono PCMA/PCMU camera
+audio stream, independently of video motion. Enable it per camera in observation
+mode first: candidate cry events are saved for review, with phone alerts off.
+The camera page shows recognition availability, recent episodes, and a one-tap
+live-audio control. Alerts can be explicitly enabled after nursery validation;
+a 30-minute snooze applies to every delivery provider and survives restarts.
+
+The runtime needs no Python, TensorFlow, or additional RTSP connection. Model
+assets remain external, operator-pinned, and checksum-verified. Provisioning,
+reference parity checks, calibration, and notification setup are documented in
+[the audio benchmark guide](tools/audiobench/README.md). The shipped score
+threshold is an experimental starting value; overnight reliability and real
+iPhone/Android delivery must be validated in the installed nursery.

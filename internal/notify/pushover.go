@@ -36,14 +36,16 @@ type pushoverJob struct {
 // Pushover delivers directly to a configured Pushover user or group, without a
 // web push subscription. Its bounded queue never stalls camera processing.
 type Pushover struct {
-	cfg      config.PushoverConfig
-	token    string
-	user     string
-	client   *http.Client
-	endpoint string
-	jobs     chan pushoverJob
-	logger   *slog.Logger
-	wg       sync.WaitGroup
+	deliveryMu sync.RWMutex
+	delivery   DeliveryStatus
+	cfg        config.PushoverConfig
+	token      string
+	user       string
+	client     *http.Client
+	endpoint   string
+	jobs       chan pushoverJob
+	logger     *slog.Logger
+	wg         sync.WaitGroup
 }
 
 func NewPushover(cfg config.PushoverConfig) (*Pushover, error) {
@@ -56,7 +58,7 @@ func NewPushover(cfg config.PushoverConfig) (*Pushover, error) {
 		return nil, fmt.Errorf("Pushover user key: %w", err)
 	}
 	if len(cfg.Events) == 0 {
-		cfg.Events = []string{"doorbell", "activity"}
+		cfg.Events = []string{"doorbell", "activity", "cry"}
 	}
 	return &Pushover{
 		cfg: cfg, token: token, user: user, endpoint: pushoverEndpoint,
@@ -91,11 +93,32 @@ func (p *Pushover) accepts(cameraName, kind string) bool {
 }
 
 func (p *Pushover) Enqueue(ev camera.Event) {
-	if ev.Kind == camera.EventKindDoorbell {
+	if ev.Kind == camera.EventKindCry {
+		p.EnqueueCry(ev)
+	} else if ev.Kind == camera.EventKindDoorbell {
 		p.EnqueueDoorbell(ev)
 	} else if ev.Category != camera.CategoryDetection && p.accepts(ev.CameraName, "activity") {
 		p.enqueue(ev, BuildPayload(ev, nil))
 	}
+}
+
+func (p *Pushover) EnqueueCry(ev camera.Event) bool {
+	if ev.Category == camera.CategoryDetection || !p.accepts(ev.CameraName, "cry") {
+		return true
+	}
+	return p.enqueue(ev, BuildPayload(ev, nil))
+}
+
+// Prepared inline photos can start uploading before snapshot disk writes.
+// The remainder is retried only if this provider has not accepted the alert.
+func (p *Pushover) EnqueueCryEarly(ev camera.Event) func(camera.Event) bool {
+	if ev.Category == camera.CategoryDetection || !p.accepts(ev.CameraName, "cry") {
+		return nil
+	}
+	if snapshot.ValidNotificationJPEG(ev.NotificationJPEG) && p.EnqueueCry(ev) {
+		return nil
+	}
+	return p.EnqueueCry
 }
 
 func (p *Pushover) EnqueueDoorbell(ev camera.Event) bool {
@@ -157,6 +180,7 @@ func (p *Pushover) enqueue(ev camera.Event, data []byte) bool {
 	case p.jobs <- pushoverJob{event: ev, payload: payload, queued: time.Now()}:
 		return true
 	default:
+		p.recordDelivery(false)
 		p.logger.Warn("Pushover queue full", "event", ev.ID, "camera", ev.CameraName)
 		return false
 	}
@@ -172,11 +196,15 @@ func (p *Pushover) Start(ctx context.Context) {
 				case job := <-p.jobs:
 					// Don't ring someone's phone minutes after a provider outage.
 					if time.Since(job.queued) > time.Minute {
+						p.recordDelivery(false)
 						p.logger.Warn("Pushover notification expired in queue", "event", job.event.ID)
 						continue
 					}
 					if err := p.send(ctx, job); err != nil {
+						p.recordDelivery(false)
 						p.logger.Error("Pushover delivery failed", "event", job.event.ID, "error", err)
+					} else {
+						p.recordDelivery(true)
 					}
 				}
 			}
@@ -206,6 +234,9 @@ func (p *Pushover) send(ctx context.Context, job pushoverJob) error {
 	if p.cfg.BaseURL != "" {
 		fields["url"] = strings.TrimRight(p.cfg.BaseURL, "/") + job.payload.URL
 		fields["url_title"] = "Open Vedetta"
+		if job.event.Kind == camera.EventKindCry {
+			fields["url_title"] = "Watch live"
+		}
 	}
 	for key, value := range fields {
 		if err := w.WriteField(key, value); err != nil {

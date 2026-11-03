@@ -515,6 +515,50 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/cameras/{name}/cry/snooze:
+    post:
+      operationId: snoozeCry
+      summary: Snooze or resume crying alerts
+      description: Requires administrator access. Persists across restarts and preserves recognition and recording. Zero minutes resumes alerts.
+      tags: [cameras]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [minutes]
+              properties:
+                minutes:
+                  type: integer
+                  minimum: 0
+                  maximum: 1440
+      responses:
+        "200":
+          description: Updated recognition and notification status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CryRecognitionStatus"
+        "400":
+          description: Invalid snooze duration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Camera not found or crying recognition disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/cameras/{name}/snapshot:
     get:
       operationId: getCameraSnapshot
@@ -938,7 +982,7 @@ paths:
             default: 0
         - name: kind
           in: query
-          description: Filter by event kind ("object" or "doorbell")
+          description: Filter by event kind ("object", "doorbell", or "cry")
           schema:
             type: string
       responses:
@@ -960,7 +1004,7 @@ paths:
           required: false
           schema:
             type: string
-          description: Filter by event kind ("object" or "doorbell"). Omit to count all kinds.
+          description: Filter by event kind ("object", "doorbell", or "cry"). Omit to count all kinds.
       responses:
         "200":
           description: Event counts
@@ -3065,6 +3109,8 @@ components:
       type: object
       required: [name, online, has_motion, ptz, sleeping, stopped]
       properties:
+        cry:
+          $ref: "#/components/schemas/CryRecognitionStatus"
         name:
           type: string
         online:
@@ -3118,10 +3164,31 @@ components:
         has_more:
           type: boolean
 
+    CryDeliveryStatus:
+      type: object
+      description: Provider acceptance status. Does not prove receipt or playback on a phone.
+      required: [state, queued]
+      properties:
+        state:
+          type: string
+          enum: [disabled, excluded, unavailable, unverified, accepted, failed]
+        queued:
+          type: integer
+        last_accepted:
+          type: string
+          format: date-time
+        last_failure:
+          type: string
+          format: date-time
+
     CameraDetail:
       type: object
       required: [name, online, has_motion, degraded, ptz, zone_count, recording, sleeping]
       properties:
+        cry:
+          $ref: "#/components/schemas/CryRecognitionStatus"
+        cry_delivery:
+          $ref: "#/components/schemas/CryDeliveryStatus"
         name:
           type: string
         online:
@@ -3283,6 +3350,8 @@ components:
       type: object
       required: [name, online, has_motion, degraded, ptz, stopped, sleeping]
       properties:
+        cry:
+          $ref: "#/components/schemas/CryRecognitionStatus"
         name:
           type: string
         online:
@@ -3305,6 +3374,32 @@ components:
           type: boolean
         stopped:
           type: boolean
+
+    CryRecognitionStatus:
+      type: object
+      required: [state, alerts, score, episodes, dropped_windows]
+      properties:
+        state:
+          type: string
+          enum: [starting, listening, crying, unavailable, unsupported, overloaded, stopped]
+        reason:
+          type: string
+        alerts:
+          type: boolean
+          description: Alerts are configured; snooze and provider preferences can still suppress delivery.
+        snoozed_until:
+          type: string
+          format: date-time
+        score:
+          type: number
+          description: Uncalibrated YAMNet infant-cry score, not a probability.
+        last_analyzed:
+          type: string
+          format: date-time
+        episodes:
+          type: integer
+        dropped_windows:
+          type: integer
 
     ListEnvelope:
       type: object
@@ -3340,6 +3435,10 @@ components:
       type: object
       required: [database, mqtt, cameras, storage]
       properties:
+        cry_recognition:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/CryRecognitionStatus"
         recording_audio_errors:
           type: object
           description: Camera names mapped to recording audio failure reasons; video continues.

@@ -205,6 +205,15 @@ func (d *NotificationDispatcher) EnqueueDoorbell(ev camera.Event) bool {
 	return d.enqueue(notificationJob{event: ev, immediate: true})
 }
 
+// Cry episodes already have onset confirmation and their own cooldown. User
+// mute and notification preferences still apply to these immediate jobs.
+func (d *NotificationDispatcher) EnqueueCry(ev camera.Event) bool {
+	if ev.Category == camera.CategoryDetection {
+		return true
+	}
+	return d.enqueue(notificationJob{event: ev, immediate: true})
+}
+
 // EnqueueActivity is non-blocking and returns whether the incident was
 // accepted. The processor only marks durable notification state after true.
 func (d *NotificationDispatcher) EnqueueActivity(activity storage.Activity) bool {

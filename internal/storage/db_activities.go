@@ -140,6 +140,11 @@ func eventActivityBounds(event camera.Event) (time.Time, time.Time) {
 // bridges. The earliest activity remains canonical, so chronological backfill
 // produces stable IDs while late evidence remains safe and idempotent.
 func assignEventToActivityTx(tx *sql.Tx, event camera.Event) error {
+	// Audio episodes have an independent lifecycle and immediate onset alerts.
+	// Joining video incidents would delay alerts and produce duplicate pushes.
+	if event.Kind == camera.EventKindCry {
+		return nil
+	}
 	start, end := eventActivityBounds(event)
 	rows, err := tx.Query(`
 		SELECT id, start_time

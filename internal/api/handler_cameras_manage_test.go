@@ -314,3 +314,70 @@ func TestAddCameraManage_MissingURL(t *testing.T) {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
+
+func TestCrySettingsPersistValidateAndPreserveUneditedFields(t *testing.T) {
+	s, path := newTestServerWithCameras(t)
+	// Recognition provisioning remains explicit: settings cannot enable a camera without a pinned model.
+	body := `{"name":"front","url":"rtsp://front","enabled":true,"cry":{"enabled":true,"alerts":true,"threshold":0.3,"cooldown_seconds":120}}`
+	request := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.mux.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/cameras/manage/0", bytes.NewBufferString(body)))
+		return w
+	}
+	before, _ := os.ReadFile(path)
+	if w := request(body); w.Code != 400 {
+		t.Fatalf("enabled unprovisioned recognition: %d %s", w.Code, w.Body.String())
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(before, after) {
+		t.Fatal("invalid settings changed config")
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString("\ncry:\n  model_path: /tmp/model/manifest.json\n  model_sha256: \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if w := request(body); w.Code != 200 {
+		t.Fatalf("valid settings: %d %s", w.Code, w.Body.String())
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := loaded.Cameras[0].Cry; !c.Enabled || !c.Alerts || c.Threshold != .3 || c.CooldownSeconds != 120 {
+		t.Fatalf("lost settings: %+v", c)
+	}
+	for _, cry := range []string{`{"enabled":false,"alerts":true}`, `{"enabled":true,"threshold":1.1}`, `{"enabled":true,"cooldown_seconds":-1}`} {
+		invalid := `{"name":"front","url":"rtsp://front","enabled":true,"cry":` + cry + `}`
+		if w := request(invalid); w.Code != 400 {
+			t.Fatalf("accepted invalid cry settings: %s %d", cry, w.Code)
+		}
+	}
+	// Older clients must not wipe settings they do not send.
+	if w := request(`{"name":"front","url":"rtsp://front","enabled":true}`); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	loaded, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Cameras[0].Cry.Threshold != .3 {
+		t.Fatal("legacy edit dropped crying settings")
+	}
+	// An external edit must not make a stale form overwrite another camera.
+	if err := config.RemoveCamera(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	before, _ = os.ReadFile(path)
+	if w := request(body); w.Code != http.StatusConflict {
+		t.Fatalf("stale camera edit: %d %s", w.Code, w.Body.String())
+	}
+	after, _ = os.ReadFile(path)
+	if !bytes.Equal(before, after) {
+		t.Fatal("stale form changed config")
+	}
+}

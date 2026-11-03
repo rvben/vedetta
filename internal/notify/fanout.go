@@ -32,6 +32,66 @@ func (f *Fanout) Enqueue(ev camera.Event) {
 	}
 }
 
+func (f *Fanout) EnqueueCry(ev camera.Event) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := "cry:" + ev.ID
+	accepted := f.pending[key]
+	if accepted == nil {
+		accepted = make([]bool, len(f.providers))
+	}
+	complete := true
+	for i, p := range f.providers {
+		if !accepted[i] {
+			if immediate, ok := p.(interface{ EnqueueCry(camera.Event) bool }); ok {
+				accepted[i] = immediate.EnqueueCry(ev)
+			} else {
+				accepted[i] = true
+			}
+		}
+		complete = complete && accepted[i]
+	}
+	if complete {
+		delete(f.pending, key)
+	} else {
+		f.pending[key] = accepted
+	}
+	return complete
+}
+
+func (f *Fanout) ReleaseCry(id string) { f.mu.Lock(); delete(f.pending, "cry:"+id); f.mu.Unlock() }
+
+func (f *Fanout) EnqueueCryEarly(ev camera.Event) func(camera.Event) bool {
+	var remaining []func(camera.Event) bool
+	for _, p := range f.providers {
+		if early, ok := p.(interface {
+			EnqueueCryEarly(camera.Event) func(camera.Event) bool
+		}); ok {
+			if after := early.EnqueueCryEarly(ev); after != nil {
+				remaining = append(remaining, after)
+			}
+		} else if immediate, ok := p.(interface{ EnqueueCry(camera.Event) bool }); ok {
+			remaining = append(remaining, immediate.EnqueueCry)
+		}
+	}
+	if len(remaining) == 0 {
+		return nil
+	}
+	return func(saved camera.Event) bool {
+		complete := true
+		for i, enqueue := range remaining {
+			if enqueue != nil {
+				if enqueue(saved) {
+					remaining[i] = nil
+				} else {
+					complete = false
+				}
+			}
+		}
+		return complete
+	}
+}
+
 func (f *Fanout) EnqueueDoorbell(ev camera.Event) bool {
 	accepted := false
 	for _, p := range f.providers {

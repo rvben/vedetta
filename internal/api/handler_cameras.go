@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/cry"
 	"github.com/rvben/vedetta/internal/media"
 	"github.com/rvben/vedetta/internal/storage"
 )
@@ -15,10 +16,11 @@ import (
 func (s *Server) ListCameras(w http.ResponseWriter, _ *http.Request) {
 	statuses := s.cameraStatuses()
 	type cameraInfo struct {
-		Name      string `json:"name"`
-		Online    bool   `json:"online"`
-		HasMotion bool   `json:"has_motion"`
-		PTZ       bool   `json:"ptz"`
+		Cry       *cry.Status `json:"cry,omitempty"`
+		Name      string      `json:"name"`
+		Online    bool        `json:"online"`
+		HasMotion bool        `json:"has_motion"`
+		PTZ       bool        `json:"ptz"`
 		// Sleeping lets the dashboard caption an on-demand camera resting between
 		// events as asleep rather than offline, which is what Online alone says.
 		Sleeping bool `json:"sleeping"`
@@ -35,6 +37,7 @@ func (s *Server) ListCameras(w http.ResponseWriter, _ *http.Request) {
 	for i, st := range statuses {
 		_, hasPTZ := s.ptzClients[st.Name]
 		info := cameraInfo{
+			Cry:       st.Cry,
 			Name:      st.Name,
 			Online:    st.Online,
 			HasMotion: st.HasMotion,
@@ -66,6 +69,7 @@ func (s *Server) GetCamera(w http.ResponseWriter, r *http.Request, name string) 
 	_, hasPTZ := s.ptzClients[name]
 	zones, _ := s.db.ListZones(name)
 	resp := map[string]any{
+		"cry_delivery":    s.cryDeliveryStatus(name),
 		"name":            st.Name,
 		"online":          st.Online,
 		"sleeping":        st.Sleeping,
@@ -77,6 +81,9 @@ func (s *Server) GetCamera(w http.ResponseWriter, r *http.Request, name string) 
 		"zone_count":      len(zones),
 		"recording":       s.recorder != nil,
 		"source_fps":      st.SourceFPS,
+	}
+	if st.Cry != nil {
+		resp["cry"] = st.Cry
 	}
 	// Both keys are absent rather than empty when there is nothing to report: a
 	// camera that has never connected has no last-connected time, and a zero

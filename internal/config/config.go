@@ -19,6 +19,7 @@ import (
 type Config struct {
 	Cameras       []CameraConfig         `yaml:"cameras"`
 	Detect        DetectConfig           `yaml:"detect"`
+	Cry           CryConfig              `yaml:"cry"`
 	Recording     RecordingConfig        `yaml:"recording"`
 	Events        EventConfig            `yaml:"events"`
 	Storage       StorageConfig          `yaml:"storage"`
@@ -225,6 +226,7 @@ type CameraConfig struct {
 	TieredStorage CameraTieredStorageConfig `yaml:"tiered_storage"`
 	RetainDays    *int                      `yaml:"retain_days"` // Per-camera override for recording.retain_days; nil means use global value.
 	OnDemand      bool                      `yaml:"on_demand"`   // Stream is published only part of the time (battery/PIR camera); absence is normal, not a fault.
+	Cry           CryCameraConfig           `yaml:"cry"`
 }
 
 type DoorbellConfig struct {
@@ -626,6 +628,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := validatePushover(cfg, filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	if err := validateCry(cfg, filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	if err := normalizeTelemetry(cfg); err != nil {

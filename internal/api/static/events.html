@@ -98,6 +98,12 @@
         </button>
       </div>
 
+      <div class="chip-bar" role="toolbar" aria-label="Activity type">
+        <button class="chip active" data-filter="kind" data-value="" data-action-click="toggleChip(this, 'kind')" aria-pressed="true">All activity</button>
+        <button class="chip" data-filter="kind" data-value="cry" data-action-click="toggleChip(this, 'kind')" aria-pressed="false">Crying</button>
+        <button class="chip" data-filter="kind" data-value="doorbell" data-action-click="toggleChip(this, 'kind')" aria-pressed="false">Doorbell</button>
+      </div>
+
       <div class="events-filter-panel" id="events-filter-panel" hidden>
         <section class="events-filter-group" aria-labelledby="events-type-label">
           <h2 id="events-type-label">Object type</h2>
@@ -191,7 +197,7 @@
 
     function applyEventFiltersFromURL() {
       var params = new URLSearchParams(location.search);
-      ['label', 'camera', 'object', 'category', 'state'].forEach(function(type) {
+      ['kind', 'label', 'camera', 'object', 'category', 'state'].forEach(function(type) {
         var value = params.get(type) || '';
         if (!setEventChipValue(type, value)) setEventChipValue(type, '');
       });
@@ -250,7 +256,7 @@
     function initialEventRequestURL() {
       var source = new URLSearchParams(location.search);
       var params = new URLSearchParams();
-      ['label', 'camera', 'object', 'category', 'state', 'q', 'range', 'at'].forEach(function(key) {
+      ['kind', 'label', 'camera', 'object', 'category', 'state', 'q', 'range', 'at'].forEach(function(key) {
         if (source.get(key)) params.set(key, source.get(key));
       });
       // Mirrors applyEventFiltersFromURL: a valid jump takes the place of a range.
@@ -291,7 +297,7 @@
     }
 
     window.updateEventsFilterUI = function() {
-      var advancedLabels = ['category', 'state', 'camera', 'object']
+      var advancedLabels = ['kind', 'category', 'state', 'camera', 'object']
         .map(selectedEventFilterLabel)
         .filter(Boolean);
       var count = advancedLabels.length;
@@ -312,7 +318,6 @@
 
     window.syncEventsURL = function(params) {
       var pageParams = new URLSearchParams(params);
-      pageParams.delete('kind');
       var query = pageParams.toString();
       history.replaceState(null, '', location.pathname + (query ? '?' + query : ''));
     }
@@ -323,6 +328,10 @@
       var hasFilter = eventsHasActiveFilter();
       if (isFinite(visibleTotal)) eventsVisibleTotal = visibleTotal;
 
+      if (collectEventFilterParams().get('kind') === 'cry') {
+        summary.textContent = eventsVisibleTotal.toLocaleString() + ' cry episode' + (eventsVisibleTotal === 1 ? '' : 's');
+        return;
+      }
       if (hasFilter) {
         var n = isFinite(eventsVisibleTotal) ? eventsVisibleTotal : 0;
         summary.textContent = n.toLocaleString() + ' activit' + (n === 1 ? 'y' : 'ies') + ' in this view';
@@ -337,6 +346,7 @@
     }
 
     function clearAllEventFilters() {
+      setEventChipValue('kind', '');
       document.querySelectorAll('.chip[data-filter="label"]').forEach(function(c) {
         var active = !c.dataset.value;
         c.classList.toggle('active', active);
@@ -462,7 +472,7 @@
 
     document.body.addEventListener('htmx:afterSwap', function(e) {
       var xhr = e.detail && e.detail.xhr;
-      if (!xhr || xhr.responseURL.indexOf('/partials/activities-gallery') === -1) return;
+      if (!xhr || xhr.responseURL.indexOf('/partials/activities-gallery') === -1 && xhr.responseURL.indexOf('/partials/events-gallery') === -1) return;
       var total = xhr ? parseInt(xhr.getResponseHeader('X-Total-Count') || '', 10) : NaN;
       if (!isFinite(total)) total = document.querySelectorAll('#events-gallery .event-card').length;
       updateEventsSummary(total);

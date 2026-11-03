@@ -83,6 +83,25 @@ class YAMNet:
         return float(scores.numpy()[:, self.index].mean())
 
 
+class Vedetta:
+    """One offline process per recording using the deployed Go scorer."""
+    def __init__(self, executable, manifest, digest):
+        self.executable, self.manifest, self.digest = executable, manifest, digest
+
+    def windows(self, pcm):
+        import numpy as np
+        import subprocess
+        raw = np.clip(pcm * 32768, -32768, 32767).astype("<i2").tobytes()
+        result = subprocess.run([str(self.executable), "-manifest", str(self.manifest), "-sha256", self.digest], input=raw, capture_output=True, check=True, timeout=600)
+        data = json.loads(result.stdout)
+        if data.get("model_manifest_sha256") != self.digest or data.get("sample_rate") != 8000 or data.get("window_seconds") != 2 or data.get("hop_seconds") != .48:
+            raise ValueError("native replay does not match the pinned live pipeline")
+        windows = data["windows"]
+        if len(windows) != (len(pcm) - 16000) // 3840 + 1:
+            raise ValueError("native replay returned an incomplete recording")
+        return [(w["end"], w["score"]) for w in windows], [w["inference_seconds"] for w in windows]
+
+
 class EfficientAT:
     def __init__(self, source, checkpoint, threads, export, samples=40000):
         import numpy as np
@@ -145,8 +164,11 @@ class EfficientAT:
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("manifest", type=Path)
-    p.add_argument("--model", choices=["yamnet", "efficientat"], required=True)
+    p.add_argument("--model", choices=["yamnet", "efficientat", "vedetta"], required=True)
     p.add_argument("--yamnet", type=Path)
+    p.add_argument("--vedetta-replay", type=Path)
+    p.add_argument("--vedetta-manifest", type=Path)
+    p.add_argument("--vedetta-sha256")
     p.add_argument("--efficientat-source", type=Path)
     p.add_argument("--checkpoint", type=Path)
     p.add_argument("--export-onnx", type=Path, help="EfficientAT core only; check logits on every replay window")
@@ -154,6 +176,7 @@ def main():
     p.add_argument("--threads", type=int, default=1)
     p.add_argument("--window", type=float, default=5, help="common context in seconds; short EfficientAT contexts require separate validation")
     p.add_argument("--hop", type=float, default=0.48)
+    p.add_argument("--cooldown", type=float, default=60, help="episode cooldown, matching production's default")
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--smoke", action="store_true", help="weak clip labels only; never report episode accuracy or camera-night rates")
     p.add_argument("--split", choices=["validation", "test"], default="test")
@@ -162,11 +185,17 @@ def main():
     args = p.parse_args()
     if args.threads < 1 or args.threads > 16:
         p.error("threads must be 1..16")
+    if not math.isfinite(args.cooldown) or not 0 <= args.cooldown <= 3600:
+        p.error("cooldown must be finite and 0..3600 seconds")
     if not math.isfinite(args.window) or not 0.975 <= args.window <= 10 or not math.isfinite(args.hop) or not 0.001 <= args.hop <= args.window:
         p.error("window must be .975..10 s and hop .001..window s")
     size, hop = round(args.window*8000), round(args.hop*8000)
     if not math.isfinite(args.threshold) or not 0 <= args.threshold <= 1:
         p.error("threshold must be a finite score in 0..1")
+    if args.model == "vedetta":
+        if not args.vedetta_replay or not args.vedetta_manifest or not args.vedetta_sha256:
+            p.error("native replay needs --vedetta-replay, --vedetta-manifest and --vedetta-sha256")
+        size, hop = 16000, 3840
     if args.model == "yamnet" and not args.yamnet:
         p.error("--yamnet is required")
     if args.model == "efficientat" and (not args.efficientat_source or not args.checkpoint):
@@ -183,9 +212,12 @@ def main():
         rows = [r for r in rows if r["split"] == args.split]
     if not rows:
         raise ValueError("empty manifest")
-    model = YAMNet(args.yamnet, args.threads) if args.model == "yamnet" else EfficientAT(args.efficientat_source, args.checkpoint, args.threads, args.export_onnx, size)
-    for _ in range(3):
-        model.score(np.zeros(size, dtype=np.float32))
+    if args.model == "vedetta":
+        model = Vedetta(args.vedetta_replay, args.vedetta_manifest, args.vedetta_sha256)
+    else:
+        model = YAMNet(args.yamnet, args.threads) if args.model == "yamnet" else EfficientAT(args.efficientat_source, args.checkpoint, args.threads, args.export_onnx, size)
+        for _ in range(3):
+            model.score(np.zeros(size, dtype=np.float32))
     scores, durations = [], []
     for row in rows:
         path = args.manifest.parent / row["path"]
@@ -194,6 +226,11 @@ def main():
             raise ValueError(f"WAV duration differs from annotations: {path.name}")
         if len(pcm) < size:
             raise ValueError("recording shorter than the benchmark window")
+        if args.model == "vedetta":
+            windows, elapsed = model.windows(pcm)
+            scores.append(windows)
+            durations.extend(elapsed)
+            continue
         windows = []
         for start in range(0, len(pcm)-size+1, hop):
             before = time.perf_counter()
@@ -207,8 +244,8 @@ def main():
         "model": args.model, "codec": args.codec, "window_s": size/8000, "hop_s": hop/8000,
         "threads": args.threads, "host": {"system": platform.system(), "machine": platform.machine(), "processor": platform.processor()},
         "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
-        "model_sha256": model_fingerprint(args.yamnet if args.model == "yamnet" else args.checkpoint),
-        "versions": {name: importlib.metadata.version(name) for name in (["numpy", "scipy", "tensorflow"] if args.model == "yamnet" else ["numpy", "scipy", "torch", "torchaudio", "torchvision", "onnx", "onnxruntime"])},
+        "model_sha256": args.vedetta_sha256 if args.model == "vedetta" else model_fingerprint(args.yamnet if args.model == "yamnet" else args.checkpoint),
+        "versions": {name: importlib.metadata.version(name) for name in (["numpy", "scipy"] if args.model == "vedetta" else ["numpy", "scipy", "tensorflow"] if args.model == "yamnet" else ["numpy", "scipy", "torch", "torchaudio", "torchvision", "onnx", "onnxruntime"])},
         "windows": len(durations), "inference_including_preprocessing_p50_ms": float(np.percentile(durations, 50)*1000),
         "inference_including_preprocessing_p95_ms": float(np.percentile(durations, 95)*1000),
         "peak_process_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2 if sys.platform == "darwin" else 1024),
@@ -219,7 +256,7 @@ def main():
         "thresholds": (
             [summarize_clips(rows, scores, t) for t in (0.1, 0.2, 0.3, 0.5)]
             if args.smoke else
-            [summarize(rows, scores, t, hop=hop/8000) for t in
+            [summarize(rows, scores, t, hop=hop/8000, cooldown=args.cooldown) for t in
              ((0.1, 0.2, 0.3, 0.5) if args.split == "validation" else (args.threshold,))]
         ),
         "scores": scores,

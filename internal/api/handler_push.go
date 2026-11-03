@@ -316,5 +316,5 @@ func (s *Server) cameraNames() []string {
 //
 // TODO: move to detect package when a canonical label registry exists.
 func knownObjectClasses() []string {
-	return []string{"person", "car", "bicycle", "motorcycle", "truck", "bus", "dog", "cat"}
+	return []string{"person", "car", "bicycle", "motorcycle", "truck", "bus", "dog", "cat", "baby_cry"}
 }

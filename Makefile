@@ -1,4 +1,4 @@
-.PHONY: build build-capi build-hwaccel require-deploy-config build-deploy build-release verify-version run test test-js test-audio-bench test-browser test-race bench lint lint-install vet vulncheck vulncheck-install clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
+.PHONY: build build-capi build-hwaccel require-deploy-config build-deploy build-release verify-version run test test-js test-audio-bench test-cry-model test-browser test-race bench lint lint-install vet vulncheck vulncheck-install clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
 
 BINARY := vedetta
 BUILD_DIR := ./build
@@ -98,6 +98,11 @@ test: test-js test-audio-bench
 # Evaluation logic needs no ML packages or model downloads in CI.
 test-audio-bench:
 	python3 -m unittest discover -s tools/audiobench -p 'test_*.py'
+
+# Explicit reference-model parity; never downloads assets during normal checks.
+test-cry-model:
+	@test -n "$(VEDETTA_CRY_MODEL)" -a -n "$(VEDETTA_CRY_FIXTURES)" || (echo "Set VEDETTA_CRY_MODEL and VEDETTA_CRY_FIXTURES; see tools/audiobench/README.md"; exit 1)
+	go test ./internal/cry -run TestReferenceParity -count=1 -v
 
 # Browser-side pure logic (no DOM) is extracted into standalone modules and
 # unit-tested with the Node built-in test runner so it runs locally and in CI

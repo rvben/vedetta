@@ -21,6 +21,8 @@
     } catch (_) {}
   </script>
   <link rel="stylesheet" href="/style.css">
+	<link rel="stylesheet" href="/crymonitor.css">
+	<script src="/crymonitor.js"></script>
   <script src="/htmx.min.js"></script>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
@@ -54,8 +56,19 @@
     <div class="breadcrumb">
       <a href="/">Cameras</a><span class="sep">/</span><span id="cam-breadcrumb">...</span>
     </div>
-    <div class="page-header">
+    <div class="page-header camera-page-header">
       <h1 id="camera-title">Camera</h1>
+      <button type="button" class="btn btn-sm btn-ghost camera-tools-toggle hidden" id="camera-tools-toggle" aria-expanded="false" aria-controls="ptz-controls">Camera controls</button>
+      <div class="cry-monitor" id="cry-monitor" role="group" aria-label="Cry recognition" hidden>
+        <span class="cry-monitor-status" id="cry-status" tabindex="0">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>
+          <span id="cry-state" role="status" aria-live="polite"></span>
+        </span>
+        <span class="cry-monitor-mode" id="cry-mode"></span>
+        <a class="btn btn-sm btn-ghost" id="cry-events" href="/events.html?kind=cry">Cry events</a>
+        <button type="button" class="btn btn-sm btn-ghost" id="cry-snooze" hidden>Snooze alerts</button>
+        <span class="cry-monitor-message" id="cry-action-status" role="status" aria-live="polite" hidden></span>
+      </div>
     </div>
 
     <div class="camera-layout">
@@ -184,6 +197,7 @@
         </div>
         </div>
       </div>
+
 
       <!-- Timeline -->
       <div class="timeline-container" id="timeline-container">
@@ -358,6 +372,17 @@
             <p class="form-help">Disable to keep the camera in config without connecting.</p>
           </div>
 
+          <fieldset class="form-fieldset">
+            <legend>Crying recognition</legend>
+            <label class="checkbox-label"><input type="checkbox" id="cam-set-cry-enabled"><span>Detect crying</span></label>
+            <label class="checkbox-label"><input type="checkbox" id="cam-set-cry-alerts"><span>Send crying alerts</span></label>
+            <div class="form-row">
+              <div class="form-field"><label for="cam-set-cry-threshold">Detection threshold</label><input type="number" id="cam-set-cry-threshold" class="form-input" min="0.001" max="1" step="any" value="0.2"><p class="form-help">Lower values detect more sounds. Scores are not probabilities.</p></div>
+              <div class="form-field"><label for="cam-set-cry-cooldown">Time between alerts (seconds)</label><input type="number" id="cam-set-cry-cooldown" class="form-input" min="1" max="3600" step="1" value="60"></div>
+            </div>
+            <p class="form-help">Uses the installed model and a continuous camera microphone. Pushover delivery must also include this camera. Changes take effect after restart.</p>
+          </fieldset>
+
           <div class="form-row">
             <fieldset class="form-fieldset">
               <legend>Detection stream</legend>
@@ -440,6 +465,12 @@
     var camSettingsIndex = -1;
     var camSettingsLoaded = false;
 
+    document.getElementById('camera-tools-toggle').addEventListener('click', function() {
+      var open = this.getAttribute('aria-expanded') !== 'true';
+      this.setAttribute('aria-expanded', String(open));
+      document.querySelector('.live-container').classList.toggle('camera-tools-open', open);
+    });
+
     function toggleRevealInput(id, btn) {
       var inp = document.getElementById(id);
       if (!inp) return;
@@ -452,6 +483,12 @@
       if (show) show.hidden = revealed;
       if (hide) hide.hidden = !revealed;
     }
+
+    document.getElementById('cam-set-cry-enabled').addEventListener('change', function() {
+      var alerts = document.getElementById('cam-set-cry-alerts');
+      alerts.disabled = !this.checked;
+      if (!this.checked) alerts.checked = false;
+    });
 
     function loadCamSettings() {
       var name = new URLSearchParams(location.search).get('name');
@@ -479,6 +516,12 @@
         document.getElementById('cam-set-recurl').value = match.record_url || '';
         document.getElementById('cam-set-creds-hint').hidden = !match.has_credentials;
         document.getElementById('cam-set-enabled').checked = !!match.enabled;
+        var cry = match.cry || {};
+        document.getElementById('cam-set-cry-enabled').checked = !!cry.enabled;
+        document.getElementById('cam-set-cry-alerts').checked = !!cry.alerts;
+        document.getElementById('cam-set-cry-alerts').disabled = !cry.enabled;
+        document.getElementById('cam-set-cry-threshold').value = Number(Number(cry.threshold || 0.2).toPrecision(7));
+        document.getElementById('cam-set-cry-cooldown').value = cry.cooldown_seconds || 60;
         var det = match.detect || {};
         document.getElementById('cam-set-dw').value = det.width || 640;
         document.getElementById('cam-set-dh').value = det.height || 480;
@@ -507,6 +550,7 @@
         url: document.getElementById('cam-set-url').value,
         record_url: document.getElementById('cam-set-recurl').value,
         enabled: document.getElementById('cam-set-enabled').checked,
+        cry: { enabled: document.getElementById('cam-set-cry-enabled').checked, alerts: document.getElementById('cam-set-cry-alerts').checked, threshold: Number(document.getElementById('cam-set-cry-threshold').value), cooldown_seconds: Number(document.getElementById('cam-set-cry-cooldown').value) },
         detect: {
           width: intOr('cam-set-dw', 640),
           height: intOr('cam-set-dh', 480),
@@ -523,6 +567,7 @@
 
     function saveCamSettings() {
       if (camSettingsIndex < 0) return;
+      if (!document.getElementById('cam-set-cry-threshold').reportValidity() || !document.getElementById('cam-set-cry-cooldown').reportValidity()) return;
       var status = document.getElementById('cam-settings-status');
       status.textContent = 'Saving…';
       status.style.color = 'var(--muted)';
@@ -689,6 +734,11 @@
       }
 
       function initCameraPage(camName, cameraStatus) {
+		needsLiveAudio = !!(cameraStatus && cameraStatus.cry);
+        document.getElementById('cry-events').href = '/events.html?kind=cry&camera=' + encodeURIComponent(camName);
+        document.getElementById('live-viewport').classList.toggle('baby-monitor-view', needsLiveAudio);
+        document.getElementById('camera-tools-toggle').classList.toggle('hidden', !(cameraStatus && cameraStatus.ptz));
+		mountCryMonitor(camName, cameraStatus ? (cameraStatus.cry || null) : undefined, cameraStatus && cameraStatus.cry_delivery);
         const playbackDate = resolvePlaybackTime(
           new URLSearchParams(location.search).get('t'));
         const initialState = initialLiveState(cameraStatus);

@@ -15,6 +15,12 @@ import (
 
 const maxPayload = 8192
 
+// Some G.711 cameras stamp packets from a wall clock rather than an exact
+// sample counter. Sequence continuity owns the PCM; tolerate bounded stamp
+// jitter without inventing samples. Large jumps or arrival gaps still reset.
+const maxTimestampJitterSamples = 800 // 100 ms at 8 kHz
+const maxPacketArrivalJitter = 250 * time.Millisecond
+
 // Window contains owned mono PCM, before model-specific resampling. RTPStart
 // wraps at 2^32; Epoch changes across discontinuities. No missing audio is padded.
 type Window struct {
@@ -22,6 +28,7 @@ type Window struct {
 	SampleRate int
 	RTPStart   uint32
 	Epoch      uint64
+	Generation uint64    // invalidated synchronously on disconnect or packet loss
 	ReceivedAt time.Time // arrival of the packet completing this window
 }
 
@@ -51,19 +58,20 @@ type packet struct {
 // Consumer is opt-in: constructing it does not open an RTSP connection or
 // attach it to a source. The owner must detach it before closing it.
 type Consumer struct {
-	track           rtsp.TrackInfo
-	size, hop       int
-	packets         chan packet
-	windows         chan Window
-	stop            chan struct{}
-	done            chan struct{}
-	once            sync.Once
-	closed          atomic.Bool
-	epoch           atomic.Uint64
-	droppedPackets  atomic.Uint64
-	droppedWindows  atomic.Uint64
-	discontinuities atomic.Uint64
-	rejected        atomic.Uint64
+	track              rtsp.TrackInfo
+	size, hop          int
+	packets            chan packet
+	windows            chan Window
+	stop               chan struct{}
+	done               chan struct{}
+	once               sync.Once
+	closed             atomic.Bool
+	epoch              atomic.Uint64
+	decisionGeneration atomic.Uint64
+	droppedPackets     atomic.Uint64
+	droppedWindows     atomic.Uint64
+	discontinuities    atomic.Uint64
+	rejected           atomic.Uint64
 }
 
 func NewConsumer(track rtsp.TrackInfo, opts Options) (*Consumer, error) {
@@ -95,11 +103,13 @@ func NewConsumer(track rtsp.TrackInfo, opts Options) (*Consumer, error) {
 		stop:    make(chan struct{}), done: make(chan struct{}),
 	}
 	c.epoch.Store(1)
+	c.decisionGeneration.Store(1)
 	go c.run()
 	return c, nil
 }
 
 func (c *Consumer) Windows() <-chan Window { return c.windows }
+func (c *Consumer) Generation() uint64     { return c.decisionGeneration.Load() }
 func (c *Consumer) Stats() Stats {
 	return Stats{
 		DroppedPackets: c.droppedPackets.Load(), DroppedWindows: c.droppedWindows.Load(),
@@ -107,7 +117,7 @@ func (c *Consumer) Stats() Stats {
 	}
 }
 func (c *Consumer) OnVideoRTP(*rtp.Packet) {}
-func (c *Consumer) OnDisconnect()          { c.epoch.Add(1) }
+func (c *Consumer) OnDisconnect()          { c.epoch.Add(1); c.decisionGeneration.Add(1) }
 
 func (c *Consumer) OnAudioRTP(p *rtp.Packet) {
 	if c.closed.Load() {
@@ -116,6 +126,7 @@ func (c *Consumer) OnAudioRTP(p *rtp.Packet) {
 	if p == nil || p.PayloadType != c.track.PayloadType || len(p.Payload) == 0 || len(p.Payload) > maxPayload {
 		c.rejected.Add(1)
 		c.epoch.Add(1)
+		c.decisionGeneration.Add(1)
 		return
 	}
 	msg := packet{seq: p.SequenceNumber, ts: p.Timestamp, ssrc: p.SSRC, epoch: c.epoch.Load(), payload: append([]byte(nil), p.Payload...), received: time.Now()}
@@ -124,6 +135,7 @@ func (c *Consumer) OnAudioRTP(p *rtp.Packet) {
 	default:
 		c.droppedPackets.Add(1)
 		c.epoch.Add(1)
+		c.decisionGeneration.Add(1)
 	}
 }
 
@@ -143,6 +155,7 @@ func (c *Consumer) run() {
 	var start uint32
 	havePrev := false
 	reset := func() {
+		c.decisionGeneration.Add(1)
 		pcm = pcm[:0]
 		havePrev = false
 		epoch++
@@ -183,7 +196,13 @@ func (c *Consumer) run() {
 					continue
 				}
 			}
-			if havePrev && (p.ssrc != prev.ssrc || p.seq != prev.seq+1 || p.ts != prev.ts+uint32(len(prev.payload))) {
+			stampError := int32(p.ts - (prev.ts + uint32(len(prev.payload))))
+			// Packet aggregation can change between deliveries. Allow enough
+			// time for either packet's actual audio plus bounded network jitter.
+			arrivalBudget := time.Duration(max(len(prev.payload), len(p.payload)))*time.Second/8000 + maxPacketArrivalJitter
+			if havePrev && (p.ssrc != prev.ssrc || p.seq != prev.seq+1 ||
+				stampError < -maxTimestampJitterSamples || stampError > maxTimestampJitterSamples ||
+				p.received.Sub(prev.received) > arrivalBudget) {
 				reset()
 			}
 			if !havePrev {
@@ -191,11 +210,12 @@ func (c *Consumer) run() {
 			}
 			pcm = append(pcm, DecodeG711(p.payload, c.track.Codec == "PCMA")...)
 			prev, havePrev = p, true
+			generation := c.decisionGeneration.Load()
 			for len(pcm) >= c.size {
 				if queueEpoch != c.epoch.Load() {
 					break
 				}
-				w := Window{PCM: append([]int16(nil), pcm[:c.size]...), SampleRate: 8000, RTPStart: start, Epoch: epoch, ReceivedAt: p.received}
+				w := Window{PCM: append([]int16(nil), pcm[:c.size]...), SampleRate: 8000, RTPStart: start, Epoch: epoch, Generation: generation, ReceivedAt: p.received}
 				select {
 				case c.windows <- w:
 				default:

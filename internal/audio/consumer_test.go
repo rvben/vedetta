@@ -75,7 +75,7 @@ func TestDiscontinuitiesNeverSpliceWindows(t *testing.T) {
 			case "sequence":
 				seq = 3
 			case "timestamp":
-				ts = 160
+				ts = 80 + maxTimestampJitterSamples + 1
 			case "ssrc":
 				ssrc = 2
 			case "disconnect":
@@ -98,6 +98,27 @@ func TestDiscontinuitiesNeverSpliceWindows(t *testing.T) {
 	}
 }
 
+func TestG711WallClockTimestampJitterPreservesContinuousSamples(t *testing.T) {
+	c := testConsumer(t, "PCMA", 2*time.Second)
+	// Observed from kids_bedroom_2: each consecutive packet contains 256
+	// samples, but its timestamp reflects capture/scheduling jitter.
+	deltas := []uint32{272, 236, 349, 147, 283, 237, 288}
+	var ts uint32
+	for i := range 63 {
+		send(c, uint16(i), ts, 1, 256, 0xd5)
+		ts += deltas[i%len(deltas)]
+	}
+	w := receive(t, c)
+	if len(w.PCM) != 16000 || c.Stats().Discontinuities != 0 {
+		t.Fatal("valid jitter prevented a continuous two-second window")
+	}
+	for _, sample := range w.PCM {
+		if sample != 8 {
+			t.Fatal("jitter tolerance invented or changed audio samples")
+		}
+	}
+}
+
 func TestRTPWrapAndDuplicates(t *testing.T) {
 	c := testConsumer(t, "PCMA", 20*time.Millisecond)
 	send(c, 65535, ^uint32(0)-79, 1, 80, 0xd5)
@@ -111,6 +132,32 @@ func TestRTPWrapAndDuplicates(t *testing.T) {
 	for _, v := range w.PCM {
 		if v != 8 {
 			t.Fatal("duplicate or late packet accepted")
+		}
+	}
+}
+
+func TestArrivalGapNeverSplicesContinuousCounters(t *testing.T) {
+	c := testConsumer(t, "PCMA", 20*time.Millisecond)
+	base := time.Now()
+	for i, value := range []byte{0xd5, 0x2a, 0x2a} {
+		payload := make([]byte, 80)
+		for j := range payload {
+			payload[j] = value
+		}
+		arrival := base
+		if i > 0 {
+			arrival = base.Add(time.Second + time.Duration(i)*10*time.Millisecond)
+		}
+		c.packets <- packet{seq: uint16(i), ts: uint32(i * 80), ssrc: 1,
+			epoch: c.epoch.Load(), payload: payload, received: arrival}
+	}
+	w := receive(t, c)
+	if w.RTPStart != 80 || c.Stats().Discontinuities != 1 {
+		t.Fatal("arrival gap was not recognized")
+	}
+	for _, sample := range w.PCM {
+		if sample != -32256 {
+			t.Fatal("arrival gap spliced stale samples")
 		}
 	}
 }

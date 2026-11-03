@@ -53,10 +53,10 @@ func fastSigmoid(x float32) float32 {
 		return x
 	}
 	if x <= sigmoidLUTMin {
-		return sigmoidLUT[0]
+		return float32(1 / (1 + math.Exp(-float64(x))))
 	}
 	if x >= sigmoidLUTMax {
-		return sigmoidLUT[sigmoidLUTSize]
+		return float32(1 / (1 + math.Exp(-float64(x))))
 	}
 	pos := (x - sigmoidLUTMin) * sigmoidLUTScale
 	idx := int(pos)

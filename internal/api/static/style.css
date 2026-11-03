@@ -5779,6 +5779,23 @@ kbd {
   color: var(--text-primary);
   font-size: var(--text-sm);
   cursor: pointer;
+  /* WebKit's native select ignores padding-left, which puts the clock icon
+     on top of the label. The chevron below replaces the native one. */
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.events-range-control::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 0.8rem;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-right: 1.5px solid var(--text-tertiary);
+  border-bottom: 1.5px solid var(--text-tertiary);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
 }
 
 .events-range-control select:focus-visible {

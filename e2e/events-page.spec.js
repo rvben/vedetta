@@ -99,3 +99,105 @@ test('new activity waits for the user instead of replacing the review', async ({
   await expect(page.getByRole('button', { name: 'New camera activity' })).toBeVisible();
   await expect(page.locator('.event-card')).toHaveCount(3);
 });
+
+test.describe('absolute times', () => {
+  test.use({ locale: 'en-GB', timezoneId: 'Europe/Amsterdam' });
+
+  test('cards show the local clock time under their day heading', async ({ page }) => {
+    await page.goto('/events.html');
+
+    const cards = page.locator('.event-card');
+    await expect(cards).toHaveCount(3);
+    await expect(cards.nth(0).locator('.event-time')).toHaveText('09:00');
+    await expect(cards.nth(1).locator('.event-time')).toHaveText('08:59');
+    await expect(cards.nth(2).locator('.event-time')).toHaveText('20:00');
+    await expect(page.locator('#events-gallery').getByText('ago', { exact: false })).toHaveCount(0);
+
+    const title = await cards.nth(2).locator('.event-time').getAttribute('title');
+    expect(title).toMatch(/20:00:00/);
+    expect(title).toMatch(/\d{4}/);
+  });
+
+
+  function galleryRequests(page) {
+    const requests = [];
+    page.on('request', request => {
+      if (request.url().includes('/partials/activities-gallery')) requests.push(new URL(request.url()));
+    });
+    return requests;
+  }
+
+  test('jumping to a time lists activity up to that minute and survives reload', async ({ page }) => {
+    const requests = galleryRequests(page);
+    await page.goto('/events.html?range=7d');
+    await expect(page.locator('#event-range')).toHaveValue('7d');
+    await expect(page.locator('#events-jump-control')).toBeHidden();
+
+    await page.locator('#event-range').selectOption('at');
+    await expect(page.locator('#events-jump-control')).toBeVisible();
+    // The picker opens at now, and the list matches what it shows.
+    await expect(page.locator('#event-jump')).not.toHaveValue('');
+    await expect(page).toHaveURL(/[?&]at=/);
+    await expect(page).not.toHaveURL(/range=/);
+
+    requests.length = 0;
+    await page.locator('#event-jump').fill('2026-01-15T14:30');
+
+    // 14:30 CET is 13:30 UTC; the bound is exclusive, so it ends one minute later
+    // and keeps activity that started during the chosen minute.
+    await expect(page).toHaveURL(/[?&]at=2026-01-15T13%3A30%3A00.000Z/);
+    await expect.poll(() => requests.length).toBeGreaterThan(0);
+    const request = requests[requests.length - 1];
+    expect(request.searchParams.get('before')).toBe('2026-01-15T13:31:00.000Z');
+    expect(request.searchParams.get('after')).toBeNull();
+    expect(request.searchParams.get('range')).toBeNull();
+
+    await expect.poll(async () => {
+      const href = await page.locator('.event-card').first().getAttribute('href');
+      return new URL(href, 'http://x').searchParams.get('before');
+    }).toBe('2026-01-15T13:31:00.000Z');
+
+    requests.length = 0;
+    await page.reload();
+    await expect(page.locator('#event-range')).toHaveValue('at');
+    await expect(page.locator('#event-jump')).toHaveValue('2026-01-15T14:30');
+    await expect.poll(() => requests.length).toBeGreaterThan(0);
+    expect(requests[0].searchParams.get('before')).toBe('2026-01-15T13:31:00.000Z');
+  });
+
+  test('choosing a range preset replaces a jump', async ({ page }) => {
+    await page.goto('/events.html?at=2026-01-15T13%3A30%3A00.000Z');
+    await expect(page.locator('#event-jump')).toHaveValue('2026-01-15T14:30');
+
+    await page.locator('#event-range').selectOption('24h');
+    await expect(page.locator('#events-jump-control')).toBeHidden();
+    await expect(page.locator('#event-jump')).toHaveValue('');
+    await expect(page).toHaveURL(/range=24h/);
+    await expect(page).not.toHaveURL(/[?&]at=/);
+  });
+
+  test('clearing the picker returns to the latest activity', async ({ page }) => {
+    await page.goto('/events.html?at=2026-01-15T13%3A30%3A00.000Z');
+    await page.locator('#event-jump').fill('');
+    await expect(page.locator('#event-range')).toHaveValue('');
+    await expect(page.locator('#events-jump-control')).toBeHidden();
+    await expect(page).not.toHaveURL(/[?&]at=/);
+  });
+
+  test('reset clears a jump', async ({ page }) => {
+    await page.goto('/events.html?at=2026-01-15T13%3A30%3A00.000Z');
+    await page.getByRole('button', { name: 'Reset' }).click();
+    await expect(page.locator('#event-range')).toHaveValue('');
+    await expect(page.locator('#events-jump-control')).toBeHidden();
+    await expect(page).not.toHaveURL(/[?&]at=/);
+  });
+
+  test('an unparseable jump in the URL falls back to the latest activity', async ({ page }) => {
+    const requests = galleryRequests(page);
+    await page.goto('/events.html?at=yesterday');
+    await expect(page.locator('#event-range')).toHaveValue('');
+    await expect(page.locator('#events-jump-control')).toBeHidden();
+    await expect.poll(() => requests.length).toBeGreaterThan(0);
+    expect(requests[0].searchParams.get('before')).toBeNull();
+  });
+});

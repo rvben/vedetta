@@ -72,12 +72,17 @@
         <label class="events-range-control">
           <span class="sr-only">Time range</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-          <select id="event-range" data-action-change="reloadEvents()" aria-label="Event time range">
+          <select id="event-range" data-action-change="selectEventRange()" aria-label="Event time range">
             <option value="">All activity</option>
             <option value="today">Today</option>
             <option value="24h">Last 24 hours</option>
             <option value="7d">Last 7 days</option>
+            <option value="at">Jump to a time…</option>
           </select>
+        </label>
+        <label class="events-jump-control" id="events-jump-control" hidden>
+          <span class="events-jump-prefix" aria-hidden="true">Up to</span>
+          <input type="datetime-local" id="event-jump" step="60" data-action-change="jumpToEventTime()" aria-label="Show activity up to this date and time">
         </label>
         <button type="button" class="btn btn-sm events-filter-toggle" id="events-filter-toggle" data-action-click="toggleEventsFilters()" aria-controls="events-filter-panel" aria-expanded="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
@@ -193,15 +198,64 @@
       var search = document.getElementById('event-search');
       var range = document.getElementById('event-range');
       if (search) search.value = params.get('q') || '';
-      if (range) range.value = params.get('range') || '';
+      var jump = document.getElementById('event-jump');
+      var jumpValue = eventJumpLocalValue(params.get('at'));
+      if (jump) jump.value = jumpValue;
+      if (range) range.value = jumpValue ? 'at' : (params.get('range') || '');
+      if (range && range.selectedIndex < 0) range.value = '';
+      updateEventJumpUI();
+    }
+
+    function nowEventJumpValue() {
+      return eventJumpLocalValue(new Date().toISOString());
+    }
+
+    // Choosing "Jump to a time" starts the picker at now, so the list it
+    // shows matches the value on screen, then opens the picker to move back.
+    function selectEventRange() {
+      var range = document.getElementById('event-range');
+      var jump = document.getElementById('event-jump');
+      var jumping = range.value === 'at';
+      jump.value = jumping ? nowEventJumpValue() : '';
+      updateEventJumpUI();
+      reloadEvents();
+      if (!jumping) return;
+      jump.focus({ preventScroll: true });
+      if (typeof jump.showPicker === 'function') {
+        try { jump.showPicker(); } catch (_) { /* needs a user gesture in some browsers; focus is the fallback */ }
+      }
+    }
+
+    function jumpToEventTime() {
+      var jump = document.getElementById('event-jump');
+      // Clearing the field in the native picker means "no end point": go back
+      // to the latest activity rather than leave an empty, inert control.
+      if (!eventJumpInstant(jump.value)) {
+        document.getElementById('event-range').value = '';
+        jump.value = '';
+        updateEventJumpUI();
+      }
+      reloadEvents();
+    }
+
+    function updateEventJumpUI() {
+      var jump = document.getElementById('event-jump');
+      var range = document.getElementById('event-range');
+      if (!jump || !range) return;
+      // Nothing is recorded after now, so the picker does not offer the future.
+      jump.max = nowEventJumpValue();
+      document.getElementById('events-jump-control').hidden = range.value !== 'at';
     }
 
     function initialEventRequestURL() {
       var source = new URLSearchParams(location.search);
       var params = new URLSearchParams();
-      ['label', 'camera', 'object', 'category', 'state', 'q', 'range'].forEach(function(key) {
+      ['label', 'camera', 'object', 'category', 'state', 'q', 'range', 'at'].forEach(function(key) {
         if (source.get(key)) params.set(key, source.get(key));
       });
+      // Mirrors applyEventFiltersFromURL: a valid jump takes the place of a range.
+      if (eventJumpLocalValue(params.get('at'))) params.delete('range');
+      else params.delete('at');
       return eventGalleryRequestURL(params);
     }
 
@@ -312,6 +366,9 @@
       if (search) search.value = '';
       var range = document.getElementById('event-range');
       if (range) range.value = '';
+      var jump = document.getElementById('event-jump');
+      if (jump) jump.value = '';
+      updateEventJumpUI();
       if (typeof reloadEvents === 'function') reloadEvents();
     }
 
@@ -353,10 +410,31 @@
       });
     }
 
+    var eventClockFormat = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
+    var eventFullTimeFormat = new Intl.DateTimeFormat(undefined, {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', second: '2-digit'
+    });
+
+    // Cards sit under a day heading, so the wall-clock time is the useful
+    // label: "3h ago" cannot be matched against a time someone remembers.
+    // The server renders the relative form as the no-script fallback.
+    function showEventClockTimes() {
+      document.querySelectorAll('#events-gallery .event-card').forEach(function(card) {
+        var date = new Date(card.dataset.eventTime || '');
+        var label = card.querySelector('.event-time');
+        if (!label || isNaN(date)) return;
+        label.textContent = eventClockFormat.format(date);
+        label.title = eventFullTimeFormat.format(date);
+      });
+    }
+
     function decorateEventLinks() {
       var params = collectEventFilterParams();
       var after = eventRangeAfter(params.get('range'));
       if (after) params.set('after', after);
+      var before = eventJumpBefore(params.get('at'));
+      if (before) params.set('before', before);
       document.querySelectorAll('#events-gallery .event-card').forEach(function(card) {
         var url = new URL(card.getAttribute('href'), location.origin);
         params.forEach(function(value, key) { url.searchParams.set(key, value); });
@@ -366,6 +444,7 @@
 
     function enhanceEventGallery() {
       groupEventCardsByDay();
+      showEventClockTimes();
       decorateEventLinks();
     }
 

@@ -57,7 +57,7 @@ var activitiesGalleryTmpl = template.Must(template.New("activities").Funcs(parti
 		`{{if .MissedDoorbell}}<span class="event-missed-badge">missed ring</span>{{else if .HasDoorbell}}<span class="event-answered-badge">doorbell</span>{{end}}` +
 		`</div>` +
 		`<div class="event-card-footer">` +
-		`<div class="event-card-heading"><span class="event-card-title">{{activityTitle .}}</span><span class="event-time">{{timeAgo .StartTime}}</span></div>` +
+		`<div class="event-card-heading"><span class="event-card-title">{{activityTitle .}}</span><time class="event-time" datetime="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}">{{timeAgo .StartTime}}</time></div>` +
 		`<div class="event-card-context"><span class="event-camera-name">{{displayName .CameraName}}</span><span>{{activityDuration .}}</span>` +
 		`{{with activityFacets .Zones}}<span>{{.}}</span>{{end}}` +
 		`{{if eq .Category "detection"}}<span class="event-tier">Low priority</span>{{end}}</div>` +
@@ -99,7 +99,7 @@ var eventsGalleryTmpl = template.Must(template.New("gallery").Funcs(partialFuncs
 		`{{if eq .Kind "doorbell"}}{{if .AnsweredAt.IsZero}}<span class="event-missed-badge">missed</span>{{else}}<span class="event-answered-badge" title="answered by {{.AnsweredBy}}">answered</span>{{end}}{{end}}` +
 		`</div>` +
 		`<div class="event-card-footer">` +
-		`<div class="event-card-heading"><span class="event-card-title">{{if .SubLabel}}{{.SubLabel}}{{else}}{{displayName .Label}}{{end}}</span><span class="event-time">{{timeAgo .Timestamp}}</span></div>` +
+		`<div class="event-card-heading"><span class="event-card-title">{{if .SubLabel}}{{.SubLabel}}{{else}}{{displayName .Label}}{{end}}</span><time class="event-time" datetime="{{.Timestamp.UTC.Format "2006-01-02T15:04:05Z"}}">{{timeAgo .Timestamp}}</time></div>` +
 		`<div class="event-card-context">` +
 		`<span class="event-camera-name">{{displayName .CameraName}}</span>` +
 		`{{if .SubLabel}}<span>{{displayName .Label}}</span>{{end}}` +

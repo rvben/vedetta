@@ -436,6 +436,8 @@ var allowedDataActionFunctions = new Set([
   'toggleEventsFilters',
   'showNewestEvents',
   'clearAllEventFilters',
+  'selectEventRange',
+  'jumpToEventTime',
   'togglePeopleHelp',
   'filterPeople',
   'togglePause',
@@ -6089,8 +6091,16 @@ function collectEventFilterParams() {
   var searchInput = el('event-search');
   if (searchInput && searchInput.value.trim()) params.set('q', searchInput.value.trim());
 
+  // The "at" choice in the range menu is a fixed end point picked in
+  // #event-jump rather than a window anchored to now.
   var range = el('event-range');
-  if (range && range.value) params.set('range', range.value);
+  var jump = el('event-jump');
+  if (range && range.value === 'at') {
+    var at = jump ? eventJumpInstant(jump.value) : '';
+    if (at) params.set('at', at);
+  } else if (range && range.value) {
+    params.set('range', range.value);
+  }
 
   var gallery = el('events-gallery');
   var pinnedKind = gallery && gallery.dataset ? gallery.dataset.kind : '';
@@ -6109,11 +6119,41 @@ function eventRangeAfter(range) {
   return '';
 }
 
+// eventJumpInstant turns a datetime-local value ("2026-11-03T14:30"), which
+// the browser reads as local wall-clock time, into the UTC instant it names.
+// The page URL carries the instant so a shared link means the same moment in
+// every timezone.
+function eventJumpInstant(localValue) {
+  if (!localValue || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(localValue)) return '';
+  var date = new Date(localValue);
+  return isNaN(date) ? '' : date.toISOString();
+}
+
+// eventJumpLocalValue is the inverse of eventJumpInstant, for filling the
+// datetime-local input from a URL.
+function eventJumpLocalValue(instant) {
+  var date = new Date(instant || '');
+  if (!instant || isNaN(date)) return '';
+  function pad(n) { return String(n).padStart(2, '0'); }
+  return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate())
+    + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+
+// eventJumpBefore is the exclusive upper bound for a jump to the minute at
+// `at`, so activity that started during the chosen minute is included.
+function eventJumpBefore(at) {
+  var date = new Date(at || '');
+  if (!at || isNaN(date)) return '';
+  return new Date(date.getTime() + 60 * 1000).toISOString();
+}
+
 function eventGalleryRequestURL(params) {
   var request = new URLSearchParams(params || collectEventFilterParams());
   request.set('limit', '50');
   var after = eventRangeAfter(request.get('range'));
   if (after) request.set('after', after);
+  var before = eventJumpBefore(request.get('at'));
+  if (before) request.set('before', before);
   var gallery = el('events-gallery');
   var partial = gallery && gallery.dataset.partial ? gallery.dataset.partial : '/partials/events-gallery';
   return partial + '?' + request.toString();

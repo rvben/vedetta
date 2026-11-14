@@ -202,6 +202,8 @@ notifications:
   # Relative file paths are resolved beside this config file. Restart to apply.
   pushover:
     enabled: false
+    # Optional API endpoint for an authenticated audit relay.
+    # api_url: https://pushover-relay.example/sources/vedetta/1/messages.json
     app_token_file: ./secrets/pushover-app-token
     user_key_file: ./secrets/pushover-user-key
     # Empty cameras means all cameras. Omitted events means doorbell + activity.

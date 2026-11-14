@@ -289,3 +289,19 @@ func TestPushoverInvalidCredentialsAreRedacted(t *testing.T) {
 		t.Fatalf("credential error must be redacted: %v", err)
 	}
 }
+
+func TestPushoverConfiguredAPIEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "token")
+	userFile := filepath.Join(dir, "user")
+	os.WriteFile(tokenFile, []byte(strings.Repeat("a", 30)), 0600)
+	os.WriteFile(userFile, []byte(strings.Repeat("b", 30)), 0600)
+	endpoint := "https://pushover-relay.example/sources/vedetta/1/messages.json"
+	p, err := NewPushover(config.PushoverConfig{AppTokenFile: tokenFile, UserKeyFile: userFile, APIURL: endpoint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.endpoint != endpoint {
+		t.Fatal("API endpoint ignored")
+	}
+}

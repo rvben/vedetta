@@ -60,8 +60,12 @@ func NewPushover(cfg config.PushoverConfig) (*Pushover, error) {
 	if len(cfg.Events) == 0 {
 		cfg.Events = []string{"doorbell", "activity", "cry"}
 	}
+	endpoint := pushoverEndpoint
+	if cfg.APIURL != "" {
+		endpoint = cfg.APIURL
+	}
 	return &Pushover{
-		cfg: cfg, token: token, user: user, endpoint: pushoverEndpoint,
+		cfg: cfg, token: token, user: user, endpoint: endpoint,
 		jobs: make(chan pushoverJob, 32), logger: slog.Default(),
 		client: &http.Client{
 			Timeout: 10 * time.Second,

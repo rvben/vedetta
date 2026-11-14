@@ -18,6 +18,7 @@ type PushoverConfig struct {
 	Events       []string `yaml:"events"`
 	Priority     int      `yaml:"priority"`
 	Sound        string   `yaml:"sound"`
+	APIURL       string   `yaml:"api_url"`
 	BaseURL      string   `yaml:"base_url"`
 }
 
@@ -48,6 +49,12 @@ func validatePushover(cfg *Config, dir string) error {
 	for _, name := range p.Cameras {
 		if !slices.ContainsFunc(cfg.Cameras, func(c CameraConfig) bool { return c.Name == name }) {
 			return fmt.Errorf("notifications.pushover.cameras: unknown camera %q", name)
+		}
+	}
+	if p.APIURL != "" {
+		u, err := url.Parse(p.APIURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("notifications.pushover.api_url must be an HTTPS URL without credentials, query, or fragment")
 		}
 	}
 	if p.BaseURL != "" {

@@ -23,6 +23,10 @@ notifications:
 		name, replace, with, wantError string
 	}{
 		{name: "valid"},
+		{"proxy_api", "events: [doorbell]", "events: [doorbell]\n    api_url: https://proxy.example/sources/vedetta/1/messages.json", ""},
+		{"insecure_api", "events: [doorbell]", "api_url: http://proxy.example/1/messages.json", "api_url"},
+		{"credential_api", "events: [doorbell]", "api_url: https://user:secret@proxy.example/1/messages.json", "api_url"},
+		{"query_api", "events: [doorbell]", "api_url: https://proxy.example/1/messages.json?token=secret", "api_url"},
 		{"disabled", "enabled: true", "enabled: false", ""},
 		{"missing_token", "app_token_file: secrets/app", "app_token_file: ''", "app_token_file"},
 		{"unknown_camera", "cameras: [front_door]", "cameras: [typo]", "unknown camera"},

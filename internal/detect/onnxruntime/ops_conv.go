@@ -3,6 +3,7 @@ package onnxruntime
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sync"
 )
 
@@ -11,30 +12,49 @@ func init() {
 	Register("ConvSiLU", opConvSiLU)
 }
 
-// colFreeList reuses im2col buffers across GC cycles.
-var colFreeList struct {
-	mu   sync.Mutex
-	bufs [][]float32
+// colBufferCache retains one reusable im2col buffer per peak concurrent
+// borrower. Successive layers can reuse a buffer sized for a larger request.
+type colBufferCache struct {
+	mu    sync.Mutex
+	bufs  [][]float32
+	inUse int
+	slots int
 }
 
-func getColBuffer(size int) []float32 {
-	colFreeList.mu.Lock()
-	for i := len(colFreeList.bufs) - 1; i >= 0; i-- {
-		buf := colFreeList.bufs[i]
+var colBuffers colBufferCache
+
+func (cache *colBufferCache) get(size int) []float32 {
+	cache.mu.Lock()
+	cache.inUse++
+	cache.slots = max(cache.slots, cache.inUse)
+	for i, buf := range cache.bufs {
 		if cap(buf) >= size {
-			colFreeList.bufs = append(colFreeList.bufs[:i], colFreeList.bufs[i+1:]...)
-			colFreeList.mu.Unlock()
+			cache.bufs = slices.Delete(cache.bufs, i, i+1)
+			cache.mu.Unlock()
 			return buf[:size]
 		}
 	}
-	colFreeList.mu.Unlock()
+	cache.mu.Unlock()
 	return make([]float32, size)
 }
 
-func putColBuffer(buf []float32) {
-	colFreeList.mu.Lock()
-	colFreeList.bufs = append(colFreeList.bufs, buf)
-	colFreeList.mu.Unlock()
+func (cache *colBufferCache) put(buf []float32) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.inUse--
+	if len(cache.bufs) < cache.slots {
+		cache.bufs = append(cache.bufs, buf)
+		return
+	}
+	smallest := 0
+	for i := 1; i < len(cache.bufs); i++ {
+		if cap(cache.bufs[i]) < cap(cache.bufs[smallest]) {
+			smallest = i
+		}
+	}
+	if cap(buf) > cap(cache.bufs[smallest]) {
+		cache.bufs[smallest] = buf
+	}
 }
 
 func opConv(inputs []*Tensor, attrs *Attributes) ([]*Tensor, error) {
@@ -157,8 +177,8 @@ func opConv(inputs []*Tensor, attrs *Attributes) ([]*Tensor, error) {
 			}
 		}
 	} else {
-		col := getColBuffer(colSize * outSpatial)
-		defer putColBuffer(col)
+		col := colBuffers.get(colSize * outSpatial)
+		defer colBuffers.put(col)
 
 		for n := range N {
 			for g := range group {
@@ -331,8 +351,8 @@ func opConvSiLU(inputs []*Tensor, attrs *Attributes) ([]*Tensor, error) {
 			}
 		}
 	} else {
-		col := getColBuffer(colSize * outSpatial)
-		defer putColBuffer(col)
+		col := colBuffers.get(colSize * outSpatial)
+		defer colBuffers.put(col)
 
 		for n := range N {
 			for g := range group {

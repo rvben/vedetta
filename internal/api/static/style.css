@@ -540,11 +540,15 @@ input, select { font-family: inherit; }
   min-width: 0;
 }
 
+/* Every clause carries a separator in the gap to its left, and the sentence
+   is shifted and clipped by that gap. A clause that starts a line, the first
+   one or one that wrapped, so begins at the edge with its separator cut off. */
 .dash-summary {
   display: flex;
   flex-wrap: wrap;
   min-height: 1.25rem;
-  margin: 0;
+  margin: 0 0 0 -1.25rem;
+  clip-path: inset(-0.5rem -0.5rem -0.5rem 1rem);
   color: var(--text-secondary);
   font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
@@ -552,6 +556,7 @@ input, select { font-family: inherit; }
 
 .dash-summary-loading {
   display: block;
+  margin-left: 1.25rem;
   width: 16rem;
   max-width: 100%;
   height: 1rem;
@@ -559,14 +564,21 @@ input, select { font-family: inherit; }
 }
 
 .dash-stat {
+  position: relative;
   color: inherit;
   text-decoration: none;
   white-space: nowrap;
 }
 
-.dash-stat:not(:last-child)::after {
+/* The separator sits in the gap between clauses, outside both, so a focus
+   ring encloses the words of one link and nothing else. */
+.dash-stat { margin-left: 1.25rem; }
+
+.dash-stat::before {
   content: "\00b7";
-  margin: 0 0.5rem;
+  position: absolute;
+  left: -0.625rem;
+  transform: translateX(-50%);
   color: var(--text-tertiary);
 }
 

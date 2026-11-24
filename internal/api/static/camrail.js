@@ -60,8 +60,16 @@ function railEventDuration(ev) {
   return rest ? mins + ' min ' + rest + ' s' : mins + ' min';
 }
 
+// railEventSignature changes exactly when a rail row would read differently,
+// so a row whose event is unchanged stays mounted across refreshes.
+function railEventSignature(ev) {
+  if (!ev) return '';
+  return JSON.stringify([ev.id, ev.timestamp, ev.end_time, ev.kind, ev.label, ev.score, !!ev.snapshot_available]);
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    railEventSignature: railEventSignature,
     stageRatio: stageRatio,
     startOfLocalDay: startOfLocalDay,
     railEventTitle: railEventTitle,

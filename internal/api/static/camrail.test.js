@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   stageRatio, startOfLocalDay, railEventTitle, railEventConfidence,
-  railEventDuration,
+  railEventDuration, railEventSignature,
 } = require('./camrail.js');
 
 test('the stage takes the shape of the decoded frame', () => {
@@ -70,4 +70,13 @@ test('an event without a usable end has no duration', () => {
   assert.equal(railEventDuration({ timestamp: '2026-11-24T10:00:00Z', end_time: '2026-11-24T10:00:00Z' }), '');
   assert.equal(railEventDuration({ timestamp: '2026-11-24T10:00:00Z', end_time: '2026-11-24T09:59:00Z' }), '');
   assert.equal(railEventDuration({ timestamp: '2026-11-24T10:00:00Z', end_time: 'garbage' }), '');
+});
+
+test('a rail row keeps its signature until the event reads differently', () => {
+  const ev = { id: 'e1', timestamp: '2026-03-04T10:00:00Z', end_time: null, kind: 'detection', label: 'person', score: 0.9, snapshot_available: true };
+  assert.equal(railEventSignature(ev), railEventSignature(Object.assign({}, ev)));
+  assert.notEqual(railEventSignature(ev), railEventSignature(Object.assign({}, ev, { end_time: '2026-03-04T10:00:12Z' })));
+  assert.notEqual(railEventSignature(ev), railEventSignature(Object.assign({}, ev, { label: 'car' })));
+  assert.notEqual(railEventSignature(ev), railEventSignature(Object.assign({}, ev, { snapshot_available: false })));
+  assert.notEqual(railEventSignature(ev), railEventSignature(Object.assign({}, ev, { id: 'e2' })));
 });

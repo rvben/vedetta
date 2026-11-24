@@ -5106,6 +5106,15 @@ function stopStatsRefresh() {
   }
 }
 
+// dashStatKey identifies a clause of the dashboard sentence by what it
+// counts, not by the figure: the link target, or the word after the figure.
+function dashStatKey(clause) {
+  var href = clause.getAttribute('href');
+  if (href) return 'link:' + href;
+  var word = clause.lastChild ? String(clause.lastChild.textContent || '').trim() : '';
+  return 'state:' + word;
+}
+
 function refreshStats() {
   var row = el('stats-row');
   if (!row) return;
@@ -5113,10 +5122,26 @@ function refreshStats() {
     .then(function(r) { return r.ok ? r.text() : null; })
     .then(function(html) {
       if (!html) return;
-      // The sentence gains and loses clauses as cameras change state, so it
-      // is replaced whole, and only when it reads differently.
       var next = html.trim();
-      if (row.innerHTML.trim() !== next) row.innerHTML = next;
+      if (row.innerHTML.trim() === next) return;
+      // The sentence gains and loses clauses as cameras change state. A
+      // clause that is still part of it stays mounted and takes the new
+      // figure, so a link the reader has focused is not pulled from under
+      // them when a count changes.
+      var mounted = {};
+      Array.prototype.forEach.call(row.children, function(clause) {
+        mounted[dashStatKey(clause)] = clause;
+      });
+      var incoming = document.createElement('template');
+      incoming.innerHTML = next;
+      var wanted = Array.prototype.map.call(incoming.content.children, function(clause) {
+        var kept = mounted[dashStatKey(clause)];
+        if (!kept) return clause;
+        if (kept.className !== clause.className) kept.className = clause.className;
+        if (kept.innerHTML !== clause.innerHTML) kept.innerHTML = clause.innerHTML;
+        return kept;
+      });
+      syncChildren(row, wanted);
     })
     .catch(function() {});
 }
@@ -5639,14 +5664,63 @@ function railMessage(text) {
 function renderRailUnavailable() {
   var list = el('camera-rail-events');
   if (!list) return;
+  list.setAttribute('aria-busy', 'false');
   setRailSummary('', false);
+  // A repeated failure keeps the message and its button mounted, so a reader
+  // who is on "Reload events" stays there.
+  if (list.dataset.railShows === 'unavailable') return;
+  list.dataset.railShows = 'unavailable';
   var retry = document.createElement('button');
   retry.type = 'button';
   retry.className = 'btn btn-sm';
   retry.setAttribute('data-rail-retry', '');
   retry.textContent = 'Reload events';
   list.replaceChildren(railMessage("Today's events could not be loaded."), retry);
-  list.setAttribute('aria-busy', 'false');
+}
+
+// fillRailRow writes an event into its row. The row itself stays the same
+// element when the event changes (a running event gains its end time), so the
+// reader who is on it keeps their place.
+function fillRailRow(row, ev) {
+  var thumb = row.querySelector('.rail-event-thumb');
+  var shown = thumb.querySelector('img');
+  // A thumbnail that failed to load leaves no image behind, and the next
+  // refresh asks for it again.
+  if (ev.snapshot_available && !shown) {
+    var img = document.createElement('img');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.addEventListener('error', function() { img.remove(); });
+    img.src = '/api/events/' + encodeURIComponent(ev.id) + '/snapshot?width=160';
+    thumb.appendChild(img);
+  } else if (!ev.snapshot_available && shown) {
+    shown.remove();
+  }
+
+  var signature = railEventSignature(ev);
+  if (row.dataset.signature === signature) return;
+  row.dataset.signature = signature;
+  row.dataset.eventTime = ev.timestamp;
+
+  var title = document.createElement('span');
+  title.className = 'rail-event-title';
+  title.textContent = railEventTitle(ev);
+  var parts = [title];
+  var meta = [railEventConfidence(ev), railEventDuration(ev)].filter(Boolean).join(' \u00b7 ');
+  if (meta) {
+    var metaEl = document.createElement('span');
+    metaEl.className = 'rail-event-meta';
+    metaEl.textContent = meta;
+    parts.push(metaEl);
+  }
+  var body = row.querySelector('.rail-event-body');
+  body.replaceChildren.apply(body, parts);
+
+  var time = row.querySelector('.rail-event-time');
+  time.dateTime = ev.timestamp;
+  time.textContent = clockLabel(ev.timestamp);
+  row.setAttribute('aria-label', 'Play ' + title.textContent + ' at ' + time.textContent);
 }
 
 function renderRailEvents(items, total) {
@@ -5655,69 +5729,65 @@ function renderRailEvents(items, total) {
   list.setAttribute('aria-busy', 'false');
   if (!items.length) {
     setRailSummary('', false);
-      list.replaceChildren(railMessage('Nothing detected today.'));
+    if (list.dataset.railShows === 'empty') return;
+    list.dataset.railShows = 'empty';
+    list.replaceChildren(railMessage('Nothing detected today.'));
     return;
   }
   var known = total !== null && total >= items.length ? total : items.length;
   setRailSummary(known === 1 ? '1 event' : known + ' events', true);
 
+  // A row stays mounted for as long as its event is listed: the list refreshes
+  // every minute, and rebuilding it would take keyboard focus from the row in
+  // use and reload every thumbnail.
+  var ul = list.querySelector('ul.camera-rail-rows');
+  var mounted = {};
+  if (ul) {
+    ul.querySelectorAll('.rail-event').forEach(function(old) {
+      mounted[old.dataset.eventId] = old;
+    });
+  }
+
   var rows = items.map(function(ev) {
-    var row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'rail-event';
-    row.dataset.eventId = String(ev.id);
-    row.dataset.eventTime = ev.timestamp;
-    if (railState.selected && railState.selected === String(ev.id)) row.setAttribute('aria-current', 'true');
-
-    var thumb = document.createElement('span');
-    thumb.className = 'rail-event-thumb';
-    if (ev.snapshot_available) {
-      var img = document.createElement('img');
-      img.alt = '';
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      img.addEventListener('error', function() { img.remove(); });
-      img.src = '/api/events/' + encodeURIComponent(ev.id) + '/snapshot?width=160';
-      thumb.appendChild(img);
+    var row = mounted[String(ev.id)];
+    if (!row) {
+      row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'rail-event';
+      row.dataset.eventId = String(ev.id);
+      if (railState.selected && railState.selected === String(ev.id)) row.setAttribute('aria-current', 'true');
+      var thumbSlot = document.createElement('span');
+      thumbSlot.className = 'rail-event-thumb';
+      var bodySlot = document.createElement('span');
+      bodySlot.className = 'rail-event-body';
+      var timeSlot = document.createElement('time');
+      timeSlot.className = 'rail-event-time';
+      row.append(thumbSlot, bodySlot, timeSlot);
+      document.createElement('li').appendChild(row);
     }
-
-    var body = document.createElement('span');
-    body.className = 'rail-event-body';
-    var title = document.createElement('span');
-    title.className = 'rail-event-title';
-    title.textContent = railEventTitle(ev);
-    body.appendChild(title);
-    var meta = [railEventConfidence(ev), railEventDuration(ev)].filter(Boolean).join(' · ');
-    if (meta) {
-      var metaEl = document.createElement('span');
-      metaEl.className = 'rail-event-meta';
-      metaEl.textContent = meta;
-      body.appendChild(metaEl);
-    }
-
-    var time = document.createElement('time');
-    time.className = 'rail-event-time';
-    time.dateTime = ev.timestamp;
-    time.textContent = clockLabel(ev.timestamp);
-
-    row.setAttribute('aria-label', 'Play ' + title.textContent + ' at ' + time.textContent);
-    row.append(thumb, body, time);
-    var item = document.createElement('li');
-    item.appendChild(row);
-    return item;
+    fillRailRow(row, ev);
+    return row.parentNode;
   });
 
-  var ul = document.createElement('ul');
-  ul.className = 'camera-rail-rows';
-  ul.append.apply(ul, rows);
-  list.replaceChildren(ul);
-  if (known > items.length) {
-    var more = document.createElement('a');
-    more.className = 'camera-rail-more';
-    more.href = '/events.html?camera=' + encodeURIComponent(railState.camera);
-    more.textContent = 'Showing the latest ' + items.length + '. View all events';
-    list.appendChild(more);
+  if (!ul) {
+    ul = document.createElement('ul');
+    ul.className = 'camera-rail-rows';
   }
+  syncChildren(ul, rows);
+  var shown = [ul];
+  if (known > items.length) {
+    var more = list.querySelector('a.camera-rail-more');
+    if (!more) {
+      more = document.createElement('a');
+      more.className = 'camera-rail-more';
+      more.href = '/events.html?camera=' + encodeURIComponent(railState.camera);
+    }
+    var moreText = 'Showing the latest ' + items.length + '. View all events';
+    if (more.textContent !== moreText) more.textContent = moreText;
+    shown.push(more);
+  }
+  list.dataset.railShows = 'events';
+  syncChildren(list, shown);
 }
 
 function initDetectionOverlay(cameraName) {

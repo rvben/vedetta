@@ -4959,7 +4959,7 @@ kbd {
   color: var(--text-secondary);
 }
 
-/* MQTT connection status badge (toggled via JS classes) */
+/* State badges: MQTT connection (toggled via JS classes) and camera status */
 .badge-connected,
 .badge-disconnected,
 .badge-connecting {
@@ -4979,6 +4979,7 @@ kbd {
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+.badge-degraded,
   gap: 0.35rem;
   font-size: var(--text-sm);
   font-weight: 500;
@@ -4986,6 +4987,7 @@ kbd {
   list-style: none;
   user-select: none;
 }
+.badge-degraded    { background: var(--amber-dim); color: var(--amber); }
 .settings-disclosure > summary::-webkit-details-marker { display: none; }
 .settings-disclosure > summary::before {
   content: '';

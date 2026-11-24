@@ -535,6 +535,40 @@ func (s *Server) handleSystemStatusPartial(w http.ResponseWriter, _ *http.Reques
 	}
 }
 
+// cameraStatusRow is one line of the Settings camera status card.
+type cameraStatusRow struct {
+	Name  string
+	Label string
+	Class string
+}
+
+// cameraStatusPresentation names a camera's state and picks its badge class.
+// Stopped and sleeping cameras deliver no frames by design, so they are named
+// as such and drawn neutral; only an unreachable camera is Offline.
+func cameraStatusPresentation(st camera.CameraStatus) (label, class string) {
+	switch {
+	case st.Stopped:
+		return "Stopped", "badge-connecting"
+	case st.Sleeping:
+		return "Sleeping", "badge-connecting"
+	case !st.Online:
+		return "Offline", "badge-disconnected"
+	case st.Degraded:
+		return "Degraded", "badge-degraded"
+	default:
+		return "Online", "badge-connected"
+	}
+}
+
+func cameraStatusRows(statuses []camera.CameraStatus) []cameraStatusRow {
+	rows := make([]cameraStatusRow, 0, len(statuses))
+	for _, st := range statuses {
+		label, class := cameraStatusPresentation(st)
+		rows = append(rows, cameraStatusRow{Name: st.Name, Label: label, Class: class})
+	}
+	return rows
+}
+
 func (s *Server) handleSystemPartial(w http.ResponseWriter, _ *http.Request) {
 	statuses := s.cameraStatuses()
 	onlineCount := 0
@@ -602,7 +636,7 @@ func (s *Server) handleSystemPartial(w http.ResponseWriter, _ *http.Request) {
 		GoVersion           string
 		CameraCount         int
 		OnlineCount         int
-		Statuses            []camera.CameraStatus
+		CameraRows          []cameraStatusRow
 		TotalBytes          int64
 		TotalStr            string
 		SegCount            int
@@ -622,7 +656,7 @@ func (s *Server) handleSystemPartial(w http.ResponseWriter, _ *http.Request) {
 		GoVersion:           runtime.Version(),
 		CameraCount:         len(statuses),
 		OnlineCount:         onlineCount,
-		Statuses:            statuses,
+		CameraRows:          cameraStatusRows(statuses),
 		TotalBytes:          totalBytes,
 		TotalStr:            formatBytes(totalBytes),
 		SegCount:            stats.SegmentCount,
@@ -705,15 +739,9 @@ const systemPartialTemplate = `<div class="sys-card">
     Camera Status
   </div>
   <div class="sys-card-body">
-    <table style="width:100%">
-      <thead><tr><th style="text-align:left">Camera</th><th style="text-align:left">Status</th></tr></thead>
-      <tbody>
-      {{range .Statuses}}<tr>
-        <td>{{displayName .Name}}</td>
-        <td>{{if .Online}}<span class="green">Online</span>{{else}}<span class="red">Offline</span>{{end}}</td>
-      </tr>{{end}}
-      </tbody>
-    </table>
+    {{range .CameraRows}}<div class="sys-row"><span class="key">{{displayName .Name}}</span><span class="val"><span class="{{.Class}}">{{.Label}}</span></span></div>
+    {{else}}<div class="sys-note">No cameras configured.</div>
+    {{end}}
   </div>
 </div>
 <div class="sys-card">

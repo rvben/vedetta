@@ -135,6 +135,15 @@ test('detection boxes draw over MJPEG and snapshot, where the video is hidden', 
   assert.equal(detectionBoxesMayDraw(null), true);
 });
 
+test('live detection boxes are not drawn over recorded footage', () => {
+  const { detectionBoxesMayDraw } = require('./livecascade.js');
+  const decoded = { hidden: false, videoWidth: 2560, readyState: 4 };
+  assert.equal(detectionBoxesMayDraw(decoded, true), false);
+  assert.equal(detectionBoxesMayDraw(null, true), false);
+  assert.equal(detectionBoxesMayDraw({ hidden: true, videoWidth: 0, readyState: 0 }, true), false);
+  assert.equal(detectionBoxesMayDraw(decoded, false), true);
+});
+
 test('an interruption is announced once, on the first reconnect attempt', () => {
   const { liveReconnectNotice } = require('./livecascade.js');
   assert.notEqual(liveReconnectNotice(1), '');

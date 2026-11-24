@@ -63,7 +63,9 @@ function autoplayNeedsUserGesture(error) {
 
 // detectionBoxesMayDraw says whether detection boxes may be painted over the
 // live <video>. `video` carries the element's hidden flag, videoWidth and
-// readyState. Boxes need a picture under them: a visible video that has not
+// readyState; `playback` is true while a recording is playing. The boxes
+// describe what the detector sees now, so they never draw over recorded
+// footage. Boxes also need a picture under them: a visible video that has not
 // produced a frame is black, and a box there floats over nothing.
 //
 // videoWidth is not that signal. It is set when the stream's metadata is
@@ -73,7 +75,8 @@ function autoplayNeedsUserGesture(error) {
 //
 // A hidden video does not gate the boxes: the MJPEG and snapshot transports
 // hide it and show their own picture.
-function detectionBoxesMayDraw(video) {
+function detectionBoxesMayDraw(video, playback) {
+  if (playback) return false;
   if (!video || video.hidden) return true;
   return video.videoWidth > 0 && video.readyState >= 2;
 }

@@ -3755,6 +3755,11 @@ function updatePlaybackUI() {
   if (toolbar) toolbar.classList.toggle('hidden', !playbackMode);
   if (pbBadge) pbBadge.classList.toggle('hidden', !playbackMode);
   if (btnLive) btnLive.classList.toggle('hidden', !playbackMode);
+  // The stream badge and the detection boxes describe the live picture,
+  // which playback replaces.
+  updateStreamBadge();
+  var btnBoxes = el('btn-boxes');
+  if (btnBoxes) btnBoxes.classList.toggle('hidden', playbackMode || !boxOverlayState.canvas);
 
   // Grey out the LIVE button in video controls during playback
   var goLiveBtn = el('btn-go-live');
@@ -5769,10 +5774,7 @@ function applyBoxOverlayEnabled(enabled) {
   var canvas = boxOverlayState.canvas;
   var btn = document.getElementById('btn-boxes');
   if (canvas) canvas.style.display = enabled ? '' : 'none';
-  if (btn) {
-    btn.classList.toggle('btn-primary', enabled);
-    btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-  }
+  if (btn) btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
   if (enabled) {
     openBoxOverlayStream();
     scheduleBoxOverlayFrame();
@@ -5863,7 +5865,7 @@ function drawBoxOverlay() {
     hidden: liveVideo.classList.contains('hidden'),
     videoWidth: liveVideo.videoWidth,
     readyState: liveVideo.readyState,
-  });
+  }, playbackMode);
   if (!boxesMayDraw) {
     var rect0 = boxOverlayRenderRect();
     if (rect0) {

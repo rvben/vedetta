@@ -593,12 +593,59 @@ func (d *DB) GetSegmentByID(id int64) (*SegmentRecord, error) {
 	return &s, nil
 }
 
-// CountEventsToday returns the number of events with timestamp >= today midnight UTC.
-// When kind is non-empty, only events of that kind are counted.
+// startOfDay returns the first instant of t's calendar day, in t's own time
+// zone. A day is a wall-clock notion: truncating the instant to 24 hours
+// yields UTC midnight, which falls mid-evening or mid-morning anywhere else.
+//
+// The day is searched for rather than constructed from 00:00, because that
+// wall-clock time is not always one instant: where the clocks move forward at
+// midnight it never happens and the day begins later, and where they move
+// back onto it it happens twice.
+func startOfDay(t time.Time) time.Time {
+	loc := t.Location()
+	y, m, d := t.Date()
+	reached := func(x time.Time) bool {
+		xy, xm, xd := x.In(loc).Date()
+		if xy != y {
+			return xy > y
+		}
+		if xm != m {
+			return xm > m
+		}
+		return xd >= d
+	}
+	// Zone offsets are whole seconds, so the day begins on a whole second.
+	// Two days back is before the day under any clock change.
+	hi := t.Truncate(time.Second)
+	lo := hi.Add(-48 * time.Hour)
+	for hi.Sub(lo) > time.Second {
+		mid := lo.Add(hi.Sub(lo) / 2).Truncate(time.Second)
+		if reached(mid) {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	return hi
+}
+
+// CountEventsToday returns the number of events since the start of today in
+// the server's local time zone. When kind is non-empty, only events of that
+// kind are counted.
 func (d *DB) CountEventsToday(kind string) (int, error) {
-	today := time.Now().UTC().Truncate(24 * time.Hour)
+	return d.countEventsOnDayOf(kind, time.Now())
+}
+
+// countEventsOnDayOf counts events from the start of now's calendar day.
+func (d *DB) countEventsOnDayOf(kind string, now time.Time) (int, error) {
+	return d.CountEventsSince(kind, startOfDay(now))
+}
+
+// CountEventsSince returns the number of events with timestamp >= since.
+// When kind is non-empty, only events of that kind are counted.
+func (d *DB) CountEventsSince(kind string, since time.Time) (int, error) {
 	q := "SELECT COUNT(*) FROM events WHERE timestamp >= ?"
-	args := []any{utc(today)}
+	args := []any{utc(since)}
 	if kind != "" {
 		q += " AND kind = ?"
 		args = append(args, kind)

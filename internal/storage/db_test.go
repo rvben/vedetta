@@ -336,22 +336,72 @@ func TestLatestEventIsTheNewestForThatCameraOnly(t *testing.T) {
 	}
 }
 
-func TestCountEventsToday(t *testing.T) {
-	db := newTestDB(t)
-	now := time.Now().UTC()
-	today := now.Truncate(24 * time.Hour).Add(1 * time.Hour) // 01:00 today
-	yesterday := today.Add(-25 * time.Hour)
+func TestStartOfDayIsLocalMidnight(t *testing.T) {
+	east := time.FixedZone("east", 2*60*60)
+	// Half past midnight two hours east of UTC is still the previous evening
+	// in UTC, so the local day and the UTC day disagree here.
+	now := time.Date(2026, 3, 4, 0, 30, 0, 0, east)
 
-	mustSaveEvent(t, db, makeEvent("today1", "cam1", "person", 0.9, today))
-	mustSaveEvent(t, db, makeEvent("today2", "cam1", "car", 0.8, today.Add(time.Hour)))
-	mustSaveEvent(t, db, makeEvent("yesterday1", "cam1", "person", 0.7, yesterday))
+	got := startOfDay(now)
+	want := time.Date(2026, 3, 4, 0, 0, 0, 0, east)
+	if !got.Equal(want) {
+		t.Errorf("startOfDay(%s) = %s, want %s", now, got, want)
+	}
+	if got.Location() != east {
+		t.Errorf("startOfDay location = %s, want %s", got.Location(), east)
+	}
+}
+
+func TestStartOfDayWhenDaylightSavingSkipsMidnight(t *testing.T) {
+	// Chile moves its clocks forward at midnight: on this date the local day
+	// begins at 01:00, and 00:00 never happens.
+	santiago, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Skipf("time zone database unavailable: %v", err)
+	}
+	noon := time.Date(2026, 9, 6, 12, 0, 0, 0, santiago)
+
+	got := startOfDay(noon)
+	if y, m, d := got.Date(); y != 2026 || m != time.September || d != 6 {
+		t.Fatalf("startOfDay(%s) = %s, which is not on 6 September", noon, got)
+	}
+	lastOfYesterday := got.Add(-time.Nanosecond)
+	if lastOfYesterday.Day() != 5 {
+		t.Errorf("the instant before startOfDay is %s, want it on 5 September", lastOfYesterday)
+	}
+}
+
+func TestCountEventsOnDayOfExcludesYesterdayEvening(t *testing.T) {
+	db := newTestDB(t)
+	east := time.FixedZone("east", 2*60*60)
+	now := time.Date(2026, 3, 4, 0, 30, 0, 0, east)
+
+	// 23:00 yesterday and 00:15 today on the local clock. Both fall on the
+	// same UTC day, which is what a UTC-midnight boundary gets wrong.
+	mustSaveEvent(t, db, makeEvent("yesterday-evening", "cam1", "person", 0.7, time.Date(2026, 3, 3, 23, 0, 0, 0, east)))
+	mustSaveEvent(t, db, makeEvent("just-after-midnight", "cam1", "car", 0.8, time.Date(2026, 3, 4, 0, 15, 0, 0, east)))
+
+	count, err := db.countEventsOnDayOf("", now)
+	if err != nil {
+		t.Fatalf("countEventsOnDayOf: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (only the event after local midnight)", count)
+	}
+}
+
+func TestCountEventsTodayCountsAnEventFromThisMoment(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+	mustSaveEvent(t, db, makeEvent("now", "cam1", "person", 0.9, now))
+	mustSaveEvent(t, db, makeEvent("two-days-ago", "cam1", "person", 0.7, now.Add(-48*time.Hour)))
 
 	count, err := db.CountEventsToday("")
 	if err != nil {
 		t.Fatalf("CountEventsToday: %v", err)
 	}
-	if count != 2 {
-		t.Errorf("count = %d, want 2", count)
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
 	}
 }
 
@@ -2473,5 +2523,46 @@ func TestQueryEventsFiltered_SinceIsExclusiveAfterIsInclusive(t *testing.T) {
 	}
 	if len(after) != 1 {
 		t.Errorf("After=%s returned %d events, want 1: a range starting at midnight must contain an event at midnight", ts, len(after))
+	}
+}
+
+// startOfDay must return the earliest instant of the local calendar day
+// whatever the clocks do around midnight.
+func TestStartOfDayIsTheEarliestInstantOfTheLocalDay(t *testing.T) {
+	cases := []struct {
+		name, zone string
+		y          int
+		m          time.Month
+		d          int
+	}{
+		// Cuba turns its clocks back from 01:00 to 00:00, so midnight
+		// happens twice and the day starts at the first one.
+		{"midnight happens twice", "America/Havana", 2026, time.November, 1},
+		// Uruguay moved its clocks forward by 90 minutes at midnight.
+		{"midnight skipped by ninety minutes", "America/Montevideo", 1974, time.January, 13},
+		{"midnight skipped by an hour", "America/Santiago", 2026, time.September, 6},
+		{"an ordinary day", "Europe/Amsterdam", 2026, time.March, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loc, err := time.LoadLocation(tc.zone)
+			if err != nil {
+				t.Skipf("time zone database unavailable: %v", err)
+			}
+			for _, hour := range []int{3, 12, 23} {
+				now := time.Date(tc.y, tc.m, tc.d, hour, 0, 0, 0, loc)
+				got := startOfDay(now)
+				if y, m, d := got.Date(); y != tc.y || m != tc.m || d != tc.d {
+					t.Fatalf("startOfDay(%s) = %s, which is on another day", now, got)
+				}
+				before := got.Add(-time.Second)
+				if y, m, d := before.Date(); y == tc.y && m == tc.m && d == tc.d {
+					t.Errorf("startOfDay(%s) = %s, but %s is earlier on the same day", now, got, before)
+				}
+				if got.After(now) {
+					t.Errorf("startOfDay(%s) = %s, which is after it", now, got)
+				}
+			}
+		})
 	}
 }

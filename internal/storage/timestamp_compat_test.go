@@ -125,19 +125,19 @@ func TestGetMotionActivityInRange_GoStringFormat(t *testing.T) {
 	}
 }
 
-func TestCountEventsToday_GoStringFormat(t *testing.T) {
+func TestCountEventsSince_GoStringFormat(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now().UTC()
 
 	insertEventRaw(t, db, "ev1", "cam1", "person", now.Add(-1*time.Hour))
 	insertEventRaw(t, db, "ev2", "cam1", "car", now.Add(-30*time.Minute))
 
-	count, err := db.CountEventsToday("")
+	count, err := db.CountEventsSince("", now.Add(-2*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {
-		t.Errorf("CountEventsToday: got %d, want 2", count)
+		t.Errorf("CountEventsSince: got %d, want 2", count)
 	}
 }
 

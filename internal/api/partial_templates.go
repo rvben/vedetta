@@ -64,7 +64,7 @@ var activitiesGalleryTmpl = template.Must(template.New("activities").Funcs(parti
 		`</div></a>{{end}}`))
 
 var activityDetailTmpl = template.Must(template.New("activity-detail").Funcs(partialFuncs).Funcs(activityFuncs).Funcs(activityEvidenceURLPlaceholder).Parse(
-	`{{$activity := .}}<div class="activity-detail-root" data-activity-id="{{.ID}}" data-activity-state="{{.State}}" data-activity-camera="{{.CameraName}}" data-activity-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}">` +
+	`{{$activity := .}}<div class="activity-detail-root" data-activity-id="{{.ID}}" data-activity-state="{{.State}}" data-activity-camera="{{.CameraName}}" data-activity-camera-name="{{displayName .CameraName}}" data-activity-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}">` +
 		`<div class="page-header activity-page-header"><div><h1>{{activityTitle .}}</h1><p>{{displayName .CameraName}} · {{formatTime .StartTime}}</p><span class="activity-detail-state {{.State}}">{{activityStateLabel .State}}{{if eq .State "open"}} · updates as evidence arrives{{end}}</span></div>` +
 		`<a class="btn btn-secondary" href="/events.html">Back to Activity</a></div>` +
 		`<div class="activity-review-layout"><section class="activity-primary" aria-label="Primary evidence">` +
@@ -111,7 +111,7 @@ var eventsGalleryTmpl = template.Must(template.New("gallery").Funcs(partialFuncs
 		`</a>{{end}}`))
 
 var eventDetailTmpl = template.Must(template.New("detail").Funcs(partialFuncs).Parse(
-	`<div class="event-detail-root" data-event-camera="{{.CameraName}}" data-event-label="{{.Label}}" data-event-time="{{.Timestamp.UTC.Format "2006-01-02 15:04:05 UTC"}}"></div>` +
+	`<div class="event-detail-root" data-event-camera="{{.CameraName}}" data-event-camera-name="{{displayName .CameraName}}" data-event-label="{{.Label}}" data-event-time="{{.Timestamp.UTC.Format "2006-01-02T15:04:05Z"}}"></div>` +
 		`<div class="page-header"><h1>{{if eq .Kind "cry"}}{{if eq .Category "detection"}}Candidate cry{{else}}Crying heard{{end}}{{else}}{{displayName .Label}} Detection{{end}}</h1></div>` +
 		`<div class="event-detail-layout">` +
 		`<div class="event-media">` +
@@ -145,8 +145,8 @@ var eventDetailTmpl = template.Must(template.New("detail").Funcs(partialFuncs).P
 		`</div>` +
 		`<div class="meta-card">` +
 		`<div class="meta-card-header">Details</div>` +
-		`<div class="meta-row"><span class="key">Camera</span><span class="val">{{.CameraName}}</span></div>` +
-		`<div class="meta-row"><span class="key">Label</span><span class="val">{{.Label}}</span></div>` +
+		`<div class="meta-row"><span class="key">Camera</span><span class="val">{{displayName .CameraName}}</span></div>` +
+		`<div class="meta-row"><span class="key">Label</span><span class="val">{{displayName .Label}}</span></div>` +
 		`{{if .SubLabel}}<div class="meta-row"><span class="key">Identity</span><span class="val">{{.SubLabel}}</span></div>{{end}}` +
 		`{{if eq .Kind "cry"}}<div class="meta-row"><span class="key">Cry score</span><span class="val">{{printf "%.3f" .Score}} · uncalibrated</span></div>{{else}}<div class="meta-row"><span class="key">Confidence</span><span class="val">{{scorePercent .Score}}</span></div>{{end}}` +
 		`<div class="meta-row"><span class="key">Time</span><span class="val">{{formatTime .Timestamp}} <span class="text-tertiary">({{timeAgo .Timestamp}})</span></span></div>` +

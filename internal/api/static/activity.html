@@ -112,14 +112,13 @@
       detail.addEventListener('htmx:afterSwap', function() {
         const root = detail.querySelector('.activity-detail-root');
         if (!root) return;
-        const camera = root.dataset.activityCamera || '';
-        const at = root.dataset.activityTime ? new Date(root.dataset.activityTime) : null;
+        const cameraName = root.dataset.activityCameraName || '';
         const crumb = document.getElementById('activity-breadcrumb');
-        if (crumb && camera) crumb.textContent = camera.replace(/[-_]+/g, ' ');
+        if (crumb && cameraName) crumb.textContent = cameraName;
         const backButton = detail.querySelector('.activity-page-header .btn');
         if (backButton) backButton.href = backURL;
         const heading = detail.querySelector('h1');
-        if (heading) document.title = heading.textContent + ' · ' + camera + ' - Vedetta';
+        if (heading) document.title = heading.textContent + ' · ' + cameraName + ' - Vedetta';
       });
 
       detail.addEventListener('click', function(event) {

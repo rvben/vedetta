@@ -242,6 +242,55 @@ func TestActivityPartialsExposeIncidentAndEvidence(t *testing.T) {
 	}
 }
 
+// The detail pages build their breadcrumb and tab title in the browser, so the
+// partials carry the camera's display name and a machine-readable time for the
+// browser to localize; a raw camera key or a pre-formatted UTC string would be
+// shown to the viewer as is.
+func TestDetailPartialsCarryDisplayNameAndLocalizableTimes(t *testing.T) {
+	srv, db := newTestServer(t)
+	at := time.Date(2026, 11, 24, 19, 28, 16, 0, time.UTC)
+	if err := db.SaveEvent(camera.Event{
+		ID: "person", CameraName: "front_door", Label: "person", Score: 0.92,
+		Box: [4]int{10, 20, 100, 200}, Timestamp: at,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fetch := func(path string) string {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, body = %s", path, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+
+	activity := fetch("/partials/activity/act_person")
+	for _, want := range []string{
+		`data-activity-camera-name="Front Door"`,
+		// An evidence row sits under the activity's own date, so it is marked
+		// for clock-only display.
+		`<time class="time-clock" datetime="2026-11-24T19:28:16Z">19:28:16 UTC</time>`,
+	} {
+		if !strings.Contains(activity, want) {
+			t.Errorf("activity detail missing %q: %s", want, activity)
+		}
+	}
+
+	event := fetch("/partials/event/person")
+	for _, want := range []string{
+		`data-event-camera-name="Front Door"`,
+		`data-event-time="2026-11-24T19:28:16Z"`,
+		`<span class="key">Camera</span><span class="val">Front Door</span>`,
+		`<span class="key">Label</span><span class="val">Person</span>`,
+	} {
+		if !strings.Contains(event, want) {
+			t.Errorf("event detail missing %q: %s", want, event)
+		}
+	}
+}
+
 func TestBroadcastActivitySSE(t *testing.T) {
 	srv, _ := newTestServer(t)
 	client := make(chan []byte, 1)

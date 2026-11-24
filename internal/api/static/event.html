@@ -113,12 +113,12 @@
       el.addEventListener('htmx:afterSwap', function() {
         const root = el.querySelector('.event-detail-root');
         if (!root) return;
-        const camera = root.dataset.eventCamera || '';
+        const camera = root.dataset.eventCameraName || '';
         const label = root.dataset.eventLabel || '';
-        const time = root.dataset.eventTime || '';
+        const time = dateTimeLabel(root.dataset.eventTime);
         const displayLabel = label.replace(/[-_]+/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
         const crumb = document.getElementById('event-breadcrumb');
-        if (crumb && camera) crumb.textContent = camera + ' · ' + time;
+        if (crumb && camera) crumb.textContent = time ? camera + ' · ' + time : camera;
         if (camera && label) document.title = displayLabel + ' · ' + camera + ' - Vedetta';
       });
     })();

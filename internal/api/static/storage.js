@@ -22,16 +22,6 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function daysAgo(dateStr) {
-  var d = new Date(dateStr + "T00:00:00Z");
-  if (isNaN(d)) return "";
-  var diffMs = Date.now() - d.getTime();
-  var days = Math.round(diffMs / 86400000);
-  if (days < 1) return "today";
-  if (days === 1) return "yesterday";
-  return days + "d ago";
-}
-
 function renderLoadingSkeleton() {
   var body = $("#camera-table-body");
   if (!body) return;
@@ -175,7 +165,7 @@ function renderCameraTable(cameras) {
       <td class="storage-cam-name">${esc(displayName)}</td>
       <td class="num mono">${fmtBytes(c.segment_bytes)}</td>
       <td class="num mono">${fmtBytes(c.clip_bytes)}</td>
-      <td class="mono oldest-cell">${c.oldest_segment ? esc(c.oldest_segment.slice(0,10)) + '<span class="oldest-rel"> (' + esc(daysAgo(c.oldest_segment.slice(0,10))) + ')</span>' : "-"}</td>
+      <td class="mono oldest-cell">${c.oldest_segment ? esc(localDateLabel(c.oldest_segment)) + '<span class="oldest-rel"> (' + esc(relativeDayLabel(c.oldest_segment)) + ')</span>' : "-"}</td>
       <td class="num mono">${fmtBytes(c.last_7d_bytes)}</td>
       <td class="storage-actions">
         <button class="btn btn-xs btn-secondary" data-action="older" data-camera="${esc(c.name)}" data-days="${c.effective_retain_days}" aria-label="Delete segments older than ${c.effective_retain_days} days for ${esc(displayName)}">Older than ${c.effective_retain_days}d</button>

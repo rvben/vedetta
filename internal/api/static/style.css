@@ -3656,10 +3656,18 @@ kbd {
   .timeline-track { min-height: 56px; }
 }
 
+/* A touch screen has no hover. A tap on the picture brings the controls up
+   and they leave again by themselves, so they do not cover the picture
+   while it is being watched. A keyboard attached to the device still shows
+   them while one of them has focus. */
 @media (hover: none) {
-  .video-controls {
+  .live-viewport.controls-shown .video-controls {
     opacity: 1;
     pointer-events: auto;
+  }
+  .live-viewport:not(.controls-shown):not(:has(:focus-visible)) .video-controls {
+    opacity: 0;
+    pointer-events: none;
   }
 }
 

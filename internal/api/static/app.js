@@ -2122,6 +2122,9 @@ function togglePause() {
     flashPauseIcon(true);
   }
   updatePauseUI();
+  // Pausing from the keyboard reaches here without a tap on the picture. The
+  // controls come up either way, and linger only once the picture plays.
+  showViewportControls();
 }
 
 function seekToLive() {
@@ -2313,14 +2316,51 @@ function isBehindLive() {
   return (win.end - video.currentTime) > liveEdgeToleranceSeconds();
 }
 
+// How long the player controls stay up on a touch screen after the last tap.
+var CONTROLS_LINGER_MS = 4000;
+var controlsHideTimer = null;
+
+function showViewportControls() {
+  var viewport = el('live-viewport');
+  if (!viewport) return;
+  viewport.classList.add('controls-shown');
+  clearTimeout(controlsHideTimer);
+  controlsHideTimer = setTimeout(hideViewportControls, CONTROLS_LINGER_MS);
+}
+
+function hideViewportControls() {
+  clearTimeout(controlsHideTimer);
+  var viewport = el('live-viewport');
+  if (!viewport) return;
+  // A paused picture keeps its controls: the way back to playing is on them.
+  if (userPaused) return;
+  viewport.classList.remove('controls-shown');
+}
+
 function initViewportPause() {
   var viewport = el('live-viewport');
   if (!viewport) return;
   initVideoScrubber();
+  var controls = el('video-controls');
+  if (controls) {
+    // Using a control keeps the bar up for another spell.
+    ['pointerdown', 'input', 'keydown'].forEach(function(type) {
+      controls.addEventListener(type, showViewportControls);
+    });
+  }
+  // The controls open on arrival so a first-time viewer learns they exist.
+  showViewportControls();
   viewport.addEventListener('click', function(e) {
     if (e.target.closest('.video-controls')) return;
     if (e.target.closest('.stream-stats')) return;
     if (e.target.closest('.live-offline, .live-reconnecting, .stream-connecting')) return;
+    // Without hover the picture is the only way to reach the controls, so a
+    // tap shows or hides them and pausing is left to the pause button.
+    if (window.matchMedia('(hover: none)').matches) {
+      if (viewport.classList.contains('controls-shown')) hideViewportControls();
+      else showViewportControls();
+      return;
+    }
     togglePause();
   });
   // Periodically check if behind live edge

@@ -172,7 +172,7 @@ function renderCameraTable(cameras) {
     const tr = document.createElement("tr");
     tr.className = "storage-cam-row";
     tr.innerHTML = `
-      <td class="storage-cam-name">${esc(c.name)}</td>
+      <td class="storage-cam-name">${esc(displayName)}</td>
       <td class="num mono">${fmtBytes(c.segment_bytes)}</td>
       <td class="num mono">${fmtBytes(c.clip_bytes)}</td>
       <td class="mono oldest-cell">${c.oldest_segment ? esc(c.oldest_segment.slice(0,10)) + '<span class="oldest-rel"> (' + esc(daysAgo(c.oldest_segment.slice(0,10))) + ')</span>' : "-"}</td>
@@ -245,7 +245,7 @@ document.addEventListener("click", (e) => {
 
   if (action === "older") {
     showInputModal(
-      `Delete old segments: ${camera}`,
+      `Delete old segments: ${camDisplayName(camera)}`,
       "Delete recorded segments older than how many days?",
       btn.dataset.days,
       (val) => {
@@ -256,13 +256,13 @@ document.addEventListener("click", (e) => {
     );
   } else if (action === "range") {
     showInputModal(
-      `Delete a date range: ${camera}`,
+      `Delete a date range: ${camDisplayName(camera)}`,
       "Choose the first day to delete (UTC).",
       "",
       (from) => {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) { toast("Choose a valid start date.", "error"); return; }
         showInputModal(
-          `Delete a date range: ${camera}`,
+          `Delete a date range: ${camDisplayName(camera)}`,
           `Choose the last day to delete, starting from ${from} (UTC).`,
           "",
           (to) => {
@@ -304,7 +304,7 @@ async function confirmAndDelete(body) {
   const summary =
     `This will delete ${p.segments} segments, ${p.clips} event clips and ` +
     `${p.snapshots} snapshots (${fmtBytes(p.bytes)}) across ` +
-    `${(p.cameras || []).join(", ") || "(none)"}. This cannot be undone.`;
+    `${(p.cameras || []).map(camDisplayName).join(", ") || "(none)"}. This cannot be undone.`;
 
   showConfirmModal("Confirm delete", summary, async () => {
     let r;

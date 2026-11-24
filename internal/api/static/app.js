@@ -5073,13 +5073,55 @@ function refreshGridSnapshots() {
           }
         }
       });
-      if (stale) htmx.ajax('GET', '/partials/camera-grid', { target: '#camera-grid', swap: 'innerHTML' });
+      if (stale) reloadCameraGrid();
     })
     .catch(function() {});
 }
 
+// gridFocus names the tile control that has keyboard focus, or null when
+// focus is not on a tile.
+function gridFocus() {
+  var grid = el('camera-grid');
+  var active = document.activeElement;
+  var card = grid && active && grid.contains(active) ? active.closest('.cam-card') : null;
+  if (!card) return null;
+  return {
+    name: card.getAttribute('data-camera-name'),
+    control: active.classList.contains('cam-toggle-btn') ? '.cam-toggle-btn'
+      : active.classList.contains('cam-doorbell-action') ? 'a.cam-doorbell-action'
+      : '.cam-link'
+  };
+}
+
+// reloadCameraGrid renders every tile again. The swap replaces the control
+// that has keyboard focus, so focus is handed to the same control of the same
+// camera in the new tiles. A caller that has already given up focus (a button
+// disabled while its request runs loses it) passes what it held.
+function reloadCameraGrid(held) {
+  var grid = el('camera-grid');
+  var focus = held || gridFocus();
+  var name = focus ? focus.name : '';
+  var control = focus ? focus.control : '';
+  return Promise.resolve(htmx.ajax('GET', '/partials/camera-grid', { target: '#camera-grid', swap: 'innerHTML' })).then(function() {
+    if (!name || !grid) return;
+    if (document.activeElement && document.activeElement !== document.body && !grid.contains(document.activeElement)) return;
+    var cards = grid.querySelectorAll('.cam-card');
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].getAttribute('data-camera-name') !== name) continue;
+      // A control the new tile no longer offers hands focus to its link.
+      var next = cards[i].querySelector(control) || cards[i].querySelector('.cam-link');
+      if (next) next.focus();
+      return;
+    }
+  }).catch(function() {
+    // The tiles on screen stay as they are; the next refresh tries again.
+  });
+}
+
 function toggleCamera(name, isStopped, button) {
   var action = isStopped ? 'start' : 'stop';
+  var held = gridFocus();
+  var hadFocus = !!button && document.activeElement === button;
   if (button) {
     button.disabled = true;
     button.setAttribute('aria-busy', 'true');
@@ -5091,7 +5133,7 @@ function toggleCamera(name, isStopped, button) {
           throw new Error(e.error || r.statusText || 'Request failed');
         });
       }
-      htmx.ajax('GET', '/partials/camera-grid', { target: '#camera-grid', swap: 'innerHTML' });
+      return reloadCameraGrid(held);
     })
     .catch(function(err) {
       console.error('Failed to ' + action + ' camera:', err);
@@ -5101,6 +5143,9 @@ function toggleCamera(name, isStopped, button) {
       if (button && button.isConnected) {
         button.disabled = false;
         button.setAttribute('aria-busy', 'false');
+        // A request that failed leaves the same button in place; it takes
+        // back the focus it lost while disabled.
+        if (hadFocus && document.activeElement === document.body) button.focus();
       }
     });
 }

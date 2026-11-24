@@ -4807,10 +4807,12 @@ document.addEventListener('visibilitychange', function() {
 // never replaced (no flash); the live stream still starts on hover.
 const GRID_TICK_MS = 4000;   // driver tick = motion-camera snapshot cadence
 const GRID_IDLE_MS = 30000;  // idle-camera snapshot cadence
+const GRID_STALE_MS = 45000; // how long a tile keeps its picture when refreshes fail
 const GRID_ACTIVITY_MS = 60000; // latest-event caption cadence
 let gridSnapshotInterval = null;
 let gridActivityInterval = null;
 let gridLastSnap = {};       // camera name -> last snapshot pull (ms epoch)
+let gridLastGoodSnap = {};   // camera name -> last snapshot that loaded (ms epoch)
 
 function startGridSnapshotRefresh() {
   stopGridSnapshotRefresh();
@@ -4830,6 +4832,7 @@ function stopGridSnapshotRefresh() {
     gridActivityInterval = null;
   }
   gridLastSnap = {};
+  gridLastGoodSnap = {};
 }
 
 // ensureGridSnapshotRefresh arms the refresh exactly once for the visible,
@@ -4886,8 +4889,10 @@ function refreshGridActivity() {
         var same = act.firstChild && next.firstChild &&
           act.firstChild.textContent === next.firstChild.textContent &&
           (was && was.getAttribute('datetime')) === (now && now.getAttribute('datetime'));
-        if (same || (!was && !now)) return;
-        act.innerHTML = next.innerHTML;
+        if (!was && !now) return;
+        // An unchanged caption is still relabelled: "Today 23:50" becomes
+        // "Yesterday 23:50" when the date turns.
+        if (!same) act.innerHTML = next.innerHTML;
         localizeTimeElements(act);
       });
     })
@@ -4936,6 +4941,7 @@ function initGridSnapshotStates() {
     probe.onload = function() {
       noteImageLoadSuccess('snapshot:' + name);
       img.src = snapUrl;
+      gridLastGoodSnap[name] = Date.now();
       preview.classList.remove('cam-preview--loading');
     };
     probe.onerror = function() {
@@ -4962,6 +4968,7 @@ function refreshGridSnapshots() {
 
       var cards = grid.querySelectorAll('.cam-card');
       var t = Date.now();
+      var stale = false;
       cards.forEach(function(card) {
         var preview = card.querySelector('.cam-preview');
         var img = card.querySelector('.cam-preview img');
@@ -4981,6 +4988,10 @@ function refreshGridSnapshots() {
           if (label) label.textContent = state.toUpperCase();
         }
         card.dataset.state = state;
+        // The stop/start button and the doorbell link are rendered for one
+        // of the two cases. A camera stopped or started elsewhere needs the
+        // tile rendered again, or it offers the action it has already taken.
+        if (tileControlsOutdated(state, card.classList.contains('cam-stopped'))) stale = true;
 
         // Keep the still caption in sync: shown whenever the tile is not
         // showing live video, since the frame under it is then a still.
@@ -4991,6 +5002,12 @@ function refreshGridSnapshots() {
         // GRID_IDLE_MS. The expensive JPEG pull is thus spent where
         // something is happening, not linearly across all cameras.
         if (cam.online) {
+          // A picture whose refresh failed or is still hanging gives way at
+          // GRID_STALE_MS, without waiting for another failure to say so. The
+          // next good load brings it back.
+          if (preview && tilePictureExpired(gridLastGoodSnap[name], gridLastSnap[name], t, GRID_STALE_MS)) {
+            preview.classList.add('cam-preview--error');
+          }
           var last = gridLastSnap[name] || 0;
           var due = cam.has_motion || (t - last >= GRID_IDLE_MS);
           if (due) {
@@ -5002,16 +5019,21 @@ function refreshGridSnapshots() {
             probe.onload = function() {
               noteImageLoadSuccess('snapshot:' + name);
               img.src = newUrl;
+              gridLastGoodSnap[name] = Date.now();
               if (preview) preview.classList.remove('cam-preview--error');
             };
             probe.onerror = function() {
-              if (preview) preview.classList.add('cam-preview--error');
+              // One missed refresh keeps the picture already on the tile.
+              // Past GRID_STALE_MS it no longer passes for the camera's
+              // current view and the tile says the picture is unavailable.
+              if (preview && !tilePictureStillCurrent(gridLastGoodSnap[name], Date.now(), GRID_STALE_MS)) preview.classList.add('cam-preview--error');
               noteImageLoadFailure('snapshot:' + name, newUrl);
             };
             probe.src = newUrl;
           }
         }
       });
+      if (stale) htmx.ajax('GET', '/partials/camera-grid', { target: '#camera-grid', swap: 'innerHTML' });
     })
     .catch(function() {});
 }
@@ -5127,13 +5149,21 @@ function dashStatKey(clause) {
   return 'state:' + word;
 }
 
+var statsRequest = 0;
+var statsApplied = 0;
+
 function refreshStats() {
   var row = el('stats-row');
   if (!row) return;
+  // An answer older than the one already shown is dropped, so a count never
+  // steps back to an older figure. An answer that is merely slower than the
+  // polling interval is still the newest one received and is shown.
+  var request = ++statsRequest;
   fetch('/partials/dashboard-stats')
     .then(function(r) { return r.ok ? r.text() : null; })
     .then(function(html) {
-      if (!html) return;
+      if (!html || request < statsApplied) return;
+      statsApplied = request;
       var next = html.trim();
       if (row.innerHTML.trim() === next) return;
       // The sentence gains and loses clauses as cameras change state. A

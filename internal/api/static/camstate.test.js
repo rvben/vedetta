@@ -2,7 +2,7 @@
 // Run: node --test internal/api/static/camstate.test.js
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { cameraBadgeState, cameraStillCaption } = require('./camstate.js');
+const { cameraBadgeState, cameraStillCaption, tilePictureStillCurrent, tilePictureExpired, tileControlsOutdated } = require('./camstate.js');
 
 test('a streaming camera is live', () => {
   assert.equal(cameraBadgeState({ online: true }), 'live');
@@ -75,4 +75,50 @@ test('a live tile has no still to caption', () => {
 test('an unknown time yields no caption rather than an invented one', () => {
   assert.equal(cameraStillCaption('offline', ''), '');
   assert.equal(cameraStillCaption('sleeping', undefined), '');
+});
+
+test('a tile keeps a recent picture when one refresh fails', () => {
+  assert.equal(tilePictureStillCurrent(100000, 100000 + 44999, 45000), true);
+});
+
+test('a tile gives up a picture that has gone stale', () => {
+  assert.equal(tilePictureStillCurrent(100000, 100000 + 45000, 45000), false);
+});
+
+test('a tile that never loaded a picture has none to keep', () => {
+  assert.equal(tilePictureStillCurrent(undefined, 100000, 45000), false);
+  assert.equal(tilePictureStillCurrent(NaN, 100000, 45000), false);
+});
+
+test('a running tile is outdated once its camera is stopped', () => {
+  assert.equal(tileControlsOutdated('stopped', false), true);
+});
+
+test('a stopped tile is outdated once its camera runs again', () => {
+  assert.equal(tileControlsOutdated('live', true), true);
+  assert.equal(tileControlsOutdated('offline', true), true);
+});
+
+test('a tile rendered for the camera state it is in is kept', () => {
+  assert.equal(tileControlsOutdated('stopped', true), false);
+  assert.equal(tileControlsOutdated('live', false), false);
+  assert.equal(tileControlsOutdated('sleeping', false), false);
+});
+
+// Loaded at 100 s, refresh asked for at 132 s and never answered.
+test('a picture whose refresh never answers expires at the stale limit', () => {
+  assert.equal(tilePictureExpired(100000, 132000, 144999, 45000), false);
+  assert.equal(tilePictureExpired(100000, 132000, 145000, 45000), true);
+});
+
+// A background tab stops asking. The old picture is waiting for its next
+// refresh, not failing one, so coming back does not flash an error.
+test('a picture nobody has tried to refresh does not expire', () => {
+  assert.equal(tilePictureExpired(100000, 99000, 900000, 45000), false);
+  assert.equal(tilePictureExpired(100000, 100000, 900000, 45000), false);
+});
+
+test('a tile with no picture or no request has nothing to expire', () => {
+  assert.equal(tilePictureExpired(undefined, 132000, 900000, 45000), false);
+  assert.equal(tilePictureExpired(100000, undefined, 900000, 45000), false);
 });

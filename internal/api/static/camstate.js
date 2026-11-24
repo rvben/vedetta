@@ -38,6 +38,40 @@ function cameraStillCaption(state, when) {
   return '';
 }
 
+// tilePictureStillCurrent says whether a tile may keep the picture it shows
+// after a refresh failed. The picture passes for the camera's current view
+// only while it is younger than staleMs; a tile that never loaded one has
+// nothing to keep.
+function tilePictureStillCurrent(lastGoodMs, nowMs, staleMs) {
+  if (typeof lastGoodMs !== 'number' || !isFinite(lastGoodMs)) return false;
+  return nowMs - lastGoodMs < staleMs;
+}
+
+// tilePictureExpired says whether a tile must give up its picture between
+// refresh results: a refresh was asked for after the last one that loaded, it
+// has not delivered, and the picture has outlived staleMs. A tile whose last
+// request is the one that loaded is merely waiting for its next turn, however
+// long ago that was (a background tab), and keeps its picture.
+function tilePictureExpired(lastGoodMs, lastRequestMs, nowMs, staleMs) {
+  if (typeof lastGoodMs !== 'number' || !isFinite(lastGoodMs)) return false;
+  if (typeof lastRequestMs !== 'number' || !isFinite(lastRequestMs)) return false;
+  if (lastRequestMs <= lastGoodMs) return false;
+  return !tilePictureStillCurrent(lastGoodMs, nowMs, staleMs);
+}
+
+// tileControlsOutdated says whether a tile was rendered for the other of the
+// two cases, stopped or running. Its stop/start button and doorbell link are
+// only right for the case it was rendered for.
+function tileControlsOutdated(state, renderedStopped) {
+  return (state === 'stopped') !== !!renderedStopped;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { cameraBadgeState: cameraBadgeState, cameraStillCaption: cameraStillCaption };
+  module.exports = {
+    cameraBadgeState: cameraBadgeState,
+    cameraStillCaption: cameraStillCaption,
+    tilePictureStillCurrent: tilePictureStillCurrent,
+    tilePictureExpired: tilePictureExpired,
+    tileControlsOutdated: tileControlsOutdated
+  };
 }

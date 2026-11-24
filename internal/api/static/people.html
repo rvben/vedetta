@@ -242,6 +242,7 @@
   <script src="/recognition.js"></script>
   <script src="/session.js"></script>
   <script src="/connstatus.js"></script>
+  <script src="/timefmt.js"></script>
   <script src="/app.js"></script>
   <script>
     var peopleData = [];
@@ -403,7 +404,7 @@
           html += '<div class="person-faces-heading">Faces (' + faces.length + ')</div>';
           html += '<div class="face-grid">';
           faces.forEach(function(f) {
-            var faceTs = new Date(f.timestamp).toLocaleString();
+            var faceTs = dateTimeLabel(f.timestamp);
             html += '<div class="face-thumb-wrap-link" role="button" tabindex="0" data-action-click="showFaceSnapshot(' + f.id + ',' + jsStringArg(f.event_id || '') + ',' + jsStringArg(f.camera || '') + ')" aria-label="View snapshot for face from ' + escapeAttr(f.camera || 'unknown') + ', ' + escapeAttr(faceTs) + '">'
               + '<div class="face-thumb" data-bg="/api/faces/' + f.id + '/crop" title="' + escapeAttr(f.camera || '') + ' - ' + escapeAttr(faceTs) + '"></div>'
               + '</div>';
@@ -417,7 +418,7 @@
           html += '<div class="appearance-grid">';
           events.forEach(function(ev) {
             var src = ev.snapshot_available ? '/api/events/' + encodeURIComponent(ev.id) + '/detection-crop' : '/api/cameras/' + encodeURIComponent(ev.camera) + '/snapshot';
-            var time = new Date(ev.timestamp).toLocaleString();
+            var time = dateTimeLabel(ev.timestamp);
             html += '<a href="/event.html?id=' + encodeURIComponent(ev.id) + '" title="' + escapeAttr(ev.camera) + ' — ' + escapeAttr(time) + '">'
               + '<div class="appearance-thumb" data-bg="' + escapeAttr(src) + '"></div>'
               + '</a>';
@@ -560,7 +561,7 @@
         if (empty) empty.setAttribute('hidden', '');
         var html = '';
         _unmatchedFaces.forEach(function(f, i) {
-          var faceTime = new Date(f.timestamp).toLocaleString();
+          var faceTime = dateTimeLabel(f.timestamp);
           html += '<div class="unid-card" role="button" tabindex="0" data-action-click="openFaceModal(' + i + ')" aria-label="Identify face from ' + escapeAttr(f.camera || 'unknown camera') + ', ' + escapeAttr(faceTime) + '" title="' + escapeAttr((f.camera || '') + ' - ' + faceTime) + '">'
             + '<div class="face-thumb-tile" data-bg="/api/faces/' + f.id + '/crop"></div>'
             + '</div>';
@@ -615,7 +616,7 @@
         if (empty) empty.setAttribute('hidden', '');
         var html = '';
         unidentified.forEach(function(ev) {
-          var time = new Date(ev.timestamp).toLocaleString();
+          var time = dateTimeLabel(ev.timestamp);
           html += '<div class="unid-card" data-event-id="' + escapeAttr(ev.id) + '" title="' + escapeAttr(ev.camera) + ' - ' + escapeAttr(time) + '">'
             + '<button type="button" class="unid-main" data-action-click="selectUnidentified(this, ' + jsStringArg(ev.id) + ')" aria-label="Identify person from ' + escapeAttr(ev.camera) + ', ' + escapeAttr(time) + '">'
             + '<span class="face-thumb-tile" data-bg="/api/events/' + encodeURIComponent(ev.id) + '/detection-crop"></span>'
@@ -668,7 +669,7 @@
 
       // Load event meta
 	      fetch('/api/events/' + encodeURIComponent(eventId)).then(readJSONResponse).then(function(ev) {
-        var time = new Date(ev.timestamp).toLocaleString();
+        var time = dateTimeLabel(ev.timestamp);
         document.getElementById('id-modal-meta').textContent = ev.camera.replace(/_/g, ' ') + ' — ' + time + ' — ' + Math.round(ev.score * 100) + '%';
         document.getElementById('id-modal-snapshot').alt = 'Camera snapshot from ' + ev.camera.replace(/_/g, ' ') + ' at ' + time;
         document.getElementById('id-modal-crop').alt = 'Detected face crop from ' + ev.camera.replace(/_/g, ' ') + ' at ' + time;

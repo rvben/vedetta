@@ -13,7 +13,7 @@ function cryPresentation(status, now, delivery) {
     state: state,
     title: labels[state] || 'Recognition status unavailable',
     detail: status.reason || (state === 'unavailable' ? 'No fresh recognition result. Check the camera connection.' : 'Cry recognition is listening to camera audio.'),
-    mode: !status.alerts ? 'Alerts off' : snoozed ? 'Snoozed until ' + new Date(status.snoozed_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (delivery && delivery.state === 'accepted' ? 'Pushover connected' : delivery && delivery.state === 'failed' ? 'Pushover failed' : delivery && delivery.state === 'excluded' ? 'Pushover excluded' : delivery && delivery.state === 'disabled' ? 'Pushover off' : delivery && delivery.state === 'unverified' ? 'Pushover unverified' : 'Pushover unavailable'),
+    mode: !status.alerts ? 'Alerts off' : snoozed ? 'Snoozed until ' + new Date(status.snoozed_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : (delivery && delivery.state === 'accepted' ? 'Pushover connected' : delivery && delivery.state === 'failed' ? 'Pushover failed' : delivery && delivery.state === 'excluded' ? 'Pushover excluded' : delivery && delivery.state === 'disabled' ? 'Pushover off' : delivery && delivery.state === 'unverified' ? 'Pushover unverified' : 'Pushover unavailable'),
     snoozed: snoozed,
     alerts: status.alerts === true
   };

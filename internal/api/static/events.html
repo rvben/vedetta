@@ -177,6 +177,7 @@
   <script src="/safehref.js"></script>
   <script src="/session.js"></script>
   <script src="/connstatus.js"></script>
+  <script src="/timefmt.js"></script>
   <script src="/app.js"></script>
   <script>
     var eventsTotalAll = 0;
@@ -394,7 +395,7 @@
       var key = eventDayKey(date);
       if (key === today) return 'Today';
       if (key === eventDayKey(yesterdayDate)) return 'Yesterday';
-      return new Intl.DateTimeFormat(undefined, {
+      return new Intl.DateTimeFormat('en-US', {
         weekday: 'long', month: 'long', day: 'numeric',
         year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric'
       }).format(date);
@@ -421,12 +422,6 @@
       });
     }
 
-    var eventClockFormat = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
-    var eventFullTimeFormat = new Intl.DateTimeFormat(undefined, {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-      hour: 'numeric', minute: '2-digit', second: '2-digit'
-    });
-
     // Cards sit under a day heading, so the wall-clock time is the useful
     // label: "3h ago" cannot be matched against a time someone remembers.
     // The server renders the relative form as the no-script fallback.
@@ -435,8 +430,8 @@
         var date = new Date(card.dataset.eventTime || '');
         var label = card.querySelector('.event-time');
         if (!label || isNaN(date)) return;
-        label.textContent = eventClockFormat.format(date);
-        label.title = eventFullTimeFormat.format(date);
+        label.textContent = clockLabel(date);
+        label.title = dateTimeLabel(date);
       });
     }
 

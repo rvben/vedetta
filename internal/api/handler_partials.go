@@ -45,6 +45,13 @@ var partialFuncs = template.FuncMap{
 		display := t.UTC().Format("2006-01-02 15:04:05 UTC")
 		return template.HTML(fmt.Sprintf(`<time datetime="%s">%s</time>`, iso, display))
 	},
+	// formatClock marks a time whose date the surrounding view already states,
+	// so the browser shows only the clock. The text is the no-script fallback.
+	"formatClock": func(t time.Time) template.HTML {
+		iso := t.UTC().Format(time.RFC3339)
+		display := t.UTC().Format("15:04:05 UTC")
+		return template.HTML(fmt.Sprintf(`<time class="time-clock" datetime="%s">%s</time>`, iso, display))
+	},
 	"formatBytes": formatBytes,
 	"displayName": displayName,
 	"eventDuration": func(e camera.Event) string {

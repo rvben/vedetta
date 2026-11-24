@@ -138,6 +138,7 @@
   <script src="/recognition.js"></script>
   <script src="/session.js"></script>
   <script src="/connstatus.js"></script>
+  <script src="/timefmt.js"></script>
   <script src="/app.js"></script>
   <script>
     var objectsData = [];
@@ -442,7 +443,7 @@
         var parts = partitionSightings(sightings);
         var html = '';
         parts.shown.forEach(function(s) {
-          var time = new Date(s.timestamp).toLocaleString();
+          var time = dateTimeLabel(s.timestamp);
           var simPct = Math.round(s.similarity * 100);
           var simClass = s.similarity >= 0.8 ? 'high' : s.similarity >= 0.65 ? 'mid' : 'low';
           var details = s.camera + ' · ' + time + ' · ' + simPct + '% match';
@@ -733,10 +734,7 @@
     }
 
     function formatDateShort(iso) {
-      if (!iso) return '';
-      var d = new Date(iso);
-      if (isNaN(d.getTime())) return '';
-      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+      return dateLabel(iso);
     }
 
     function escapeHtml(s) {

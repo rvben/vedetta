@@ -13,12 +13,48 @@ function pad2(n) {
   return n < 10 ? '0' + n : String(n);
 }
 
-// "2026-11-24" for the local calendar day of an instant, or '' when the
-// value is not a time.
-function localDateLabel(value) {
+var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// "19:28", or "19:28:16" with seconds: the 24-hour clock a camera burns into
+// its picture, so a time read off the page matches the one in the footage.
+function clockLabel(value, withSeconds) {
   var d = parseInstant(value);
   if (!d) return '';
-  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  var label = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  return withSeconds ? label + ':' + pad2(d.getSeconds()) : label;
+}
+
+function monthDay(d) {
+  return MONTHS[d.getMonth()] + ' ' + d.getDate();
+}
+
+// "Nov 24, 2026".
+function dateLabel(value) {
+  var d = parseInstant(value);
+  if (!d) return '';
+  return monthDay(d) + ', ' + d.getFullYear();
+}
+
+// "Nov 24, 2026 19:28:16": the full form for a detail view or a tooltip.
+function dateTimeLabel(value) {
+  var d = parseInstant(value);
+  if (!d) return '';
+  return dateLabel(d) + ' ' + clockLabel(d, true);
+}
+
+// The time of an event in a list that has no day heading: the clock alone
+// today, then "Yesterday 23:45", "Nov 20, 08:00", and the year once it
+// differs from the current one.
+function eventTimeLabel(value, now) {
+  var d = parseInstant(value);
+  if (!d) return '';
+  var ref = now || new Date();
+  var days = calendarDaysBetween(d, ref);
+  var clock = clockLabel(d);
+  if (days === 0) return clock;
+  if (days === 1) return 'Yesterday ' + clock;
+  if (d.getFullYear() === ref.getFullYear()) return monthDay(d) + ', ' + clock;
+  return dateLabel(d) + ' ' + clock;
 }
 
 // Whole calendar days between two instants, counted in local dates. Building
@@ -43,7 +79,10 @@ function relativeDayLabel(value, now) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    localDateLabel: localDateLabel,
+    clockLabel: clockLabel,
+    dateLabel: dateLabel,
+    dateTimeLabel: dateTimeLabel,
+    eventTimeLabel: eventTimeLabel,
     relativeDayLabel: relativeDayLabel,
   };
 }

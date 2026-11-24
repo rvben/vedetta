@@ -784,14 +784,7 @@ function formatCameraStateTime(date) {
     unit = 'hour';
     divisor = 3600;
   } else if (absoluteSeconds >= 604800) {
-    try {
-      return new Intl.DateTimeFormat(navigator.language, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      }).format(date);
-    } catch (e) {
-      return date.toLocaleString();
-    }
+    return eventTimeLabel(date);
   }
 
   try {
@@ -2251,7 +2244,7 @@ function updateVideoProgress() {
 
   if (playbackMode) {
     var wall = playbackWallTime(video);
-    var wallLabel = wall ? wall.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+    var wallLabel = wall ? clockLabel(wall, true) : '';
     time.textContent = wallLabel || (PBS ? PBS.formatMediaTime(current - win.start) : 'Playback');
     input.setAttribute('aria-valuetext', wallLabel ? 'Recording at ' + wallLabel : 'Recording position');
   } else {
@@ -3702,7 +3695,7 @@ function startPlayback(timestamp, opts) {
   updatePlaybackUI();
   updateVideoProgress();
   if (!opts || !opts.quiet) {
-    toast('Playing recording from ' + timestamp.toLocaleTimeString());
+    toast('Playing recording from ' + clockLabel(timestamp, true));
   }
 }
 
@@ -5171,18 +5164,25 @@ document.addEventListener('htmx:afterSwap', function(e) {
 });
 
 // ─── Localize <time> Elements ───
-// Server renders <time datetime="ISO"> with UTC display text.
-// This converts them to the user's local timezone in the browser.
+// The server renders <time datetime="ISO"> with UTC display text. The
+// browser replaces it with the viewer's local time in the shared format.
 function localizeTimeElements(root) {
   (root || document).querySelectorAll('time[datetime]').forEach(function(el) {
     var d = new Date(el.getAttribute('datetime'));
     if (isNaN(d)) return;
-    el.textContent = d.getFullYear() + '-' +
-      String(d.getMonth() + 1).padStart(2, '0') + '-' +
-      String(d.getDate()).padStart(2, '0') + ' ' +
-      String(d.getHours()).padStart(2, '0') + ':' +
-      String(d.getMinutes()).padStart(2, '0') + ':' +
-      String(d.getSeconds()).padStart(2, '0');
+    if (el.classList.contains('event-time')) {
+      // The Events gallery groups cards under day headings, so the clock is
+      // enough there; any other list has to carry the day itself.
+      el.textContent = el.closest('#events-gallery') ? clockLabel(d) : eventTimeLabel(d);
+      el.title = dateTimeLabel(d);
+      return;
+    }
+    if (el.classList.contains('time-clock')) {
+      el.textContent = clockLabel(d, true);
+      el.title = dateTimeLabel(d);
+      return;
+    }
+    el.textContent = dateTimeLabel(d);
   });
 }
 

@@ -165,7 +165,7 @@ function renderCameraTable(cameras) {
       <td class="storage-cam-name">${esc(displayName)}</td>
       <td class="num mono">${fmtBytes(c.segment_bytes)}</td>
       <td class="num mono">${fmtBytes(c.clip_bytes)}</td>
-      <td class="mono oldest-cell">${c.oldest_segment ? esc(localDateLabel(c.oldest_segment)) + '<span class="oldest-rel"> (' + esc(relativeDayLabel(c.oldest_segment)) + ')</span>' : "-"}</td>
+      <td class="mono oldest-cell">${c.oldest_segment ? esc(dateLabel(c.oldest_segment)) + '<span class="oldest-rel"> (' + esc(relativeDayLabel(c.oldest_segment)) + ')</span>' : "-"}</td>
       <td class="num mono">${fmtBytes(c.last_7d_bytes)}</td>
       <td class="storage-actions">
         <button class="btn btn-xs btn-secondary" data-action="older" data-camera="${esc(c.name)}" data-days="${c.effective_retain_days}" aria-label="Delete segments older than ${c.effective_retain_days} days for ${esc(displayName)}">Older than ${c.effective_retain_days}d</button>

@@ -695,11 +695,13 @@ a.dash-stat:focus-visible {
   overflow: hidden;
 }
 
+/* The whole frame is shown. A camera whose picture is not 16:9 sits on the
+   matte rather than losing its edges, where a doorstep or a gate often is. */
 .cam-preview img {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   transition: opacity var(--dur-fast);
 }
 

@@ -3095,7 +3095,13 @@ function commitSeekToSecond(sec) {
   // A loaded one-hour playlist is already seekable. Reuse it when its fragment
   // map contains the requested wall-clock instant; this turns repeated timeline
   // clicks into immediate in-player seeks instead of a source teardown/reload.
-  if (!seekWithinLoadedPlayback(d)) startPlayback(d);
+  if (seekWithinLoadedPlayback(d)) {
+    // The picture left whichever event the rail started; the timeline now
+    // says where playback is.
+    markRailEvent(null);
+  } else {
+    startPlayback(d);
+  }
 }
 
 // Any deliberate pan/zoom/seek opts out of viewport auto-defaulting and follow.
@@ -3568,6 +3574,7 @@ function playbackWallTime(video) {
 }
 
 // opts.quiet suppresses the toast (used when chaining into the next hour).
+// opts.railEvent names the rail event this playback was started from.
 function startPlayback(timestamp, opts) {
   var name = getCameraName();
   if (!name) return;
@@ -3630,7 +3637,9 @@ function startPlayback(timestamp, opts) {
       returnToLive();
       return;
     }
-    startPlayback(new Date(wall.getTime() + 1000), { quiet: true });
+    // The next window continues the same footage, so an event the rail
+    // marks as playing stays marked.
+    startPlayback(new Date(wall.getTime() + 1000), { quiet: true, railEvent: railState.selected });
   };
 
   if (typeof Hls !== 'undefined' && Hls.isSupported()) {
@@ -3692,6 +3701,9 @@ function startPlayback(timestamp, opts) {
   }
 
   playbackMode = true;
+  // The rail marks an event only while the playback it started is the one on
+  // screen; playback started anywhere else clears the mark.
+  markRailEvent(opts && opts.railEvent ? opts.railEvent : null);
   updatePlaybackUI();
   updateVideoProgress();
   if (!opts || !opts.quiet) {
@@ -5592,8 +5604,7 @@ function initCameraStage(cameraName) {
     var when = new Date(row.dataset.eventTime);
     if (isNaN(when.getTime())) return;
     if (calendarDaysBetween(timelineDate || new Date(), new Date()) !== 0) timelineToday();
-    startPlayback(when);
-    markRailEvent(row.dataset.eventId);
+    startPlayback(when, { railEvent: row.dataset.eventId });
   });
 
   loadRailEvents();

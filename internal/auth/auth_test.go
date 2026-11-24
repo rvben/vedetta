@@ -683,3 +683,90 @@ func TestRequestIsSecureWithTrustedProxy(t *testing.T) {
 		t.Fatal("untrusted proxy should not be treated as secure")
 	}
 }
+
+// A valid session stays valid when its last-seen time cannot be written, as
+// happens when the disk is full: the operator must still be able to sign in
+// to the recorder to see why.
+func TestSessionAuthenticatesWhenLastSeenCannotBeWritten(t *testing.T) {
+	c := newChecker(t, config.APIConfig{Exposure: "lan"})
+
+	session, err := c.Login("admin", "secret", "10.0.0.1", "test-agent", false)
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	c.SetSessionCookies(rr, httptest.NewRequest(http.MethodPost, "http://vedetta.local/api/auth/login", nil), session)
+
+	if _, err := c.db.Raw().Exec(`CREATE TRIGGER refuse_last_seen BEFORE UPDATE OF last_seen_at ON auth_sessions
+		BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	if err := c.db.TouchSession(session.ID, time.Now()); err == nil {
+		t.Fatal("the trigger must make the last-seen write fail, or this test proves nothing")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cameras", nil)
+	for _, cookie := range rr.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	principal, err := c.Authenticate(req)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if principal == nil || principal.Kind != AuthKindSession || principal.Username != "admin" {
+		t.Fatalf("expected the admin session principal, got %+v", principal)
+	}
+
+	// The stored last-seen time falls behind while writes fail. A session in
+	// use throughout must not idle out on that stale value.
+	raw := c.db.Raw()
+	if _, err := raw.Exec(`DROP TRIGGER refuse_last_seen`); err != nil {
+		t.Fatalf("drop trigger: %v", err)
+	}
+	if err := c.db.TouchSession(session.ID, time.Now().Add(-2*SessionIdleTTL)); err != nil {
+		t.Fatalf("age the stored last-seen time: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TRIGGER refuse_last_seen BEFORE UPDATE OF last_seen_at ON auth_sessions
+		BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`); err != nil {
+		t.Fatalf("recreate trigger: %v", err)
+	}
+	principal, err = c.Authenticate(req)
+	if err != nil {
+		t.Fatalf("Authenticate with a stale stored last-seen time: %v", err)
+	}
+	if principal == nil {
+		t.Fatal("a session in use while writes fail idled out on the stale stored time")
+	}
+}
+
+// Activity remembered in memory belongs to the session that had it. Another
+// session whose stored last-seen time is past the idle timeout still expires.
+func TestIdleSessionExpiresWhileLastSeenCannotBeWritten(t *testing.T) {
+	c := newChecker(t, config.APIConfig{Exposure: "lan"})
+
+	session, err := c.Login("admin", "secret", "10.0.0.1", "test-agent", false)
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	c.SetSessionCookies(rr, httptest.NewRequest(http.MethodPost, "http://vedetta.local/api/auth/login", nil), session)
+	if err := c.db.TouchSession(session.ID, time.Now().Add(-2*SessionIdleTTL)); err != nil {
+		t.Fatalf("age the stored last-seen time: %v", err)
+	}
+	if _, err := c.db.Raw().Exec(`CREATE TRIGGER refuse_last_seen BEFORE UPDATE OF last_seen_at ON auth_sessions
+		BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cameras", nil)
+	for _, cookie := range rr.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	principal, err := c.Authenticate(req)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if principal != nil {
+		t.Fatalf("an idle session must expire, got %+v", principal)
+	}
+}

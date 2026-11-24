@@ -74,7 +74,11 @@ type Checker struct {
 	loginFailures map[string]*failureRecord
 	ipFailures    map[string]*failureRecord
 	tokenCreates  map[string]*failureRecord
-	done          chan struct{}
+	// unsavedLastSeen holds, per session ID, the latest activity whose
+	// last-seen write failed. It stands in for the stored time in the idle
+	// check until a write succeeds again.
+	unsavedLastSeen map[string]time.Time
+	done            chan struct{}
 }
 
 func New(authCfg config.AuthConfig, apiCfg config.APIConfig, db *storage.DB) *Checker {
@@ -467,12 +471,39 @@ func (c *Checker) authenticateSession(r *http.Request) (*Principal, error) {
 	if idleTTL <= 0 {
 		idleTTL = SessionIdleTTL
 	}
-	if now.After(session.ExpiresAt) || now.Sub(session.LastSeenAt) > idleTTL {
+	lastSeen := session.LastSeenAt
+	c.mu.Lock()
+	if unsaved, ok := c.unsavedLastSeen[session.ID]; ok && unsaved.After(lastSeen) {
+		lastSeen = unsaved
+	}
+	c.mu.Unlock()
+	if now.After(session.ExpiresAt) || now.Sub(lastSeen) > idleTTL {
 		_ = c.db.DeleteSession(session.ID)
+		c.mu.Lock()
+		delete(c.unsavedLastSeen, session.ID)
+		c.mu.Unlock()
 		return nil, nil
 	}
-	if err := c.db.TouchSession(session.ID, now); err != nil {
-		return nil, err
+	// The last-seen time only feeds the idle timeout. A session that was just
+	// read and found valid stays valid when that write fails (a full disk), so
+	// the operator can still reach the recorder to see what is wrong. The
+	// activity is remembered in memory so the session does not idle out while
+	// it is in use, and the failure is logged once per session until a write
+	// succeeds again.
+	err = c.db.TouchSession(session.ID, now)
+	c.mu.Lock()
+	_, alreadyUnsaved := c.unsavedLastSeen[session.ID]
+	if err != nil {
+		if c.unsavedLastSeen == nil {
+			c.unsavedLastSeen = make(map[string]time.Time)
+		}
+		c.unsavedLastSeen[session.ID] = now
+	} else {
+		delete(c.unsavedLastSeen, session.ID)
+	}
+	c.mu.Unlock()
+	if err != nil && !alreadyUnsaved {
+		slog.Warn("session last-seen time not saved; keeping it in memory", "username", session.Username, "error", err)
 	}
 
 	return &Principal{

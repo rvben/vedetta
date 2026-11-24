@@ -1523,7 +1523,6 @@ function startMSE() {
       startMSEStats();
       attachAutoplayBlockedDetector(video);
       requestMutedAutoplay(video);
-      toast('MSE stream connected');
 
       // Some browsers (notably iPhone Safari in desktop-website mode) accept
       // the MSE pipeline but never decode a frame, leaving a silently-black
@@ -1593,7 +1592,6 @@ function startMSE() {
     if (currentStream === 'mse') {
       // Stream had connected then dropped — reconnect, eventually cascading
       // to WebRTC if reconnects are exhausted.
-      toast('MSE stream disconnected', 'error');
       cleanupMSE();
       mseAutoReconnect();
     } else {
@@ -1628,13 +1626,19 @@ function cleanupMSE() {
 }
 
 // ─── MSE Auto-Reconnect ───
+// An interruption is announced once. Later attempts in the same run stay
+// quiet: the viewport shows the connecting state for as long as they last.
+function announceLiveReconnect(attempt) {
+  var notice = liveReconnectNotice(attempt);
+  if (notice) toast(notice);
+}
+
 var mseReconnectAttempts = 0;
 var mseMaxReconnect = 5;
 var mseReconnectTimer = null;
 
 function mseAutoReconnect() {
   if (mseReconnectAttempts >= mseMaxReconnect) {
-    toast('MSE reconnect failed, trying WebRTC...', 'error');
     mseReconnectAttempts = 0;
     startWebRTC();
     return;
@@ -1642,7 +1646,7 @@ function mseAutoReconnect() {
 
   mseReconnectAttempts++;
   var delay = Math.min(1000 * Math.pow(2, mseReconnectAttempts - 1), 8000);
-  toast('Reconnecting MSE (' + mseReconnectAttempts + '/' + mseMaxReconnect + ')...');
+  announceLiveReconnect(mseReconnectAttempts);
 
   mseReconnectTimer = setTimeout(function() {
     startMSE();
@@ -1737,7 +1741,6 @@ async function startWebRTC() {
         viewport.classList.remove('live-snapshot-fallback');
       }
       updatePauseUI();
-      toast('Live connected');
     }
 
     pc.addTransceiver('video', { direction: 'recvonly' });
@@ -1789,7 +1792,6 @@ async function startWebRTC() {
           fallbackToNextVideo('WebRTC unavailable; switching to native HLS');
           return;
         }
-        toast('WebRTC connection lost', 'error');
         stopStream();
         webrtcAutoReconnect();
       } else if (state === 'connected') {
@@ -1906,7 +1908,7 @@ function startMjpegMultipart() {
 
   mjpeg.onerror = function () {
     if (currentStream !== 'mjpeg') return;
-    failMJPEG('MJPEG stream failed, check that the camera is online');
+    failMJPEG('Live view failed. Check that the camera is online.');
   };
   // The `load` event is unreliable for multipart/x-mixed-replace (some
   // browsers, notably iOS Safari, never fire it for the stream). Treat it
@@ -1935,7 +1937,6 @@ function startMjpegMultipart() {
 
   currentStream = 'mjpeg';
   updateStreamButtons();
-  toast('MJPEG stream started');
 
   // Start MJPEG stream stats to show resolution on hover
   stopStreamStats();
@@ -3693,7 +3694,7 @@ function startPlayback(timestamp, opts) {
       returnToLive();
     };
   } else {
-    toast('HLS playback not supported in this browser', 'error');
+    toast('This browser cannot play recordings', 'error');
     return;
   }
 
@@ -4323,7 +4324,7 @@ function openInlinePlayer(cameraName, startIso, displayLabel) {
       video.play().catch(function() {});
     };
   } else {
-    toast('HLS playback not supported in this browser', 'error');
+    toast('This browser cannot play recordings', 'error');
     return;
   }
 
@@ -6237,7 +6238,7 @@ function webrtcAutoReconnect() {
 
   webrtcReconnectAttempts++;
   var delay = Math.min(1000 * Math.pow(2, webrtcReconnectAttempts - 1), 8000);
-  toast('Reconnecting live…');
+  announceLiveReconnect(webrtcReconnectAttempts);
 
   webrtcReconnectTimer = setTimeout(function() {
     startWebRTC().catch(function() {

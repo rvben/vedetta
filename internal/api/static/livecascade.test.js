@@ -134,3 +134,15 @@ test('detection boxes draw over MJPEG and snapshot, where the video is hidden', 
   assert.equal(detectionBoxesMayDraw({ hidden: true, videoWidth: 0, readyState: 0 }), true);
   assert.equal(detectionBoxesMayDraw(null), true);
 });
+
+test('an interruption is announced once, on the first reconnect attempt', () => {
+  const { liveReconnectNotice } = require('./livecascade.js');
+  assert.notEqual(liveReconnectNotice(1), '');
+  assert.equal(liveReconnectNotice(2), '');
+  assert.equal(liveReconnectNotice(5), '');
+});
+
+test('the reconnect notice names the live view, not its transport', () => {
+  const { liveReconnectNotice } = require('./livecascade.js');
+  assert.doesNotMatch(liveReconnectNotice(1), /MSE|WebRTC|HLS|MJPEG/i);
+});

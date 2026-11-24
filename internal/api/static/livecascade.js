@@ -78,6 +78,13 @@ function detectionBoxesMayDraw(video) {
   return video.videoWidth > 0 && video.readyState >= 2;
 }
 
+// liveReconnectNotice is the message for reconnect attempt `attempt` (1-based)
+// of one interruption, or '' when that attempt is silent. It names what the
+// viewer sees, the live view, and never the transport carrying it.
+function liveReconnectNotice(attempt) {
+  return attempt === 1 ? 'Live view interrupted. Reconnecting\u2026' : '';
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     fallbackLiveTransport: fallbackLiveTransport,
@@ -87,5 +94,6 @@ if (typeof module !== 'undefined' && module.exports) {
     preferredLiveTransport: preferredLiveTransport,
     autoplayNeedsUserGesture: autoplayNeedsUserGesture,
     detectionBoxesMayDraw: detectionBoxesMayDraw,
+    liveReconnectNotice: liveReconnectNotice,
   };
 }

@@ -448,7 +448,7 @@
           if (s.event_id) {
             html += '<a class="object-sighting" href="/event.html?id=' + encodeURIComponent(s.event_id) + '" '
               + 'title="' + escapeAttr(details) + '">'
-              + '<div class="object-sighting-thumb" data-bg="/api/events/' + encodeURIComponent(s.event_id) + '/snapshot"></div>'
+              + '<div class="object-sighting-thumb" data-bg="/api/events/' + encodeURIComponent(s.event_id) + '/snapshot?width=480"></div>'
               + '<span class="object-sighting-sim ' + simClass + '">' + simPct + '%</span>'
               + dismiss
               + '</a>';
@@ -508,7 +508,7 @@
             html += '<button class="thumb-picker-item" '
               + 'data-action-click="setThumbnail(' + objectId + ', ' + jsStringArg(s.event_id) + ', null)" '
               + 'title="' + escapeAttr(s.camera + ' · ' + simPct + '% match') + '">'
-              + '<img alt="" loading="lazy" src="/api/events/' + encodeURIComponent(s.event_id) + '/snapshot">'
+              + '<img alt="" loading="lazy" src="/api/events/' + encodeURIComponent(s.event_id) + '/snapshot?width=480">'
               + '<span class="thumb-picker-badge">' + simPct + '%</span>'
               + '</button>';
           });

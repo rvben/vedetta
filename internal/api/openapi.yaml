@@ -1073,6 +1073,14 @@ paths:
           description: Set to serve raw image without bounding box overlay
           schema:
             type: string
+        - name: width
+          in: query
+          description: >-
+            Scale the image down to this width in pixels, keeping the aspect
+            ratio, for thumbnails. Values are clamped to 64..1920 and never
+            enlarge the snapshot. Ignored with download or raw.
+          schema:
+            type: integer
       responses:
         "200":
           description: JPEG snapshot

@@ -50,7 +50,7 @@ var activitiesGalleryTmpl = template.Must(template.New("activities").Funcs(parti
 	`{{range .}}` +
 		`<a class="event-card activity-card" href="/activity.html?id={{.ID}}" data-event-time="{{.StartTime.UTC.Format "2006-01-02T15:04:05Z"}}" data-activity-category="{{.Category}}" data-activity-state="{{.State}}">` +
 		`<div class="event-thumb activity-thumb">` +
-		`{{if .PrimaryEvent.SnapshotAvailable}}<img src="/api/events/{{.PrimaryEvent.ID}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}" loading="lazy">` +
+		`{{if .PrimaryEvent.SnapshotAvailable}}<img src="/api/events/{{.PrimaryEvent.ID}}/snapshot?width=640" alt="{{activityTitle .}} at {{displayName .CameraName}}" loading="lazy">` +
 		`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="{{activityTitle .}} at {{displayName .CameraName}}" loading="lazy">{{end}}` +
 		`{{if gt .EventCount 1}}<span class="activity-evidence-count">{{.EventCount}} events</span>{{end}}` +
 		`{{if eq .State "open"}}<span class="activity-state-badge">{{activityStateLabel .State}}</span>{{end}}` +
@@ -79,12 +79,12 @@ var activityDetailTmpl = template.Must(template.New("activity-detail").Funcs(par
 		`<aside class="activity-evidence" aria-labelledby="evidence-title"><div class="activity-evidence-heading"><h2 id="evidence-title">Evidence</h2><p>Every detection included in this activity.</p></div>` +
 		`<div class="activity-grouping"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M12 11v5m0-8v.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><div><strong>Why these belong together</strong><span>{{.Grouping.Explanation}}</span></div></div>` +
 		`<div class="activity-evidence-list">{{range .Events}}<div class="activity-evidence-row"><a class="activity-evidence-item" href="{{activityEvidenceURL .ID}}">` +
-		`<div class="activity-evidence-thumb">{{if .SnapshotAvailable}}<img src="/api/events/{{.ID}}/snapshot" alt="{{displayName .Label}} evidence">{{else}}<span aria-hidden="true"></span>{{end}}</div>` +
+		`<div class="activity-evidence-thumb">{{if .SnapshotAvailable}}<img src="/api/events/{{.ID}}/snapshot?width=480" alt="{{displayName .Label}} evidence">{{else}}<span aria-hidden="true"></span>{{end}}</div>` +
 		`<div><strong>{{if .SubLabel}}{{.SubLabel}}{{else}}{{displayName .Label}}{{end}}</strong><span>{{formatTime .Timestamp}}{{with .ZoneName}} · {{displayName .}}{{end}}</span></div>` +
 		`<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></a>` +
 		`<button class="btn btn-ghost activity-evidence-correction" type="button" data-activity-evidence-action="exclude" data-event-id="{{.ID}}" aria-label="Exclude {{displayName .Label}} evidence from this activity" title="{{if eq $activity.EventCount 1}}An Activity must keep at least one evidence event{{else}}Keep the raw event, but remove it from this Activity{{end}}" {{if eq $activity.EventCount 1}}disabled{{end}}>Exclude</button></div>{{end}}</div>` +
 		`{{with .ExcludedEvidence}}<section class="activity-excluded" aria-labelledby="excluded-evidence-title"><div class="activity-excluded-heading"><h3 id="excluded-evidence-title">Excluded evidence</h3><p>Kept as raw evidence and available to restore.</p></div><div class="activity-excluded-list">{{range .}}<div class="activity-evidence-row is-excluded"><a class="activity-evidence-item" href="{{activityEvidenceURL .Event.ID}}">` +
-		`<div class="activity-evidence-thumb">{{if .Event.SnapshotAvailable}}<img src="/api/events/{{.Event.ID}}/snapshot" alt="Excluded {{displayName .Event.Label}} evidence">{{else}}<span aria-hidden="true"></span>{{end}}</div>` +
+		`<div class="activity-evidence-thumb">{{if .Event.SnapshotAvailable}}<img src="/api/events/{{.Event.ID}}/snapshot?width=480" alt="Excluded {{displayName .Event.Label}} evidence">{{else}}<span aria-hidden="true"></span>{{end}}</div>` +
 		`<div><strong>{{if .Event.SubLabel}}{{.Event.SubLabel}}{{else}}{{displayName .Event.Label}}{{end}}</strong><span>{{.Reason}} · by {{.Actor}}</span></div>` +
 		`<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></a>` +
 		`<button class="btn btn-ghost activity-evidence-correction" type="button" data-activity-evidence-action="restore" data-event-id="{{.Event.ID}}" aria-label="Restore {{displayName .Event.Label}} evidence to this activity">Restore</button></div>{{end}}</div></section>{{end}}` +
@@ -94,7 +94,7 @@ var eventsGalleryTmpl = template.Must(template.New("gallery").Funcs(partialFuncs
 	`{{range .}}` +
 		`<a class="event-card" href="/event.html?id={{.ID}}" role="listitem" data-event-time="{{.Timestamp.UTC.Format "2006-01-02T15:04:05Z"}}" data-event-category="{{.Category}}">` +
 		`<div class="event-thumb">` +
-		`{{if .SnapshotAvailable}}<img src="/api/events/{{.ID}}/snapshot" alt="{{.Label}} detected by {{displayName .CameraName}}" loading="lazy">` +
+		`{{if .SnapshotAvailable}}<img src="/api/events/{{.ID}}/snapshot?width=640" alt="{{.Label}} detected by {{displayName .CameraName}}" loading="lazy">` +
 		`{{else}}<img src="/api/cameras/{{.CameraName}}/snapshot" alt="{{.Label}} detected by {{displayName .CameraName}}" loading="lazy">{{end}}` +
 		`{{if eq .Kind "doorbell"}}{{if .AnsweredAt.IsZero}}<span class="event-missed-badge">missed</span>{{else}}<span class="event-answered-badge" title="answered by {{.AnsweredBy}}">answered</span>{{end}}{{end}}` +
 		`</div>` +

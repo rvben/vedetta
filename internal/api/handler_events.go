@@ -18,6 +18,7 @@ import (
 	"github.com/rvben/vedetta/internal/safepath"
 	"github.com/rvben/vedetta/internal/snapshot"
 	"github.com/rvben/vedetta/internal/storage"
+	xdraw "golang.org/x/image/draw"
 )
 
 func (s *Server) ListEvents(w http.ResponseWriter, r *http.Request, params ListEventsParams) {
@@ -137,10 +138,14 @@ func (s *Server) GetEventSnapshot(w http.ResponseWriter, r *http.Request, id str
 	if event.SubLabel != "" {
 		label = event.SubLabel
 	}
+	box := event.Box
+	if params.Width != nil {
+		img, box = scaleSnapshot(img, box, *params.Width)
+	}
 	det := detect.Detection{
 		Label: label,
 		Score: event.Score,
-		Box:   event.Box,
+		Box:   box,
 	}
 	snapshot.DrawDetectionsInPlace(img, []detect.Detection{det})
 
@@ -600,6 +605,34 @@ func loadSnapshotImage(path string) (*image.RGBA, error) {
 		draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
 	}
 	return rgba, nil
+}
+
+// Bounds for the snapshot width a client may request.
+const (
+	minSnapshotWidth = 64
+	maxSnapshotWidth = 1920
+)
+
+// scaleSnapshot scales img down to the requested width, keeping the aspect
+// ratio, and maps box into the scaled image. The box is drawn afterwards so
+// its outline and label keep their pixel size on a thumbnail. A width at or
+// above the source returns the image and box unchanged.
+func scaleSnapshot(img *image.RGBA, box [4]int, width int) (*image.RGBA, [4]int) {
+	width = min(max(width, minSnapshotWidth), maxSnapshotWidth)
+	src := img.Bounds()
+	if src.Dx() <= width || src.Dy() <= 0 {
+		return img, box
+	}
+	height := max(1, width*src.Dy()/src.Dx())
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, src, xdraw.Src, nil)
+	scaled := [4]int{
+		(box[0] - src.Min.X) * width / src.Dx(),
+		(box[1] - src.Min.Y) * height / src.Dy(),
+		(box[2] - src.Min.X) * width / src.Dx(),
+		(box[3] - src.Min.Y) * height / src.Dy(),
+	}
+	return dst, scaled
 }
 
 // matchFaceToPerson finds the best matching person for a face embedding.

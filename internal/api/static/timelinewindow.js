@@ -189,6 +189,47 @@ TimelineWindow.columnTimeInterval = function (win, col, widthPx) {
   return [TimelineWindow.pctToSec(win, col / widthPx), TimelineWindow.pctToSec(win, (col + 1) / widthPx)];
 };
 
+// Recorded coverage of one day as merged blocks in seconds-of-day. `segments`
+// are { start, end } in seconds relative to local midnight of that day, so a
+// segment that began the previous day has a negative start and one that runs
+// into the next day ends past 86400; both are clamped to the day. Segments
+// separated by at most MERGE_GAP seconds are drawn as one block.
+TimelineWindow.COVERAGE_MERGE_GAP = 60;
+
+TimelineWindow.dayCoverageBlocks = function (segments) {
+  var day = TimelineWindow.SECONDS_PER_DAY;
+  var spans = [];
+  (segments || []).forEach(function (seg) {
+    if (!isFinite(seg.start) || !isFinite(seg.end)) return;
+    var start = clamp(seg.start, 0, day);
+    var end = clamp(seg.end, 0, day);
+    if (end <= start) return;
+    spans.push({ start: start, end: end });
+  });
+  spans.sort(function (a, b) { return a.start - b.start; });
+  var blocks = [];
+  spans.forEach(function (span) {
+    var last = blocks[blocks.length - 1];
+    if (last && span.start - last.end <= TimelineWindow.COVERAGE_MERGE_GAP) {
+      if (span.end > last.end) last.end = span.end;
+    } else {
+      blocks.push(span);
+    }
+  });
+  return blocks;
+};
+
+// Seconds from local midnight of `day` to `when` (both Date), counted on the
+// wall clock so a daylight-saving day still maps 13:00 to 13 * 3600. Negative
+// before that day, above 86400 after it.
+TimelineWindow.wallSecondsFromDay = function (when, day) {
+  var dayIndex = Date.UTC(day.getFullYear(), day.getMonth(), day.getDate());
+  var whenIndex = Date.UTC(when.getFullYear(), when.getMonth(), when.getDate());
+  var dayOffset = Math.round((whenIndex - dayIndex) / 86400000);
+  return dayOffset * TimelineWindow.SECONDS_PER_DAY +
+    when.getHours() * 3600 + when.getMinutes() * 60 + when.getSeconds();
+};
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = TimelineWindow;
 }

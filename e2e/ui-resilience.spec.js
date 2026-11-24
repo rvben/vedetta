@@ -376,3 +376,36 @@ test('authentication screens honor the saved theme without decorative elevation'
   await expect(page.locator('.shell')).toHaveCSS('box-shadow', 'none');
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
 });
+
+test('recordings coverage bar spans the day when the first segment began before midnight', async ({ page }) => {
+  // Local wall-clock times: the browser's zone decides the UTC instants.
+  const iso = (d, h, m) => new Date(2026, 10, d, h, m, 0).toISOString();
+  const segments = [{ start_time: iso(23, 23, 56), end_time: iso(24, 0, 6), size: 1 }];
+  for (let minute = 6; minute < 12 * 60; minute += 10) {
+    segments.push({
+      start_time: iso(24, Math.floor(minute / 60), minute % 60),
+      end_time: iso(24, Math.floor((minute + 10) / 60), (minute + 10) % 60),
+      size: 1,
+    });
+  }
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/recordings/calendar') return json(route, { days: ['2026-11-24'] });
+    if (path === '/api/recordings/summary') {
+      return json(route, { total_bytes: 72, cameras: [{ name: 'garage', total_bytes: 72, segments }] });
+    }
+    if (path === '/api/health') return json(route, { status: 'ok', checks: {} });
+    return json(route, {});
+  });
+
+  await page.goto('/recordings.html?date=2026-11-24');
+
+  const fill = page.locator('.rec-coverage-fill');
+  await expect(fill).toHaveCount(1);
+  const geometry = await fill.evaluate(node => ({ left: node.style.left, width: parseFloat(node.style.width) }));
+  expect(geometry.left).toBe('0%');
+  // The last segment ends at 12:06, which is 726 of the day's 1440 minutes.
+  expect(geometry.width).toBeGreaterThan(50.3);
+  expect(geometry.width).toBeLessThan(50.5);
+  await expect(page.locator('.rec-segments-toggle')).toContainText('12h 6m');
+});

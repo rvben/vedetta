@@ -4049,23 +4049,14 @@ function renderRecordingsSummary(data, date) {
     var barWrap = document.createElement('div');
     barWrap.className = 'rec-coverage-bar';
 
-    // Merge adjacent segments (gap < 60s)
-    var blocks = [];
-    cam.segments.forEach(function(seg) {
-      var start = new Date(seg.start_time);
-      var end = new Date(seg.end_time);
-      var startSec = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds();
-      var endSec = end.getHours() * 3600 + end.getMinutes() * 60 + end.getSeconds();
-      if (endSec <= startSec) endSec = 86400;
-
-      if (blocks.length > 0 && startSec - blocks[blocks.length - 1].end <= 60) {
-        if (endSec > blocks[blocks.length - 1].end) {
-          blocks[blocks.length - 1].end = endSec;
-        }
-      } else {
-        blocks.push({ start: startSec, end: endSec });
-      }
-    });
+    // Segments are placed relative to the selected day, so one that began
+    // before midnight starts at 00:00 instead of at its own clock time.
+    var blocks = TimelineWindow.dayCoverageBlocks(cam.segments.map(function(seg) {
+      return {
+        start: TimelineWindow.wallSecondsFromDay(new Date(seg.start_time), date),
+        end: TimelineWindow.wallSecondsFromDay(new Date(seg.end_time), date)
+      };
+    }));
 
     blocks.forEach(function(block) {
       var startPct = block.start / 86400 * 100;

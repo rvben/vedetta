@@ -251,3 +251,59 @@ test('columnTimeInterval detects a sub-pixel coverage span (high zoom)', () => {
 test('columnTimeInterval on a zero-width track returns the full window span', () => {
   assert.deepEqual(TLW.columnTimeInterval(TLW.makeWindow(0, 3600), 0, 0), [0, 3600]);
 });
+
+// dayCoverageBlocks: segments are { start, end } in seconds relative to local
+// midnight of the day being drawn (negative = previous day, >86400 = next day).
+const at = (h, m) => h * 3600 + m * 60;
+
+test('dayCoverageBlocks clamps a segment that began the previous day to 00:00', () => {
+  const segs = [
+    { start: at(0, -4), end: at(0, 6) },   // 23:56 previous day -> 00:06
+    { start: at(0, 6), end: at(0, 16) },
+    { start: at(0, 16), end: at(0, 26) },
+  ];
+  assert.deepEqual(TLW.dayCoverageBlocks(segs), [{ start: 0, end: 26 * 60 }]);
+});
+
+test('dayCoverageBlocks clamps a segment running past midnight to 24:00', () => {
+  const segs = [{ start: at(23, 55), end: at(24, 5) }];
+  assert.deepEqual(TLW.dayCoverageBlocks(segs), [{ start: 23 * 3600 + 55 * 60, end: 86400 }]);
+});
+
+test('dayCoverageBlocks keeps a gap longer than 60s as two blocks', () => {
+  const segs = [
+    { start: at(1, 0), end: at(1, 10) },
+    { start: at(1, 12), end: at(1, 20) },
+    { start: at(1, 20) + 30, end: at(1, 30) }, // 30s gap merges
+  ];
+  assert.deepEqual(TLW.dayCoverageBlocks(segs), [
+    { start: 3600, end: 3600 + 600 },
+    { start: 3600 + 720, end: 3600 + 1800 },
+  ]);
+});
+
+test('dayCoverageBlocks drops segments wholly outside the day and unparseable ones', () => {
+  const segs = [
+    { start: at(-2, 0), end: at(-1, 0) },
+    { start: at(25, 0), end: at(26, 0) },
+    { start: NaN, end: at(3, 0) },
+    { start: at(5, 0), end: at(5, 10) },
+  ];
+  assert.deepEqual(TLW.dayCoverageBlocks(segs), [{ start: 18000, end: 18600 }]);
+});
+
+test('dayCoverageBlocks sorts unordered input before merging', () => {
+  const segs = [
+    { start: at(2, 10), end: at(2, 20) },
+    { start: at(2, 0), end: at(2, 10) },
+  ];
+  assert.deepEqual(TLW.dayCoverageBlocks(segs), [{ start: 7200, end: 8400 }]);
+});
+
+test('wallSecondsFromDay is negative the day before and past 86400 the day after', () => {
+  const day = new Date(2026, 10, 24);
+  assert.equal(TLW.wallSecondsFromDay(new Date(2026, 10, 24, 13, 0, 5), day), 13 * 3600 + 5);
+  assert.equal(TLW.wallSecondsFromDay(new Date(2026, 10, 23, 23, 56, 0), day), -240);
+  assert.equal(TLW.wallSecondsFromDay(new Date(2026, 10, 25, 0, 6, 0), day), 86400 + 360);
+  assert.equal(TLW.wallSecondsFromDay(new Date(2026, 11, 1, 0, 0, 0), new Date(2026, 10, 30)), 86400);
+});

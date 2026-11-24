@@ -134,6 +134,11 @@ func isPublicPath(r *http.Request) bool {
 	// on must also load without a session.
 	case r.Method == http.MethodGet && r.URL.Path == "/safehref.js":
 		return true
+	// style.css styles the login page, which is served before any session
+	// exists. Behind auth it answers with a redirect and the sign-in form
+	// renders as unstyled markup.
+	case r.Method == http.MethodGet && r.URL.Path == "/style.css":
+		return true
 	case r.Method == http.MethodGet && isPWAImagePath(r.URL.Path):
 		return true
 	// Signed push-notification snapshot URLs. iOS fetches these without

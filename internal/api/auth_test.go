@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 
 	"github.com/rvben/vedetta/internal/auth"
@@ -179,5 +180,39 @@ func TestAuthMiddleware_SafeHrefScriptIsPublic(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("GET /safehref.js status = %d, want %d (login page needs it before auth)", w.Code, http.StatusOK)
+	}
+}
+
+// Everything the login page loads from this server must be reachable without
+// a session: a signed-out browser that is redirected instead of served gets a
+// sign-in form with no styling or no script. The list is read from the page,
+// so an asset added to it later is covered.
+func TestAuthMiddleware_LoginPageAssetsArePublic(t *testing.T) {
+	page, err := staticFiles.ReadFile("static/login.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := regexp.MustCompile(`(?:src|href)="(/[^"/][^"]*)"`).FindAllSubmatch(page, -1)
+	if len(refs) < 3 {
+		t.Fatalf("found %d same-origin assets in login.html, expected at least the stylesheet, script and icon", len(refs))
+	}
+
+	srv, _ := newTestServerAuth(t)
+	handler := authMiddleware(srv, okHandler)
+	sawStylesheet := false
+	for _, ref := range refs {
+		path := string(ref[1])
+		if path == "/style.css" {
+			sawStylesheet = true
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s status = %d, want %d (the login page loads it before auth)", path, w.Code, http.StatusOK)
+		}
+	}
+	if !sawStylesheet {
+		t.Error("login.html no longer references /style.css; the asset scan is not seeing the page's stylesheet")
 	}
 }

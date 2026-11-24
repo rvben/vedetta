@@ -255,6 +255,29 @@ func (d *DB) QueryEventsFiltered(f EventFilters, limit, offset int) ([]camera.Ev
 	return scanEvents(rows)
 }
 
+// LatestEvent returns the newest event recorded for a camera, or nil when the
+// camera has none. The dashboard captions each tile with it.
+func (d *DB) LatestEvent(cameraName string) (*camera.Event, error) {
+	rows, err := d.db.Query(`
+		SELECT `+eventSelectCols+`
+		FROM events
+		WHERE camera = ?
+		ORDER BY timestamp DESC, id DESC
+		LIMIT 1`, cameraName)
+	if err != nil {
+		return nil, err
+	}
+	events, err := scanEvents(rows)
+	_ = rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if len(events) == 0 {
+		return nil, nil
+	}
+	return &events[0], nil
+}
+
 // LatestSnapshotEvent returns the newest event for a camera whose snapshot is
 // both marked available and backed by a non-empty path. Push test notifications
 // use it to show real evidence without exposing an authenticated media URL.

@@ -643,20 +643,11 @@ func TestHandleDashboardStatsPartial(t *testing.T) {
 	if len(body) == 0 {
 		t.Error("response body is empty")
 	}
-	// The dashboard stats template includes stat-card divs
-	if !contains(body, "stat-card") {
-		t.Error("response missing stat-card class")
+	if !contains(body, `<a class="dash-stat" href="/events.html"><span class="stat-value">`) || !contains(body, " today</a>") {
+		t.Error("response missing the events today figure")
 	}
-	if !contains(body, "Cameras") {
-		t.Error("response missing Cameras label")
-	}
-	// The events label is "Events" with a responsive " Today" qualifier
-	// span that is hidden on narrow phones; both parts must be present.
-	if !contains(body, ">Events<span class=\"stat-label-q\"> Today</span>") {
-		t.Error("response missing responsive Events Today label")
-	}
-	if !contains(body, "Storage") {
-		t.Error("response missing Storage label")
+	if !contains(body, "</span> stored</a>") {
+		t.Error("response missing the storage figure")
 	}
 }
 

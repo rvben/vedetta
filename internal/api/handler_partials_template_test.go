@@ -95,7 +95,7 @@ func TestCameraGridPartial_DoesNotReparsePerRequest(t *testing.T) {
 
 // Behaviour guard for the same change: the rendered markup must be unchanged by
 // moving the parse out of the handler.
-func TestDashboardStatsPartial_RendersAllCards(t *testing.T) {
+func TestDashboardStatsPartial_RendersTheSummary(t *testing.T) {
 	s, db := newTestServer(t)
 	seedEvent(t, db, "e1", "cam", "person", 0.9, time.Now().UTC())
 
@@ -105,13 +105,18 @@ func TestDashboardStatsPartial_RendersAllCards(t *testing.T) {
 
 	body := w.Body.String()
 	for _, want := range []string{
-		`<div class="stat-card"><div class="stat-label">Cameras</div><div class="stat-value">0</div></div>`,
-		`<div class="stat-card"><div class="stat-label">Online</div><div class="stat-value green">0</div></div>`,
-		`<div class="stat-label">Events<span class="stat-label-q"> Today</span></div><div class="stat-value">1</div>`,
-		`<div class="stat-card"><div class="stat-label">Storage</div><div class="stat-value">`,
+		`<a class="dash-stat" href="/events.html"><span class="stat-value">1</span> event today</a>`,
+		`<a class="dash-stat" href="/storage.html"><span class="stat-value">`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard-stats body missing %q\ngot: %s", want, body)
+		}
+	}
+	// With no cameras there is no camera state to report, and "0 live" would
+	// read as every camera being down.
+	for _, absent := range []string{" live<", " sleeping<", " offline<", " stopped<"} {
+		if strings.Contains(body, absent) {
+			t.Errorf("dashboard-stats names a camera state %q with no cameras\ngot: %s", absent, body)
 		}
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "text/html" {
@@ -130,10 +135,10 @@ func TestDashboardStatsPartial_DatabaseErrorIsNotZero(t *testing.T) {
 	s.handleDashboardStatsPartial(w, req)
 
 	body := w.Body.String()
-	if strings.Contains(body, `<div class="stat-value">0</div></div><div class="stat-card"><div class="stat-label">Storage`) {
+	if strings.Contains(body, `<span class="stat-value">0</span> events today`) {
 		t.Fatalf("unreadable events table rendered as a count of zero: %s", body)
 	}
-	if !strings.Contains(body, statUnavailable) {
+	if !strings.Contains(body, `<span class="stat-value">`+statUnavailable+`</span> events today`) {
 		t.Fatalf("expected an unavailable marker for the events count, got: %s", body)
 	}
 }

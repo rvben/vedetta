@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/config"
@@ -189,18 +190,24 @@ func TestCameraGridPartialBadges(t *testing.T) {
 
 	for _, tc := range []struct {
 		camera string
+		state  string
 		dot    string
 		label  string
 	}{
-		{"live-cam", `<span class="cam-live-dot"></span>`, "LIVE"},
-		{"down-cam", `<span class="cam-live-dot offline"></span>`, "OFFLINE"},
-		{"sleepy-cam", `<span class="cam-live-dot sleeping"></span>`, "SLEEPING"},
-		{"off-cam", `<span class="cam-live-dot stopped"></span>`, "STOPPED"},
+		{"live-cam", "live", `<span class="cam-live-dot"></span>`, "LIVE"},
+		{"down-cam", "offline", `<span class="cam-live-dot offline"></span>`, "OFFLINE"},
+		{"sleepy-cam", "sleeping", `<span class="cam-live-dot sleeping"></span>`, "SLEEPING"},
+		{"off-cam", "stopped", `<span class="cam-live-dot stopped"></span>`, "STOPPED"},
 	} {
 		card, ok := cards[tc.camera]
 		if !ok {
 			t.Errorf("camera %q missing from grid partial", tc.camera)
 			continue
+		}
+		// The card's own attributes run up to the first child element.
+		attrs, _, _ := strings.Cut(card, ">")
+		if !strings.Contains(attrs, `data-state="`+tc.state+`"`) {
+			t.Errorf("%s: card attributes = %q, want data-state=%q", tc.camera, attrs, tc.state)
 		}
 		// Bound the badge on both sides. Containment against the whole card
 		// would pass on markup that put the dot anywhere in the tile.
@@ -216,5 +223,100 @@ func TestCameraGridPartialBadges(t *testing.T) {
 		if !strings.Contains(badge, tc.label) {
 			t.Errorf("%s: badge label = %q, want it to contain %q", tc.camera, badge, tc.label)
 		}
+	}
+}
+
+// The dashboard sentence counts each camera once, in the state its tile shows.
+// A sleeping or stopped camera is not a fault and must not be counted offline.
+func TestDashboardStatsCountsEachCameraInItsTileState(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	for _, name := range []string{"live-a", "live-b"} {
+		cam := camera.NewTestCamera(name)
+		cam.SetTestOnline(true)
+		srv.cameras.RegisterForTest(cam)
+	}
+	down := camera.NewTestCamera("down-cam")
+	down.SetTestOnline(false)
+	srv.cameras.RegisterForTest(down)
+
+	asleep := camera.NewTestCamera("sleepy-cam")
+	asleep.SetTestOnDemand(true)
+	asleep.SetTestOnline(false)
+	srv.cameras.RegisterForTest(asleep)
+
+	off := camera.NewTestCamera("off-cam")
+	off.SetTestOnline(false)
+	srv.cameras.RegisterForTest(off)
+	if err := srv.cameras.StopCamera("off-cam"); err != nil {
+		t.Fatalf("StopCamera: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/partials/dashboard-stats", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`<span class="dash-stat"><span class="stat-value">2</span> live</span>`,
+		`<span class="dash-stat"><span class="stat-value">1</span> sleeping</span>`,
+		`<span class="dash-stat is-fault"><span class="stat-value">1</span> offline</span>`,
+		`<span class="dash-stat"><span class="stat-value">1</span> stopped</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard stats missing %q\ngot: %s", want, body)
+		}
+	}
+}
+
+// A live tile is captioned with the camera's newest event, and a camera with
+// no events gets an empty caption rather than a placeholder.
+func TestCameraGridPartialCaptionsTheLatestEvent(t *testing.T) {
+	srv, db := newTestServer(t)
+	for _, name := range []string{"busy-cam", "quiet-cam"} {
+		cam := camera.NewTestCamera(name)
+		cam.SetTestOnline(true)
+		srv.cameras.RegisterForTest(cam)
+	}
+	at := time.Date(2026, 11, 24, 17, 52, 0, 0, time.UTC)
+	seedEvent(t, db, "old", "busy-cam", "car", 0.9, at.Add(-time.Hour))
+	seedEvent(t, db, "new", "busy-cam", "person", 0.9, at)
+
+	req := httptest.NewRequest(http.MethodGet, "/partials/camera-grid", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	body := w.Body.String()
+
+	_, busy, _ := strings.Cut(body, `data-camera-name="busy-cam"`)
+	busy, quiet, _ := strings.Cut(busy, `data-camera-name="quiet-cam"`)
+	want := `<span class="cam-activity">Person <time class="cam-activity-time" datetime="2026-11-24T17:52:00Z"></time></span>`
+	if !strings.Contains(busy, want) {
+		t.Errorf("busy camera caption missing %q\ngot: %s", want, busy)
+	}
+	if !strings.Contains(quiet, `<span class="cam-activity"></span>`) {
+		t.Errorf("camera without events should have an empty caption\ngot: %s", quiet)
+	}
+}
+
+// A tile opens its camera through a link, not a click handler on a div: a link
+// takes keyboard focus and Enter, and a div does neither.
+func TestCameraGridPartialOpensEachCameraThroughALink(t *testing.T) {
+	srv, _ := newTestServer(t)
+	cam := camera.NewTestCamera("front door")
+	cam.SetTestOnline(true)
+	srv.cameras.RegisterForTest(cam)
+
+	req := httptest.NewRequest(http.MethodGet, "/partials/camera-grid", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	body := w.Body.String()
+
+	if want := `<a class="cam-link" href="/camera.html?name=front%20door"`; !strings.Contains(body, want) {
+		t.Errorf("tile has no link to its camera page, want %q\ngot: %s", want, body)
+	}
+	if strings.Contains(body, "location.href") {
+		t.Errorf("tile still navigates by script, which a keyboard cannot reach\ngot: %s", body)
 	}
 }

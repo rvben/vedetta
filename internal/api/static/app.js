@@ -4789,7 +4789,9 @@ document.addEventListener('visibilitychange', function() {
 // never replaced (no flash); the live stream still starts on hover.
 const GRID_TICK_MS = 4000;   // driver tick = motion-camera snapshot cadence
 const GRID_IDLE_MS = 30000;  // idle-camera snapshot cadence
+const GRID_ACTIVITY_MS = 60000; // latest-event caption cadence
 let gridSnapshotInterval = null;
+let gridActivityInterval = null;
 let gridLastSnap = {};       // camera name -> last snapshot pull (ms epoch)
 
 function startGridSnapshotRefresh() {
@@ -4797,12 +4799,17 @@ function startGridSnapshotRefresh() {
   // Eagerly load snapshots immediately on mount, then tick adaptively.
   initGridSnapshotStates();
   gridSnapshotInterval = setInterval(refreshGridSnapshots, GRID_TICK_MS);
+  gridActivityInterval = setInterval(refreshGridActivity, GRID_ACTIVITY_MS);
 }
 
 function stopGridSnapshotRefresh() {
   if (gridSnapshotInterval) {
     clearInterval(gridSnapshotInterval);
     gridSnapshotInterval = null;
+  }
+  if (gridActivityInterval) {
+    clearInterval(gridActivityInterval);
+    gridActivityInterval = null;
   }
   gridLastSnap = {};
 }
@@ -4821,21 +4828,52 @@ function ensureGridSnapshotRefresh() {
   startGridSnapshotRefresh();
 }
 
-// Render the "last seen" caption on a tile from its data-ts timestamp. The
-// caption is shown (via CSS) only for offline tiles; live tiles are cleared so
-// the caption hides. Pass tsStr to update the stored timestamp (e.g. from a
-// fresh /api/cameras poll), or null to reuse whatever the server rendered.
-function updateCamLastSeen(card, offline, tsStr) {
+// Caption a tile that is not live with the age of the still under it, from its
+// data-ts timestamp. A live tile is cleared, which hides the caption. Pass
+// tsStr to update the stored timestamp (e.g. from a fresh /api/cameras poll),
+// or null to reuse whatever the server rendered.
+function updateCamLastSeen(card, state, tsStr) {
   if (!card) return;
   var lbl = card.querySelector('.cam-last-seen');
   if (!lbl) return;
   if (tsStr) lbl.dataset.ts = tsStr;
   var ts = lbl.dataset.ts;
-  if (offline && ts) {
-    lbl.textContent = 'Last seen ' + formatTimeAgo(ts);
-  } else {
-    lbl.textContent = '';
-  }
+  lbl.textContent = cameraStillCaption(state, ts ? eventTimeLabel(ts) : '');
+  if (ts) lbl.title = dateTimeLabel(ts); else lbl.removeAttribute('title');
+}
+
+// Re-read each tile's latest-event caption from the server. The snapshot poll
+// carries camera state but no events, so a tile would otherwise keep naming
+// the event that was newest when the page loaded.
+function refreshGridActivity() {
+  var grid = el('camera-grid');
+  if (!grid || grid.style.display === 'none') return;
+  fetch('/partials/camera-grid')
+    .then(function(r) { return r.ok ? r.text() : null; })
+    .then(function(html) {
+      if (!html) return;
+      var tmp = document.createElement('div');
+      tmp.innerHTML = html;
+      var fresh = {};
+      tmp.querySelectorAll('.cam-card').forEach(function(card) {
+        var act = card.querySelector('.cam-activity');
+        if (act) fresh[card.getAttribute('data-camera-name')] = act;
+      });
+      grid.querySelectorAll('.cam-card').forEach(function(card) {
+        var act = card.querySelector('.cam-activity');
+        var next = fresh[card.getAttribute('data-camera-name')];
+        if (!act || !next) return;
+        var was = act.querySelector('time');
+        var now = next.querySelector('time');
+        var same = act.firstChild && next.firstChild &&
+          act.firstChild.textContent === next.firstChild.textContent &&
+          (was && was.getAttribute('datetime')) === (now && now.getAttribute('datetime'));
+        if (same || (!was && !now)) return;
+        act.innerHTML = next.innerHTML;
+        localizeTimeElements(act);
+      });
+    })
+    .catch(function() {});
 }
 
 // Set loading state on each tile and load its snapshot, transitioning to
@@ -4854,14 +4892,17 @@ function initGridSnapshotStates() {
     if (preview.dataset.snapInit) return;
     preview.dataset.snapInit = '1';
 
+    // The grid arrives through a declarative htmx load, which does not pass
+    // through the afterSwap localization, so its event times are filled here.
+    localizeTimeElements(card);
+
     var name = card.getAttribute('data-camera-name');
     if (!name) return;
 
     // Caption tiles that are not showing live video immediately from the
-    // server-rendered timestamp so there is no wait for the first refresh tick.
-    // A sleeping camera counts: its frame is just as old as an offline one's,
-    // and how long ago it last woke is exactly what the caption answers.
-    updateCamLastSeen(card, !!card.querySelector('.cam-live-dot.offline, .cam-live-dot.sleeping'), null);
+    // server-rendered state and timestamp so there is no wait for the first
+    // refresh tick.
+    updateCamLastSeen(card, card.dataset.state, null);
 
     // Seed the per-camera clock so idle cameras wait a full GRID_IDLE_MS
     // and motion cameras refresh on the next tick instead of immediately
@@ -4921,10 +4962,11 @@ function refreshGridSnapshots() {
           var label = badge.lastChild;
           if (label) label.textContent = state.toUpperCase();
         }
+        card.dataset.state = state;
 
-        // Keep the "last seen" caption in sync: shown whenever the tile is not
+        // Keep the still caption in sync: shown whenever the tile is not
         // showing live video, since the frame under it is then a still.
-        updateCamLastSeen(card, state !== 'live', cam.last_seen || null);
+        updateCamLastSeen(card, state, cam.last_seen || null);
 
         // Refresh snapshot for online cameras, but only when due: cameras
         // reporting motion refresh every tick; idle cameras only every
@@ -5065,16 +5107,10 @@ function refreshStats() {
     .then(function(r) { return r.ok ? r.text() : null; })
     .then(function(html) {
       if (!html) return;
-      var tmp = document.createElement('div');
-      tmp.innerHTML = html;
-      var newValues = tmp.querySelectorAll('.stat-value');
-      var oldValues = row.querySelectorAll('.stat-value');
-      newValues.forEach(function(nv, i) {
-        if (i < oldValues.length && oldValues[i].innerHTML !== nv.innerHTML) {
-          oldValues[i].innerHTML = nv.innerHTML;
-          oldValues[i].className = nv.className;
-        }
-      });
+      // The sentence gains and loses clauses as cameras change state, so it
+      // is replaced whole, and only when it reads differently.
+      var next = html.trim();
+      if (row.innerHTML.trim() !== next) row.innerHTML = next;
     })
     .catch(function() {});
 }
@@ -5170,6 +5206,11 @@ function localizeTimeElements(root) {
   (root || document).querySelectorAll('time[datetime]').forEach(function(el) {
     var d = new Date(el.getAttribute('datetime'));
     if (isNaN(d)) return;
+    if (el.classList.contains('cam-activity-time')) {
+      el.textContent = eventTimeLabel(d);
+      el.title = dateTimeLabel(d);
+      return;
+    }
     if (el.classList.contains('event-time')) {
       // The Events gallery groups cards under day headings, so the clock is
       // enough there; any other list has to carry the day itself.

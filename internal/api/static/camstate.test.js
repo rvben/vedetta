@@ -2,7 +2,7 @@
 // Run: node --test internal/api/static/camstate.test.js
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { cameraBadgeState } = require('./camstate.js');
+const { cameraBadgeState, cameraStillCaption } = require('./camstate.js');
 
 test('a streaming camera is live', () => {
   assert.equal(cameraBadgeState({ online: true }), 'live');
@@ -52,4 +52,27 @@ test('an empty entry is offline, not live', () => {
 test('a missing entry is offline, not a crash', () => {
   assert.equal(cameraBadgeState(undefined), 'offline');
   assert.equal(cameraBadgeState(null), 'offline');
+});
+
+// The caption under a still says what the frame's age means in that state.
+
+test('a sleeping tile says when the camera was last awake', () => {
+  assert.equal(cameraStillCaption('sleeping', '17:05'), 'Last awake 17:05');
+});
+
+test('an offline tile says since when there is no signal', () => {
+  assert.equal(cameraStillCaption('offline', 'Yesterday 18:40'), 'No signal since Yesterday 18:40');
+});
+
+test('a stopped tile dates its last frame', () => {
+  assert.equal(cameraStillCaption('stopped', '09:12'), 'Last frame 09:12');
+});
+
+test('a live tile has no still to caption', () => {
+  assert.equal(cameraStillCaption('live', '17:05'), '');
+});
+
+test('an unknown time yields no caption rather than an invented one', () => {
+  assert.equal(cameraStillCaption('offline', ''), '');
+  assert.equal(cameraStillCaption('sleeping', undefined), '');
 });

@@ -89,7 +89,7 @@ func TestStorageUsedFigureAgreesAcrossPages(t *testing.T) {
 	}
 
 	dashboard := getBody(t, srv, "/partials/dashboard-stats")
-	if !strings.Contains(dashboard, `<div class="stat-label">Storage</div><div class="stat-value">`+want+`</div>`) {
+	if !strings.Contains(dashboard, `<span class="stat-value">`+want+`</span> stored`) {
 		t.Errorf("dashboard does not show %q as storage used:\n%s", want, dashboard)
 	}
 

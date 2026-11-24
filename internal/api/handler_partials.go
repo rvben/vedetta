@@ -83,9 +83,26 @@ var activityFuncs = template.FuncMap{
 	},
 }
 
-// statUnavailable is what a stat card shows when the query behind it failed. A
-// count that could not be read is not a count of zero.
+// statUnavailable is what a dashboard figure shows when the query behind it
+// failed. A count that could not be read is not a count of zero.
 const statUnavailable = "n/a"
+
+// cameraTileState names the one state a camera is shown in. The order is the
+// precedence: a stopped camera is neither live nor at fault, and a sleeping
+// camera is offline only in the sense that no frames arrive. camstate.js holds
+// the same order for the browser's refresh.
+func cameraTileState(st camera.CameraStatus) string {
+	switch {
+	case st.Stopped:
+		return "stopped"
+	case st.Online:
+		return "live"
+	case st.Sleeping:
+		return "sleeping"
+	default:
+		return "offline"
+	}
+}
 
 func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request) {
 	statuses := s.cameraStatuses()
@@ -108,12 +125,15 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
 	type cameraCard struct {
 		Name        string
 		DisplayName string
+		State       string
 		Online      bool
 		HasMotion   bool
 		Stopped     bool
 		Sleeping    bool
 		Doorbell    bool
 		LastSeen    string // RFC3339, empty when no frame has ever been seen
+		EventLabel  string // empty when the camera has no event, or it could not be read
+		EventTime   string // RFC3339
 	}
 
 	doorbellCameras := make(map[string]bool, len(s.cameraConfigs))
@@ -129,15 +149,27 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
 		if !st.LastSeen.IsZero() {
 			lastSeen = st.LastSeen.UTC().Format(time.RFC3339)
 		}
+		// A camera whose latest event cannot be read gets no activity caption.
+		// The tile still renders, and an empty caption claims nothing.
+		eventLabel, eventTime := "", ""
+		if ev, err := s.db.LatestEvent(st.Name); err != nil {
+			slog.Error("camera grid: latest event", "camera", st.Name, "error", err)
+		} else if ev != nil {
+			eventLabel = displayName(ev.Label)
+			eventTime = ev.Timestamp.UTC().Format(time.RFC3339)
+		}
 		cards = append(cards, cameraCard{
 			Name:        st.Name,
 			DisplayName: displayName(st.Name),
+			State:       cameraTileState(st),
 			Online:      st.Online,
 			HasMotion:   st.HasMotion,
 			Stopped:     st.Stopped,
 			Sleeping:    st.Sleeping,
 			Doorbell:    doorbellCameras[st.Name],
 			LastSeen:    lastSeen,
+			EventLabel:  eventLabel,
+			EventTime:   eventTime,
 		})
 	}
 
@@ -148,11 +180,9 @@ func (s *Server) handleCameraGridPartial(w http.ResponseWriter, _ *http.Request)
 
 func (s *Server) handleDashboardStatsPartial(w http.ResponseWriter, _ *http.Request) {
 	statuses := s.cameraStatuses()
-	onlineCount := 0
+	states := make(map[string]int, 4)
 	for _, st := range statuses {
-		if st.Online {
-			onlineCount++
-		}
+		states[cameraTileState(st)]++
 	}
 
 	// A count the database could not answer is rendered as unavailable. Falling
@@ -167,14 +197,20 @@ func (s *Server) handleDashboardStatsPartial(w http.ResponseWriter, _ *http.Requ
 
 	type dashData struct {
 		CameraCount int
-		OnlineCount int
+		Live        int
+		Sleeping    int
+		Offline     int
+		Stopped     int
 		EventsToday string
 		Storage     string
 	}
 
 	data := dashData{
 		CameraCount: len(statuses),
-		OnlineCount: onlineCount,
+		Live:        states["live"],
+		Sleeping:    states["sleeping"],
+		Offline:     states["offline"],
+		Stopped:     states["stopped"],
 		EventsToday: eventsToday,
 		Storage:     formatBytes(stats.UsedBytes()),
 	}

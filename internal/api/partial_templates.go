@@ -17,34 +17,49 @@ var activityEvidenceURLPlaceholder = template.FuncMap{
 	"activityEvidenceURL": func(string) string { return "" },
 }
 
-var cameraGridTmpl = template.Must(template.New("grid").Parse(`{{range .}}<div class="cam-card{{if .Stopped}} cam-stopped{{end}}" data-camera-name="{{.Name}}" data-action-click="location.href='/camera.html?name={{.Name}}'" role="listitem" aria-label="{{.DisplayName}} camera">
+// cameraGridTmpl renders one tile per camera. The picture fills the tile and
+// the state chip, the name and the recency caption sit on it. data-state names
+// the same four states as the chip, so a stylesheet can treat a still frame
+// differently from a live one without reading the chip's text.
+// The whole tile opens the camera through a real link stretched over it, so it
+// is reachable by keyboard and opens in a new tab like any other link.
+var cameraGridTmpl = template.Must(template.New("grid").Parse(`{{range .}}<div class="cam-card{{if .Stopped}} cam-stopped{{end}}" data-camera-name="{{.Name}}" data-state="{{.State}}" role="listitem">
+  <a class="cam-link" href="/camera.html?name={{.Name}}" aria-label="Open {{.DisplayName}} camera"></a>
   <div class="cam-preview">
     <img src="/api/cameras/{{.Name}}/snapshot" alt="{{.DisplayName}} camera" loading="lazy">
-    <span class="cam-last-seen" data-ts="{{.LastSeen}}"></span>
     <div class="cam-live-badge">
       {{if .Stopped}}<span class="cam-live-dot stopped"></span>STOPPED{{else if .Online}}<span class="cam-live-dot"></span>LIVE{{else if .Sleeping}}<span class="cam-live-dot sleeping"></span>SLEEPING{{else}}<span class="cam-live-dot offline"></span>OFFLINE{{end}}
     </div>
     <button class="cam-toggle-btn" data-action-click="event.stopPropagation(); toggleCamera('{{.Name}}', {{.Stopped}}, this)" title="{{if .Stopped}}Start camera{{else}}Stop camera{{end}}" aria-label="{{if .Stopped}}Start{{else}}Stop{{end}} {{.DisplayName}}">
-      {{if .Stopped}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><polygon points="5 3 19 12 5 21 5 3"/></svg>{{else}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>{{end}}
+      {{if .Stopped}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>{{else}}<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>{{end}}
     </button>
   </div>
   <div class="cam-footer">
     <span class="cam-name">{{.DisplayName}}</span>
+    <span class="cam-recency">
+      <span class="cam-activity">{{if .EventLabel}}{{.EventLabel}} <time class="cam-activity-time" datetime="{{.EventTime}}"></time>{{end}}</span>
+      <span class="cam-last-seen" data-ts="{{.LastSeen}}"></span>
+    </span>
     {{if .Doorbell}}{{if .Stopped}}<span class="cam-doorbell-action is-disabled" aria-disabled="true" title="Start camera to open doorbell">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
       <span>Open doorbell</span>
-    </span>{{else}}<a class="cam-doorbell-action" href="/doorbell-answer.html?camera={{.Name}}" data-action-click="event.stopPropagation()" aria-label="Open doorbell for {{.DisplayName}}">
+    </span>{{else}}<a class="cam-doorbell-action" href="/doorbell-answer.html?camera={{.Name}}" data-action-click="event.stopPropagation()" title="Open doorbell" aria-label="Open doorbell for {{.DisplayName}}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
       <span>Open doorbell</span>
     </a>{{end}}{{end}}
   </div>
 </div>{{end}}`))
 
+// dashboardStatsTmpl renders the sentence beside the Cameras heading. A state
+// with no cameras in it is left out, so the sentence only ever names what is
+// true now, and every figure is wrapped in .stat-value.
 var dashboardStatsTmpl = template.Must(template.New("stats").Parse(
-	`<div class="stat-card"><div class="stat-label">Cameras</div><div class="stat-value">{{.CameraCount}}</div></div>` +
-		`<div class="stat-card"><div class="stat-label">Online</div><div class="stat-value green">{{.OnlineCount}}</div></div>` +
-		`<div class="stat-card"><div class="stat-label">Events<span class="stat-label-q"> Today</span></div><div class="stat-value">{{.EventsToday}}</div></div>` +
-		`<div class="stat-card"><div class="stat-label">Storage</div><div class="stat-value">{{.Storage}}</div></div>`))
+	`{{if .CameraCount}}<span class="dash-stat"><span class="stat-value">{{.Live}}</span> live</span>{{end}}` +
+		`{{if .Sleeping}}<span class="dash-stat"><span class="stat-value">{{.Sleeping}}</span> sleeping</span>{{end}}` +
+		`{{if .Offline}}<span class="dash-stat is-fault"><span class="stat-value">{{.Offline}}</span> offline</span>{{end}}` +
+		`{{if .Stopped}}<span class="dash-stat"><span class="stat-value">{{.Stopped}}</span> stopped</span>{{end}}` +
+		`<a class="dash-stat" href="/events.html"><span class="stat-value">{{.EventsToday}}</span> {{if eq .EventsToday "1"}}event{{else}}events{{end}} today</a>` +
+		`<a class="dash-stat" href="/storage.html"><span class="stat-value">{{.Storage}}</span> stored</a>`))
 
 var activitiesGalleryTmpl = template.Must(template.New("activities").Funcs(partialFuncs).Funcs(activityFuncs).Parse(
 	`{{range .}}` +

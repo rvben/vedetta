@@ -24,6 +24,20 @@ function cameraBadgeState(cam) {
   return 'offline';
 }
 
+// cameraStillCaption words the age of the frame under a tile that is not live.
+// The frame is the same kind of still in every such state, but what its age
+// means differs: a sleeping camera last woke then, an offline one has been
+// unreachable since then, a stopped one simply recorded its last frame then.
+// when is an already formatted time. Without one there is nothing true to say,
+// so the caption is empty; a live tile has no still to caption either.
+function cameraStillCaption(state, when) {
+  if (!when) return '';
+  if (state === 'sleeping') return 'Last awake ' + when;
+  if (state === 'offline') return 'No signal since ' + when;
+  if (state === 'stopped') return 'Last frame ' + when;
+  return '';
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { cameraBadgeState: cameraBadgeState };
+  module.exports = { cameraBadgeState: cameraBadgeState, cameraStillCaption: cameraStillCaption };
 }

@@ -312,6 +312,30 @@ func TestLatestSnapshotEventSelectsNewestUsableCameraEvidence(t *testing.T) {
 	}
 }
 
+func TestLatestEventIsTheNewestForThatCameraOnly(t *testing.T) {
+	db := newTestDB(t)
+	start := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	for _, event := range []camera.Event{
+		makeEvent("older", "front_door", "person", 0.8, start),
+		makeEvent("newer", "front_door", "car", 0.9, start.Add(time.Minute)),
+		makeEvent("other", "garden", "cat", 0.9, start.Add(2*time.Minute)),
+	} {
+		mustSaveEvent(t, db, event)
+	}
+
+	got, err := db.LatestEvent("front_door")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ID != "newer" {
+		t.Fatalf("latest event = %+v, want newer", got)
+	}
+	missing, err := db.LatestEvent("garage")
+	if err != nil || missing != nil {
+		t.Fatalf("camera without events = %+v, err=%v, want nil and no error", missing, err)
+	}
+}
+
 func TestCountEventsToday(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now().UTC()

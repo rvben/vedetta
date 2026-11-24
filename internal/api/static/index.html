@@ -70,35 +70,31 @@
 
   <!-- Main Content -->
   <main id="main" class="page" tabindex="-1">
-    <!-- Stats Row -->
-    <div class="stats-row"
-         id="stats-row"
-         hx-get="/partials/dashboard-stats"
-         hx-trigger="load"
-         hx-swap="innerHTML">
-      <div class="stat-card"><div class="stat-label">Cameras</div><div class="stat-value skeleton" style="width:2ch;height:1.25rem">&nbsp;</div></div>
-      <div class="stat-card"><div class="stat-label">Online</div><div class="stat-value skeleton" style="width:2ch;height:1.25rem">&nbsp;</div></div>
-      <div class="stat-card"><div class="stat-label">Events<span class="stat-label-q"> Today</span></div><div class="stat-value skeleton" style="width:2ch;height:1.25rem">&nbsp;</div></div>
-      <div class="stat-card"><div class="stat-label">Storage</div><div class="stat-value skeleton" style="width:4ch;height:1.25rem">&nbsp;</div></div>
-    </div>
-
-    <!-- Camera Grid -->
-    <div class="page-header" style="display:flex;align-items:center;gap:0.75rem">
-      <h1>Cameras</h1>
-      <button type="button" class="btn btn-sm add-camera-trigger" style="margin-left:auto;border-color:var(--accent);color:var(--accent)" data-action-click="openAddCameraModal()" aria-haspopup="dialog">
-        <span aria-hidden="true">+</span><span class="btn-label">Add Camera</span>
-      </button>
-      <label class="dashboard-density-control" for="dashboard-density-select">
-        <span>Tile size</span>
-        <select id="dashboard-density-select" data-action-change="setDashboardDensity(this.value)">
-          <option value="compact">Compact</option>
-          <option value="default" selected>Default</option>
-          <option value="large">Large</option>
-        </select>
-      </label>
-      <div class="view-toggle">
-        <button class="btn btn-sm active" id="btn-grid-view" data-action-click="setView('grid')" title="Grid view" aria-label="Grid view" aria-pressed="true">Grid</button>
-        <button class="btn btn-sm" id="btn-birdseye-view" data-action-click="setView('birdseye')" title="Birdseye view - mosaic of all cameras" aria-label="Birdseye view" aria-pressed="false">Birdseye</button>
+    <div class="page-header dash-header">
+      <div class="dash-heading">
+        <h1>Cameras</h1>
+        <p class="dash-summary"
+           id="stats-row"
+           hx-get="/partials/dashboard-stats"
+           hx-trigger="load"
+           hx-swap="innerHTML"><span class="dash-summary-loading skeleton">&nbsp;</span></p>
+      </div>
+      <div class="dash-tools">
+        <div class="view-toggle" role="group" aria-label="Layout">
+          <button class="btn btn-sm active" id="btn-grid-view" data-action-click="setView('grid')" title="Grid view" aria-label="Grid view" aria-pressed="true">Grid</button>
+          <button class="btn btn-sm" id="btn-birdseye-view" data-action-click="setView('birdseye')" title="Birdseye view - mosaic of all cameras" aria-label="Birdseye view" aria-pressed="false">Birdseye</button>
+        </div>
+        <label class="dashboard-density-control" for="dashboard-density-select">
+          <span>Tile size</span>
+          <select id="dashboard-density-select" data-action-change="setDashboardDensity(this.value)">
+            <option value="compact">Compact</option>
+            <option value="default" selected>Default</option>
+            <option value="large">Large</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-sm add-camera-trigger" data-action-click="openAddCameraModal()" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="btn-label">Add Camera</span>
+        </button>
       </div>
     </div>
 

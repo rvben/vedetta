@@ -230,16 +230,7 @@ func (r *Recorder) cameraBreakdown(camera, openPath string) CameraBreakdown {
 			cb.SegmentBytes += fi.Size()
 		}
 	}
-	clipsRoot := filepath.Join(r.config.Path, camera, "clips")
-	_ = filepath.WalkDir(clipsRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if fi, err := d.Info(); err == nil {
-			cb.ClipBytes += fi.Size()
-		}
-		return nil
-	})
+	cb.ClipBytes = r.clipBytesByCamera()[camera]
 	cb.PerDay = r.perDayBytes(camera, 30)
 	cutoff := len(cb.PerDay) - 7
 	if cutoff < 0 {
@@ -249,6 +240,45 @@ func (r *Recorder) cameraBreakdown(camera, openPath string) CameraBreakdown {
 		cb.Last7dBytes += d.Bytes
 	}
 	return cb
+}
+
+// clipBytesCache holds the per-camera clip sizes. Sizing clips means walking
+// every clip file, so the walk is shared by the 10s stats refresh and the
+// storage breakdown instead of running once for each.
+type clipBytesCache struct {
+	mu      sync.Mutex
+	value   map[string]int64
+	storeAt time.Time
+}
+
+const clipBytesTTL = time.Minute
+
+// clipBytesByCamera returns the bytes of event clips on disk per registered
+// camera. Callers must not modify the returned map.
+func (r *Recorder) clipBytesByCamera() map[string]int64 {
+	c := &r.clipBytesCache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.value != nil && time.Since(c.storeAt) < clipBytesTTL {
+		return c.value
+	}
+	out := make(map[string]int64)
+	for _, cam := range r.cameraNames() {
+		var sum int64
+		_ = filepath.WalkDir(filepath.Join(r.config.Path, cam, "clips"), func(_ string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if fi, err := d.Info(); err == nil {
+				sum += fi.Size()
+			}
+			return nil
+		})
+		out[cam] = sum
+	}
+	c.value = out
+	c.storeAt = time.Now()
+	return out
 }
 
 func (r *Recorder) perDayBytes(camera string, days int) []DayBytes {

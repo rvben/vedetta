@@ -78,12 +78,15 @@ function formatTimeAgo(dateStr) {
   return Math.floor(s / 86400) + 'd ago';
 }
 
+// One decimal below 10 of a unit, none from 10 up ("4.4 GB", "270 GB"). The
+// server's formatBytes and storage.js fmtBytes apply the same rule.
 function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  if (bytes < 1024) return bytes + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return value.toFixed(value >= 10 ? 0 : 1) + ' ' + units[unit];
 }
 
 function toast(message, type) {
@@ -3948,13 +3951,6 @@ function renderCalendar(preferredDate) {
     });
 }
 
-function formatBytesJS(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
-}
-
 function humanizeName(name) {
   return name.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
 }
@@ -4027,7 +4023,7 @@ function renderRecordingsSummary(data, date) {
       '<span class="day-summary-stats">' +
         '<span>' + cameras.length + ' camera' + (cameras.length !== 1 ? 's' : '') + '</span>' +
         '<span class="day-summary-dot"></span>' +
-        '<span>' + formatBytesJS(totalBytes) + '</span>' +
+        '<span>' + formatBytes(totalBytes) + '</span>' +
       '</span>' +
     '</div>';
 
@@ -4042,7 +4038,7 @@ function renderRecordingsSummary(data, date) {
     header.className = 'rec-camera-header';
     header.innerHTML =
       '<a href="/camera.html?name=' + encodeURIComponent(cam.name) + '" class="rec-camera-name">' + humanizeName(cam.name) + '</a>' +
-      '<span class="rec-camera-size">' + formatBytesJS(cam.total_bytes) + '</span>';
+      '<span class="rec-camera-size">' + formatBytes(cam.total_bytes) + '</span>';
     card.appendChild(header);
 
     // Coverage bar (24h)
@@ -4178,7 +4174,7 @@ function renderRecordingsSummary(data, date) {
 
       var sizeSpan = document.createElement('span');
       sizeSpan.className = 'rec-seg-size';
-      sizeSpan.textContent = formatBytesJS(seg.size_bytes);
+      sizeSpan.textContent = formatBytes(seg.size_bytes);
 
       var actionsSpan = document.createElement('span');
       actionsSpan.className = 'rec-seg-actions';

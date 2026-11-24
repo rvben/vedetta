@@ -21,14 +21,25 @@ import (
 
 // StorageStats contains aggregate storage information.
 type StorageStats struct {
-	TotalBytes      int64              `json:"total_bytes"`
-	SegmentCount    int                `json:"segment_count"`
-	CameraStats     map[string]int64   `json:"camera_stats"`
+	// TotalBytes and CameraStats count recorded segments only.
+	TotalBytes   int64            `json:"total_bytes"`
+	SegmentCount int              `json:"segment_count"`
+	CameraStats  map[string]int64 `json:"camera_stats"`
+	// ClipBytes and CameraClipBytes count event clips, which live beside the
+	// segments on the recording filesystem.
+	ClipBytes       int64              `json:"clip_bytes"`
+	CameraClipBytes map[string]int64   `json:"camera_clip_bytes"`
 	DiskAvailable   uint64             `json:"disk_available_bytes"`
 	DiskLow         bool               `json:"disk_low"`
 	RecordingPaused bool               `json:"recording_paused"`
 	Recompression   RecompressionStats `json:"recompression"`
 	Projection      StorageProjection  `json:"projection"`
+}
+
+// UsedBytes is what recordings occupy on disk: segments plus event clips. It
+// is the figure every page shows as storage used.
+func (s StorageStats) UsedBytes() int64 {
+	return s.TotalBytes + s.ClipBytes
 }
 
 // RecompressionStats summarises the tiered storage recompression feature.
@@ -112,6 +123,7 @@ type Recorder struct {
 	cachedStats StorageStats
 
 	breakdownCache breakdownCache
+	clipBytesCache clipBytesCache
 }
 
 func New(cfg config.RecordingConfig, eventCfg config.EventConfig, cameras []config.CameraConfig, db *storage.DB, hub *rtsp.Hub, snapshotPath, snapshotFallbackPath string, snapshotSaver *snapshot.Saver) *Recorder {
@@ -291,6 +303,10 @@ func (r *Recorder) StartStatsRefresh(ctx context.Context) {
 func (r *Recorder) RefreshStats() {
 	stats := StorageStats{
 		CameraStats: make(map[string]int64),
+	}
+	stats.CameraClipBytes = r.clipBytesByCamera()
+	for _, n := range stats.CameraClipBytes {
+		stats.ClipBytes += n
 	}
 
 	totalBytes, err := r.db.TotalSegmentBytes()

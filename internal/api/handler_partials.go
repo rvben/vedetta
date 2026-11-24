@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -168,7 +169,7 @@ func (s *Server) handleDashboardStatsPartial(w http.ResponseWriter, _ *http.Requ
 		CameraCount: len(statuses),
 		OnlineCount: onlineCount,
 		EventsToday: eventsToday,
-		Storage:     formatBytes(stats.TotalBytes),
+		Storage:     formatBytes(stats.UsedBytes()),
 	}
 
 	w.Header().Set("Content-Type", "text/html")
@@ -553,7 +554,7 @@ func (s *Server) handleSystemPartial(w http.ResponseWriter, _ *http.Request) {
 	uptimeStr := formatDuration(uptime)
 
 	stats := s.recorder.StorageStats()
-	totalBytes := stats.TotalBytes
+	totalBytes := stats.UsedBytes()
 
 	type storageEntry struct {
 		Camera  string
@@ -562,8 +563,19 @@ func (s *Server) handleSystemPartial(w http.ResponseWriter, _ *http.Request) {
 		Percent float64
 	}
 
-	storageEntries := make([]storageEntry, 0, len(stats.CameraStats))
+	// A camera's share is its segments plus its clips, so the rows add up to
+	// the total above them. A camera can hold clips without any segments.
+	perCamera := make(map[string]int64, len(stats.CameraStats))
 	for cam, bytes := range stats.CameraStats {
+		perCamera[cam] += bytes
+	}
+	for cam, bytes := range stats.CameraClipBytes {
+		if bytes > 0 {
+			perCamera[cam] += bytes
+		}
+	}
+	storageEntries := make([]storageEntry, 0, len(perCamera))
+	for cam, bytes := range perCamera {
 		pct := float64(0)
 		if totalBytes > 0 {
 			pct = float64(bytes) / float64(totalBytes) * 100
@@ -575,6 +587,13 @@ func (s *Server) handleSystemPartial(w http.ResponseWriter, _ *http.Request) {
 			Percent: pct,
 		})
 	}
+
+	sort.Slice(storageEntries, func(i, j int) bool {
+		if storageEntries[i].Bytes != storageEntries[j].Bytes {
+			return storageEntries[i].Bytes > storageEntries[j].Bytes
+		}
+		return storageEntries[i].Camera < storageEntries[j].Camera
+	})
 
 	type sysData struct {
 		Version             string

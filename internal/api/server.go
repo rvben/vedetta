@@ -891,25 +891,25 @@ func statusClass(code int) string {
 	return fmt.Sprintf("%dxx", code/100)
 }
 
+// formatBytes renders a byte count for display: one decimal below 10 of a
+// unit, none from 10 up ("4.4 GB", "270 GB"). static/app.js formatBytes and
+// static/storage.js fmtBytes apply the same rule, so a figure reads the same
+// whether the server or the page formats it.
 func formatBytes(bytes int64) string {
-	const (
-		KB = 1024
-		MB = KB * 1024
-		GB = MB * 1024
-		TB = GB * 1024
-	)
-	switch {
-	case bytes >= TB:
-		return fmt.Sprintf("%.1f TB", float64(bytes)/float64(TB))
-	case bytes >= GB:
-		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(GB))
-	case bytes >= MB:
-		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(MB))
-	case bytes >= KB:
-		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(KB))
-	default:
+	if bytes < 1024 {
 		return fmt.Sprintf("%d B", bytes)
 	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	value := float64(bytes) / 1024
+	unit := 0
+	for value >= 1024 && unit < len(units)-1 {
+		value /= 1024
+		unit++
+	}
+	if value >= 10 {
+		return fmt.Sprintf("%.0f %s", value, units[unit])
+	}
+	return fmt.Sprintf("%.1f %s", value, units[unit])
 }
 
 func displayName(name string) string {

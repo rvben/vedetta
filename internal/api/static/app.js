@@ -3710,6 +3710,7 @@ function restoreTimelineFollow() {
 
 function returnToLive() {
   cleanupPlaybackHls();
+  markRailEvent(null);
   var video = el('live-video');
   if (video) {
     video.pause();
@@ -5499,6 +5500,220 @@ var boxOverlayState = {
   frame: null,
   cleanup: null,
 };
+
+// ─── Camera stage and rail ───
+// The stage lays the picture out at the camera's own shape and gives the
+// width beside it to a rail of today's events on this camera.
+var RAIL_REFRESH_MS = 60000;
+var RAIL_EVENT_LIMIT = 50;
+var railState = { camera: '', timer: 0, request: 0, selected: '' };
+
+function stageRatioKey(cameraName) {
+  return 'stage-ratio:' + cameraName;
+}
+
+function applyStageRatio(width, height) {
+  var stage = el('camera-stage');
+  var ratio = stageRatio(width, height);
+  if (!stage || ratio === null) return;
+  stage.style.setProperty('--stage-ratio', String(ratio));
+  try { localStorage.setItem(stageRatioKey(railState.camera), String(ratio)); } catch (e) {}
+}
+
+// The shape is only known once a frame is decoded. Reusing the shape this
+// camera had on the last visit keeps the stage from resizing under the reader
+// when the first frame arrives.
+function restoreStageRatio(cameraName) {
+  var stored = null;
+  try { stored = localStorage.getItem(stageRatioKey(cameraName)); } catch (e) {}
+  var ratio = stageRatio(stored, 1);
+  var stage = el('camera-stage');
+  if (stage && ratio !== null) stage.style.setProperty('--stage-ratio', String(ratio));
+}
+
+function initCameraStage(cameraName) {
+  railState.camera = cameraName;
+  restoreStageRatio(cameraName);
+
+  var video = el('live-video');
+  if (video) {
+    var fromVideo = function() { applyStageRatio(video.videoWidth, video.videoHeight); };
+    video.addEventListener('loadedmetadata', fromVideo);
+    video.addEventListener('resize', fromVideo);
+  }
+  // The stills only shape the stage while no video is decoding: a detection
+  // sub-stream can differ in shape from the stream being watched.
+  ['live-snapshot', 'live-mjpeg'].forEach(function(id) {
+    var img = el(id);
+    if (!img) return;
+    img.addEventListener('load', function() {
+      if (video && video.videoWidth > 0) return;
+      if (img.naturalWidth > 1) applyStageRatio(img.naturalWidth, img.naturalHeight);
+    });
+  });
+
+  var list = el('camera-rail-events');
+  if (!list) return;
+  list.addEventListener('click', function(e) {
+    var retry = e.target.closest('[data-rail-retry]');
+    if (retry) { loadRailEvents(); return; }
+    var row = e.target.closest('.rail-event');
+    if (!row) return;
+    var when = new Date(row.dataset.eventTime);
+    if (isNaN(when.getTime())) return;
+    if (calendarDaysBetween(timelineDate || new Date(), new Date()) !== 0) timelineToday();
+    startPlayback(when);
+    markRailEvent(row.dataset.eventId);
+  });
+
+  loadRailEvents();
+  railState.timer = setInterval(function() {
+    if (!document.hidden) loadRailEvents();
+  }, RAIL_REFRESH_MS);
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) loadRailEvents();
+  });
+  window.matchMedia('(min-width: 901px)').addEventListener('change', function(e) {
+    if (e.matches) loadRailEvents();
+  });
+}
+
+function markRailEvent(eventId) {
+  railState.selected = eventId ? String(eventId) : '';
+  document.querySelectorAll('#camera-rail-events .rail-event').forEach(function(row) {
+    if (railState.selected && row.dataset.eventId === railState.selected) row.setAttribute('aria-current', 'true');
+    else row.removeAttribute('aria-current');
+  });
+}
+
+function loadRailEvents() {
+  var list = el('camera-rail-events');
+  if (!list || !railState.camera) return;
+  // The rail is not laid out on narrow screens, where the Events tab carries
+  // the same events; nothing is fetched for a list nobody can see.
+  if (list.offsetParent === null) return;
+  var request = ++railState.request;
+  var url = '/api/events?camera=' + encodeURIComponent(railState.camera) +
+    '&since=' + encodeURIComponent(startOfLocalDay(new Date()).toISOString()) +
+    '&limit=' + RAIL_EVENT_LIMIT;
+  fetch(url, { headers: { 'Accept': 'application/json' } })
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      if (request !== railState.request) return;
+      if (!data || !Array.isArray(data.items)) throw new Error('unexpected response');
+      renderRailEvents(data.items, typeof data.total === 'number' ? data.total : null);
+    })
+    .catch(function() {
+      if (request !== railState.request) return;
+      renderRailUnavailable();
+    });
+}
+
+function setRailSummary(countText, showHint) {
+  var count = el('camera-rail-count');
+  if (count) {
+    count.textContent = countText;
+    count.hidden = !countText;
+  }
+  var hint = el('camera-rail-hint');
+  if (hint) hint.hidden = !showHint;
+}
+
+function railMessage(text) {
+  var p = document.createElement('p');
+  p.className = 'camera-rail-empty';
+  p.textContent = text;
+  return p;
+}
+
+// A failed request leaves no list on screen: yesterday's or an hour-old list
+// under a "Today" heading would read as current.
+function renderRailUnavailable() {
+  var list = el('camera-rail-events');
+  if (!list) return;
+  setRailSummary('', false);
+  var retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'btn btn-sm';
+  retry.setAttribute('data-rail-retry', '');
+  retry.textContent = 'Reload events';
+  list.replaceChildren(railMessage("Today's events could not be loaded."), retry);
+  list.setAttribute('aria-busy', 'false');
+}
+
+function renderRailEvents(items, total) {
+  var list = el('camera-rail-events');
+  if (!list) return;
+  list.setAttribute('aria-busy', 'false');
+  if (!items.length) {
+    setRailSummary('', false);
+      list.replaceChildren(railMessage('Nothing detected today.'));
+    return;
+  }
+  var known = total !== null && total >= items.length ? total : items.length;
+  setRailSummary(known === 1 ? '1 event' : known + ' events', true);
+
+  var rows = items.map(function(ev) {
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'rail-event';
+    row.dataset.eventId = String(ev.id);
+    row.dataset.eventTime = ev.timestamp;
+    if (railState.selected && railState.selected === String(ev.id)) row.setAttribute('aria-current', 'true');
+
+    var thumb = document.createElement('span');
+    thumb.className = 'rail-event-thumb';
+    if (ev.snapshot_available) {
+      var img = document.createElement('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.addEventListener('error', function() { img.remove(); });
+      img.src = '/api/events/' + encodeURIComponent(ev.id) + '/snapshot?width=160';
+      thumb.appendChild(img);
+    }
+
+    var body = document.createElement('span');
+    body.className = 'rail-event-body';
+    var title = document.createElement('span');
+    title.className = 'rail-event-title';
+    title.textContent = railEventTitle(ev);
+    body.appendChild(title);
+    var meta = [railEventConfidence(ev), railEventDuration(ev)].filter(Boolean).join(' · ');
+    if (meta) {
+      var metaEl = document.createElement('span');
+      metaEl.className = 'rail-event-meta';
+      metaEl.textContent = meta;
+      body.appendChild(metaEl);
+    }
+
+    var time = document.createElement('time');
+    time.className = 'rail-event-time';
+    time.dateTime = ev.timestamp;
+    time.textContent = clockLabel(ev.timestamp);
+
+    row.setAttribute('aria-label', 'Play ' + title.textContent + ' at ' + time.textContent);
+    row.append(thumb, body, time);
+    var item = document.createElement('li');
+    item.appendChild(row);
+    return item;
+  });
+
+  var ul = document.createElement('ul');
+  ul.className = 'camera-rail-rows';
+  ul.append.apply(ul, rows);
+  list.replaceChildren(ul);
+  if (known > items.length) {
+    var more = document.createElement('a');
+    more.className = 'camera-rail-more';
+    more.href = '/events.html?camera=' + encodeURIComponent(railState.camera);
+    more.textContent = 'Showing the latest ' + items.length + '. View all events';
+    list.appendChild(more);
+  }
+}
 
 function initDetectionOverlay(cameraName) {
   var canvas = document.getElementById('det-overlay');

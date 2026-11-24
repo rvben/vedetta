@@ -72,6 +72,7 @@
     </div>
 
     <div class="camera-layout">
+      <div class="camera-stage" id="camera-stage">
       <!-- Live View -->
       <div class="live-container">
         <div class="live-toolbar hidden" id="live-toolbar">
@@ -198,6 +199,18 @@
         </div>
       </div>
 
+      <!-- Rail: what happened on this camera today -->
+      <aside class="camera-rail" id="camera-rail" aria-labelledby="camera-rail-title">
+        <div class="camera-rail-heading">
+          <h2 class="camera-rail-title" id="camera-rail-title">Today</h2>
+          <span class="camera-rail-count" id="camera-rail-count" hidden></span>
+        </div>
+        <p class="camera-rail-hint" id="camera-rail-hint" hidden>Select an event to play it here.</p>
+        <div class="camera-rail-list" id="camera-rail-events" aria-busy="true">
+          <p class="camera-rail-empty">Loading today's events...</p>
+        </div>
+      </aside>
+      </div>
 
       <!-- Timeline -->
       <div class="timeline-container" id="timeline-container">
@@ -461,6 +474,7 @@
   <script src="/session.js"></script>
   <script src="/connstatus.js"></script>
   <script src="/timefmt.js"></script>
+  <script src="/camrail.js"></script>
   <script src="/app.js"></script>
   <script>
     // ─── Camera Settings (per-camera config form) ───
@@ -806,6 +820,7 @@
         initPTZ(camName);
         initViewportPause();
         initDetectionOverlay(camName);
+        initCameraStage(camName, cameraStatus);
 
         if (playbackDate) {
           setTimeout(function() { startPlayback(playbackDate); }, 500);

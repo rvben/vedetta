@@ -38,6 +38,8 @@
   --red-dim: rgba(255, 82, 82, 0.15);
   --amber: #ffab00;
   --amber-dim: rgba(255, 171, 0, 0.15);
+  /* Amber as text. The fill colour is too light to read on a light surface. */
+  --amber-text: var(--amber);
   --event-bar: var(--amber);
   --blue: #448aff;
   --purple: #b388ff;
@@ -123,6 +125,7 @@
   --red-dim: rgba(198, 40, 40, 0.12);
   --amber: #f57f17;
   --amber-dim: rgba(245, 127, 23, 0.12);
+  --amber-text: #8a4b00;
   --event-bar: var(--amber);
 
   --label-person: #0097a7;
@@ -148,12 +151,12 @@
   color: var(--text-primary);
 }
 
-[data-theme="light"] .playback-badge { background: rgba(245, 127, 23, 0.15); color: var(--amber); }
+[data-theme="light"] .playback-badge { background: rgba(245, 127, 23, 0.15); color: var(--amber-text); }
 [data-theme="light"] .stream-badge[data-type="webrtc"] { background: rgba(46, 125, 50, 0.12); color: var(--green); }
 [data-theme="light"] .stream-badge[data-type="mjpeg"] { background: rgba(0, 151, 167, 0.12); color: var(--cyan); }
 [data-theme="light"] .stream-badge[data-type="snapshot"] { background: var(--surface-2); color: var(--text-tertiary); }
-[data-theme="light"] .btn-live { background: rgba(245, 127, 23, 0.15); border-color: var(--amber); color: var(--amber); }
-[data-theme="light"] .btn-live:hover { background: var(--amber); color: #fff; }
+[data-theme="light"] .btn-live { background: rgba(245, 127, 23, 0.15); border-color: var(--amber); color: var(--amber-text); }
+[data-theme="light"] .btn-live:hover { background: var(--amber); color: var(--text-primary); }
 
 /* ─── Connection Status ─── */
 .conn-status {
@@ -1239,7 +1242,7 @@ a.dash-stat:focus-visible {
 .event-tier { color: var(--text-secondary); }
 
 .event-confidence {
-  color: var(--amber);
+  color: var(--amber-text);
   font-family: var(--font-mono);
   font-weight: 650;
 }
@@ -1874,6 +1877,7 @@ body.activity-surface input[type="search"] {
   --cyan-dim: #00b8d4;
   --green: #00e676;
   --amber: #ffab00;
+  --amber-text: var(--amber);
 }
 
 /* Tinted fills are tuned for the page background, not for arbitrary video:
@@ -2313,7 +2317,7 @@ body.activity-surface input[type="search"] {
   align-items: center;
   padding: 0.125rem 0.5rem;
   background: var(--amber-dim);
-  color: var(--amber);
+  color: var(--amber-text);
   border-radius: var(--radius-full);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
@@ -2382,7 +2386,7 @@ body.activity-surface input[type="search"] {
 .btn-live {
   background: var(--amber-dim);
   border-color: var(--amber);
-  color: var(--amber);
+  color: var(--amber-text);
 }
 
 .btn-live:hover {
@@ -3324,7 +3328,7 @@ body.activity-surface input[type="search"] {
 
 .tag-green { background: var(--green-dim); color: var(--green); }
 .tag-red { background: var(--red-dim); color: var(--red); }
-.tag-amber { background: var(--amber-dim); color: var(--amber); }
+.tag-amber { background: var(--amber-dim); color: var(--amber-text); }
 .tag-cyan { background: var(--cyan-ghost); color: var(--cyan); }
 
 .tag-dot {
@@ -3669,7 +3673,7 @@ kbd {
   background: var(--amber-dim);
   border: 1px solid var(--amber);
   border-radius: var(--radius-md);
-  color: var(--amber);
+  color: var(--amber-text);
   font-size: var(--text-sm);
   font-weight: 500;
   line-height: 1.4;
@@ -5390,7 +5394,7 @@ kbd {
 }
 .badge-connected   { background: var(--green-dim); color: var(--green); }
 .badge-disconnected { background: var(--red-dim);   color: var(--red); }
-.badge-degraded    { background: var(--amber-dim); color: var(--amber); }
+.badge-degraded    { background: var(--amber-dim); color: var(--amber-text); }
 .badge-connecting  { background: var(--surface-2);  color: var(--text-secondary); }
 
 /* Account proxy-auth disclosure widget */

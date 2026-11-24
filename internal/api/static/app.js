@@ -4502,6 +4502,25 @@ initTheme();
 
 // ─── Connection Status ───
 var connDebounceTimer = null;
+// The pill is drawn from two facts with separate writers: htmx request
+// outcomes own connLinkLost, the health poll owns connHealth.
+var connLinkLost = false;
+var connHealth = ConnStatus.remembered(sessionStorage) || { status: 'ok', detail: '' };
+
+function renderConnStatus() {
+  setConnStatus(ConnStatus.resolve(connLinkLost, connHealth.status), connHealth.detail);
+}
+
+function setConnLinkLost(lost) {
+  connLinkLost = lost;
+  renderConnStatus();
+}
+
+function setConnHealth(status, detail) {
+  connHealth = { status: status === 'degraded' ? 'degraded' : 'ok', detail: detail || '' };
+  ConnStatus.remember(sessionStorage, connHealth.status, connHealth.detail);
+  renderConnStatus();
+}
 
 function setConnStatus(status, detail) {
   var dot = document.getElementById('conn-dot');
@@ -4615,8 +4634,8 @@ function showHealthDetailPopover(anchor) {
     pop.remove();
     fetch('/api/health').then(function(r) { return r.json(); }).then(function(data) {
       _lastHealthData = data;
+      updateConnectionHealth(data);
       if (data.status !== 'degraded') {
-        setConnStatus('ok');
         toast('All systems operational');
       } else {
         showHealthDetailPopover(anchor);
@@ -4654,7 +4673,7 @@ function showHtmxFallback(target) {
 
 document.addEventListener('htmx:sendError', function(e) {
   clearTimeout(connDebounceTimer);
-  setConnStatus('error');
+  setConnLinkLost(true);
   if (e && e.detail) showHtmxFallback(e.detail.target || e.target);
 });
 
@@ -4668,7 +4687,7 @@ document.addEventListener('htmx:responseError', function(e) {
   }
   console.error('HTMX error:', e.detail);
   clearTimeout(connDebounceTimer);
-  setConnStatus('error');
+  setConnLinkLost(true);
   if (e && e.detail) showHtmxFallback(e.detail.target || e.target);
 });
 
@@ -4686,7 +4705,7 @@ document.addEventListener('htmx:afterRequest', function(e) {
   if (!e.detail.failed) {
     clearTimeout(connDebounceTimer);
     connDebounceTimer = setTimeout(function() {
-      setConnStatus('ok');
+      setConnLinkLost(false);
     }, 300);
   }
 });
@@ -4695,32 +4714,35 @@ document.addEventListener('htmx:afterRequest', function(e) {
 var _lastHealthData = null;
 
 function updateConnectionHealth(data) {
-  if (data.status === 'degraded') {
-    var issues = [];
-    var checks = data.checks || {};
-    var storage = checks.storage || {};
-    if (checks.mqtt === 'disconnected') issues.push('MQTT disconnected');
-    if (storage.disk_low) issues.push('Disk space critically low');
-    if (storage.recording_paused) issues.push('Recording paused — disk full');
-    if (storage.projection) {
-      var proj = storage.projection;
-      if (proj.status === 'insufficient' || proj.status === 'critical') {
-        if (proj.headroom_bytes < 0) {
-          issues.push('Storage projection negative — recordings will be evicted soon');
-        } else {
-          issues.push('Storage projected to fill soon (' + proj.status + ')');
-        }
-      } else if (proj.status === 'warning') {
-        issues.push('Storage usage high (' + proj.status + ')');
-      }
-    }
-    if (checks.database === 'error') issues.push('Database error');
-    if (checks.detection && checks.detection.state === 'disabled') issues.push('Detection disabled: ' + (checks.detection.reason || 'codec unavailable'));
-    setConnStatus('degraded', issues.length === 1 ? issues[0] : 'Degraded (' + issues.length + ' issues)');
+  if (data.status !== 'degraded') {
+    setConnHealth('ok', '');
+    return;
   }
-  // A healthy response does not overwrite a recent HTMX connection error;
-  // htmx:afterRequest owns that recovery transition.
+  var issues = [];
+  var checks = data.checks || {};
+  var storage = checks.storage || {};
+  if (checks.mqtt === 'disconnected') issues.push('MQTT disconnected');
+  if (storage.disk_low) issues.push('Disk space critically low');
+  if (storage.recording_paused) issues.push('Recording paused — disk full');
+  if (storage.projection) {
+    var proj = storage.projection;
+    if (proj.status === 'insufficient' || proj.status === 'critical') {
+      if (proj.headroom_bytes < 0) {
+        issues.push('Storage projection negative — recordings will be evicted soon');
+      } else {
+        issues.push('Storage projected to fill soon (' + proj.status + ')');
+      }
+    } else if (proj.status === 'warning') {
+      issues.push('Storage usage high (' + proj.status + ')');
+    }
+  }
+  if (checks.database === 'error') issues.push('Database error');
+  if (checks.detection && checks.detection.state === 'disabled') issues.push('Detection disabled: ' + (checks.detection.reason || 'codec unavailable'));
+  setConnHealth('degraded', issues.length === 1 ? issues[0] : 'Degraded (' + issues.length + ' issues)');
 }
+
+// A tab that last saw degraded health shows it before its first poll answers.
+renderConnStatus();
 
 // ─── Page visibility: pause updates when hidden ───
 document.addEventListener('visibilitychange', function() {

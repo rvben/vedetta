@@ -409,3 +409,26 @@ test('recordings coverage bar spans the day when the first segment began before 
   expect(geometry.width).toBeLessThan(50.5);
   await expect(page.locator('.rec-segments-toggle')).toContainText('12h 6m');
 });
+
+test('health pill keeps reporting degraded while page fragments load fine', async ({ page }) => {
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/health') return json(route, { status: 'degraded', checks: { mqtt: 'disconnected' } });
+    return json(route, {});
+  });
+  await page.route('**/partials/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<div class="stat-card">ok</div>' }));
+
+  await page.goto('/index.html');
+  const label = page.locator('#conn-label');
+  await expect(label).toHaveText('Degraded');
+  // A fragment request that succeeds marks the link healthy 300 ms later; it
+  // must not relabel the degraded system as connected.
+  await page.evaluate(() => window.htmx.trigger(document.querySelector('[hx-get="/partials/dashboard-stats"]'), 'load'));
+  await page.waitForTimeout(800);
+  await expect(label).toHaveText('Degraded');
+
+  // The next page shows the known state before its own first poll answers.
+  await page.route('**/api/health', () => {});
+  await page.goto('/settings.html');
+  await expect(label).toHaveText('Degraded');
+});

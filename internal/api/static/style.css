@@ -3820,6 +3820,16 @@ kbd {
   color: var(--red);
 }
 
+/* A destructive action repeated on every item of a list. It stays quiet at
+   rest and turns red only when pointed at or focused; the confirmation that
+   follows carries the full danger styling. */
+.btn-danger-quiet { color: var(--text-secondary); }
+.btn-danger-quiet:hover,
+.btn-danger-quiet:focus-visible {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
 .zone-presence {
   margin-top: 0.75rem;
   display: flex;
@@ -3918,15 +3928,22 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px dashed var(--border-default);
-  background: var(--surface-2);
+  background: var(--surface-3);
+  color: var(--text-secondary);
 }
 
-.person-thumb-empty-label {
-  font-size: var(--text-xs);
+.person-thumb-monogram {
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.person-thumb-glyph {
+  width: 24px;
+  height: 24px;
   color: var(--text-tertiary);
-  text-align: center;
-  line-height: 1.2;
   pointer-events: none;
 }
 
@@ -4962,6 +4979,7 @@ kbd {
 /* State badges: MQTT connection (toggled via JS classes) and camera status */
 .badge-connected,
 .badge-disconnected,
+.badge-degraded,
 .badge-connecting {
   padding: 0.15rem 0.55rem;
   border-radius: var(--radius-full);
@@ -4969,6 +4987,7 @@ kbd {
 }
 .badge-connected   { background: var(--green-dim); color: var(--green); }
 .badge-disconnected { background: var(--red-dim);   color: var(--red); }
+.badge-degraded    { background: var(--amber-dim); color: var(--amber); }
 .badge-connecting  { background: var(--surface-2);  color: var(--text-secondary); }
 
 /* Account proxy-auth disclosure widget */
@@ -4979,7 +4998,6 @@ kbd {
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-.badge-degraded,
   gap: 0.35rem;
   font-size: var(--text-sm);
   font-weight: 500;
@@ -4987,7 +5005,6 @@ kbd {
   list-style: none;
   user-select: none;
 }
-.badge-degraded    { background: var(--amber-dim); color: var(--amber); }
 .settings-disclosure > summary::-webkit-details-marker { display: none; }
 .settings-disclosure > summary::before {
   content: '';
@@ -5592,31 +5609,26 @@ kbd {
   transition: transform var(--dur-fast), border-color var(--dur-fast);
 }
 .object-sighting:hover { transform: scale(1.04); border-color: var(--cyan); }
-.object-sighting.is-unavailable {
-  cursor: default;
-  background: var(--surface-2);
-}
-.object-sighting.is-unavailable:hover {
-  transform: none;
-  border-color: var(--border-subtle);
-}
 .object-sighting-thumb {
   position: absolute;
   inset: 0;
   background: center / cover no-repeat;
 }
-.object-sighting-placeholder {
+.object-sighting-thumb.thumb-missing::after {
+  content: "No image";
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0.35rem 0.35rem 1rem;
   color: var(--text-tertiary);
   font-size: var(--text-xs);
-  font-weight: 500;
-  line-height: 1.15;
-  text-align: center;
+}
+.object-sightings-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 .object-sighting-sim {
   position: absolute;

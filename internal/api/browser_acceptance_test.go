@@ -97,6 +97,33 @@ func TestBrowserAcceptanceServer(t *testing.T) {
 	if err := db.UpdateKnownObjectThreshold(id, &threshold); err != nil {
 		t.Fatal(err)
 	}
+	// Recognition states: a person with no name, one whose crop loads, one
+	// whose source event is gone, and an object with one sighting that still
+	// has its event and two whose event was removed.
+	if _, err := db.SavePerson("", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SavePersonWithEvent("Resident", false, nil, "browser-event"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SavePersonWithEvent("Anna de Vries", false, nil, "browser-removed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveEvent(camera.Event{ID: "browser-expiring", CameraName: "front_door", Label: "car", Score: .8, Timestamp: now.Add(-48 * time.Hour), EndTime: now.Add(-48*time.Hour + time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, sighting := range []storage.ObjectSighting{
+		{EventID: "browser-event", Camera: "front_door", ObjectID: id, Similarity: .91, Timestamp: now},
+		{EventID: "browser-expiring", Camera: "front_door", ObjectID: id, Similarity: .84, Timestamp: now.Add(-48 * time.Hour)},
+		{EventID: "browser-expiring", Camera: "front_door", ObjectID: id, Similarity: .79, Timestamp: now.Add(-48 * time.Hour)},
+	} {
+		if _, err := db.SaveObjectSighting(sighting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.DeleteEvent("browser-expiring"); err != nil {
+		t.Fatal(err)
+	}
 	setupPath := filepath.Join(dir, "setup.yml")
 	setupDB, err := storage.New(filepath.Join(dir, "setup.db"))
 	if err != nil {

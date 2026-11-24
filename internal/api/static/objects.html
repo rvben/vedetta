@@ -135,6 +135,7 @@
   <div class="toast-container" id="toasts"></div>
 
   <script src="/safehref.js"></script>
+  <script src="/recognition.js"></script>
   <script src="/session.js"></script>
   <script src="/connstatus.js"></script>
   <script src="/app.js"></script>
@@ -438,31 +439,24 @@
           el.innerHTML = '<span class="object-empty-section">No sightings yet.</span>';
           return;
         }
+        var parts = partitionSightings(sightings);
         var html = '';
-        sightings.forEach(function(s) {
+        parts.shown.forEach(function(s) {
           var time = new Date(s.timestamp).toLocaleString();
           var simPct = Math.round(s.similarity * 100);
           var simClass = s.similarity >= 0.8 ? 'high' : s.similarity >= 0.65 ? 'mid' : 'low';
           var details = s.camera + ' · ' + time + ' · ' + simPct + '% match';
           var dismiss = '<button class="object-sighting-dismiss" data-action-click="event.preventDefault();event.stopPropagation();dismissSighting(' + s.id + ',' + objectId + ')" '
             + 'aria-label="Wrong match — dismiss" title="Wrong match — dismiss">×</button>';
-          if (s.event_id) {
-            html += '<a class="object-sighting" href="/event.html?id=' + encodeURIComponent(s.event_id) + '" '
-              + 'title="' + escapeAttr(details) + '">'
-              + '<div class="object-sighting-thumb" data-bg="/api/events/' + encodeURIComponent(s.event_id) + '/snapshot?width=480"></div>'
-              + '<span class="object-sighting-sim ' + simClass + '">' + simPct + '%</span>'
-              + dismiss
-              + '</a>';
-          } else {
-            html += '<div class="object-sighting is-unavailable" role="group" '
-              + 'aria-label="' + escapeAttr('Source event unavailable · ' + details) + '" '
-              + 'title="' + escapeAttr('Source event unavailable · ' + details) + '">'
-              + '<div class="object-sighting-placeholder" aria-hidden="true">Source<br>unavailable</div>'
-              + '<span class="object-sighting-sim ' + simClass + '">' + simPct + '%</span>'
-              + dismiss
-              + '</div>';
-          }
+          html += '<a class="object-sighting" href="/event.html?id=' + encodeURIComponent(s.event_id) + '" '
+            + 'title="' + escapeAttr(details) + '">'
+            + '<div class="object-sighting-thumb" data-bg="/api/events/' + encodeURIComponent(s.event_id) + '/snapshot?width=480"></div>'
+            + '<span class="object-sighting-sim ' + simClass + '">' + simPct + '%</span>'
+            + dismiss
+            + '</a>';
         });
+        var removedNote = removedSightingsNote(parts.removed);
+        if (removedNote) html += '<p class="object-sightings-note">' + escapeHtml(removedNote) + '</p>';
         el.innerHTML = html;
         lazyLoadBg(el);
       }).catch(function() {
@@ -716,7 +710,7 @@
         if (!entry.isIntersecting) return;
         var el = entry.target;
         var bg = el.dataset.bg;
-        if (bg) el.style.backgroundImage = 'url(' + bg + ')';
+        if (bg) loadBackgroundImage(el, bg, thumbMissing);
         _bgObserver.unobserve(el);
       });
     }, { rootMargin: '200px' }) : null;
@@ -727,9 +721,15 @@
         if (_bgObserver) {
           _bgObserver.observe(el);
         } else {
-          el.style.backgroundImage = 'url(' + el.dataset.bg + ')';
+          loadBackgroundImage(el, el.dataset.bg, thumbMissing);
         }
       });
+    }
+
+    // A picture that cannot be loaded is marked, so the tile says so instead
+    // of reading as one still loading.
+    function thumbMissing(el) {
+      el.classList.add('thumb-missing');
     }
 
     function formatDateShort(iso) {

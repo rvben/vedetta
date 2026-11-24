@@ -212,10 +212,8 @@ test('tracked objects never link to a missing source event', async ({ page }) =>
 
   await expect(page.locator('a[href="/event.html?id=event-1"]')).toBeVisible();
   await expect(page.locator('a[href="/event.html?id="]')).toHaveCount(0);
-  const unavailable = page.getByRole('group', { name: /Source event unavailable.*Garage.*71% match/ });
-  await expect(unavailable).toBeVisible();
-  await expect(unavailable).toContainText(/Source\s*unavailable/);
-  await expect(unavailable.getByRole('button', { name: 'Wrong match — dismiss' })).toBeVisible();
+  await expect(page.locator('.object-sighting')).toHaveCount(1);
+  await expect(page.getByText('1 earlier sighting, footage no longer stored')).toBeVisible();
 
   await page.getByRole('button', { name: 'Change thumbnail' }).click();
   const picker = page.getByRole('dialog', { name: 'Choose thumbnail' });

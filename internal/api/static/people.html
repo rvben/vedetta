@@ -239,6 +239,7 @@
   <!-- Keyboard Shortcut Modal -->
   <div class="toast-container" id="toasts"></div>
   <script src="/safehref.js"></script>
+  <script src="/recognition.js"></script>
   <script src="/session.js"></script>
   <script src="/connstatus.js"></script>
   <script src="/app.js"></script>
@@ -328,7 +329,7 @@
           + '<div class="person-card-header">'
           + '<div class="person-thumb-wrap" role="button" tabindex="0" aria-expanded="false" aria-controls="person-faces-' + p.id + '" data-action-click="togglePersonFaces(' + p.id + ')" aria-label="Show faces for ' + escapeAttr(p.name || 'unnamed person') + '">'
           + '<div class="face-thumb person-thumb' + (!p.best_face_id && !p.source_event_id ? ' person-thumb--empty' : '') + '" id="person-thumb-' + p.id + '">'
-          + (!p.best_face_id && !p.source_event_id ? '<span class="person-thumb-empty-label">No face</span>' : '')
+          + (!p.best_face_id && !p.source_event_id ? personThumbFallback(p.name) : '')
           + '</div>'
           + '</div>'
           + '<div class="person-info">'
@@ -346,7 +347,7 @@
           + '</div><div class="person-card-actions">'
           + '<button class="btn btn-xs ' + (p.ignore ? 'btn-primary' : 'btn-ghost') + '" data-action-click="toggleIgnore(' + p.id + ', ' + !p.ignore + ')" title="' + (p.ignore ? 'Include this person in recognition again' : 'Exclude this person from recognition') + '">'
           + (p.ignore ? 'Excluded' : 'Exclude') + '</button>'
-          + '<button class="btn btn-xs btn-ghost btn-danger" data-action-click="deletePerson(' + p.id + ', ' + jsStringArg(p.name) + ')">Delete</button>'
+          + '<button class="btn btn-xs btn-ghost btn-danger-quiet" data-action-click="deletePerson(' + p.id + ', ' + jsStringArg(p.name) + ')">Delete</button>'
           + '</div>'
           + '</div>'
           + '</div>'
@@ -889,7 +890,7 @@
         if (!entry.isIntersecting) return;
         var el = entry.target;
         var bg = el.dataset.bg;
-        if (bg) el.style.backgroundImage = 'url(' + bg + ')';
+        if (bg) loadBackgroundImage(el, bg, thumbMissing);
         _bgObserver.unobserve(el);
       });
     }, { rootMargin: '200px' }) : null;
@@ -900,9 +901,29 @@
         if (_bgObserver) {
           _bgObserver.observe(el);
         } else {
-          el.style.backgroundImage = 'url(' + el.dataset.bg + ')';
+          loadBackgroundImage(el, el.dataset.bg, thumbMissing);
         }
       });
+    }
+
+    // A crop that cannot be loaded leaves a person with their monogram, and
+    // any other tile marked so it does not read as a picture still loading.
+    function thumbMissing(el) {
+      if (el.classList.contains('person-thumb')) {
+        var card = el.closest('.person-card');
+        el.classList.add('person-thumb--empty');
+        el.innerHTML = personThumbFallback(card ? card.dataset.personName : '');
+      } else {
+        el.classList.add('thumb-missing');
+      }
+    }
+
+    // The avatar of a person with no face crop: their initials, or a neutral
+    // figure when they have no name yet.
+    function personThumbFallback(name) {
+      var monogram = personMonogram(name);
+      if (monogram) return '<span class="person-thumb-monogram" aria-hidden="true">' + escapeHtml(monogram) + '</span>';
+      return '<svg class="person-thumb-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
     }
 
 	    function escapeHtml(s) {

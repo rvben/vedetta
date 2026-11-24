@@ -118,3 +118,19 @@ test('baby monitors keep an audio-capable fallback on every platform', () => {
   assert.equal(fallbackLiveTransport(true, true), 'hls');
   assert.equal(fallbackLiveTransport(false, false), 'mjpeg');
 });
+
+test('detection boxes wait for a decoded frame, not for metadata', () => {
+  const { detectionBoxesMayDraw } = require('./livecascade.js');
+  // Metadata parsed: dimensions known, no frame yet. The video is black.
+  assert.equal(detectionBoxesMayDraw({ hidden: false, videoWidth: 2560, readyState: 1 }), false);
+  assert.equal(detectionBoxesMayDraw({ hidden: false, videoWidth: 0, readyState: 0 }), false);
+  // First frame available.
+  assert.equal(detectionBoxesMayDraw({ hidden: false, videoWidth: 2560, readyState: 2 }), true);
+  assert.equal(detectionBoxesMayDraw({ hidden: false, videoWidth: 2560, readyState: 4 }), true);
+});
+
+test('detection boxes draw over MJPEG and snapshot, where the video is hidden', () => {
+  const { detectionBoxesMayDraw } = require('./livecascade.js');
+  assert.equal(detectionBoxesMayDraw({ hidden: true, videoWidth: 0, readyState: 0 }), true);
+  assert.equal(detectionBoxesMayDraw(null), true);
+});

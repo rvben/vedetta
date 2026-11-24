@@ -5599,18 +5599,15 @@ function drawBoxOverlay() {
   var frame = boxOverlayState.frame;
   if (!ctx || !canvas) return;
 
-  // Suppress boxes while the live video has no decoded frames yet. This
-  // prevents boxes from floating over a black/connecting video on cold start.
-  // The guard targets the <video> element only: if it is visible (not hidden)
-  // but videoWidth is 0, the transport is still connecting and no frame has
-  // been decoded. Once the first real frame arrives videoWidth becomes non-zero
-  // and the overlay draws normally on every subsequent RAF tick.
-  // MJPEG/snapshot transports hide live-video, so the check does not affect
-  // them. Recording playback sets currentStream=null so SSE detections are
-  // already suppressed by the 3s staleness cutoff; this guard is belt-and-
-  // suspenders for the live connecting window only.
+  // Boxes need a picture under them. While the live video is visible but has
+  // not decoded a frame, keep the canvas sized and empty.
   var liveVideo = boxOverlayState.video;
-  if (liveVideo && !liveVideo.classList.contains('hidden') && liveVideo.videoWidth === 0) {
+  var boxesMayDraw = detectionBoxesMayDraw(liveVideo && {
+    hidden: liveVideo.classList.contains('hidden'),
+    videoWidth: liveVideo.videoWidth,
+    readyState: liveVideo.readyState,
+  });
+  if (!boxesMayDraw) {
     var rect0 = boxOverlayRenderRect();
     if (rect0) {
       var dpr0 = window.devicePixelRatio || 1;

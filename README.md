@@ -37,8 +37,9 @@ before choosing cameras or hardware for a production installation.
 Vedetta is deliberately honest about what it does not support yet:
 
 - H.264 is the supported video codec; HEVC/H.265 ingest is not implemented.
-- The standard detector backends execute inference on CPU. `codecs.hwaccel`
-  accelerates H.264 **decoding**, not object detection.
+- Object detection runs on CPU by default. On macOS, `detect.backend: coreml`
+  moves it to the GPU through Core ML; there is no GPU detector on Linux yet.
+  `codecs.hwaccel` accelerates H.264 **decoding**, not object detection.
 - There is no birdseye compositor, PTZ autotracking, license-plate recognition,
   audio-event detection, semantic search, or camera-scoped role model yet.
 - Camera behavior varies by firmware. ONVIF or RTSP support on a product page is

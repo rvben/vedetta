@@ -1,4 +1,4 @@
-.PHONY: build build-capi build-hwaccel require-deploy-config build-deploy build-release verify-version run test test-js test-audio-bench test-cry-model test-browser test-race bench lint lint-install vet vulncheck vulncheck-install clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
+.PHONY: build build-capi build-hwaccel require-deploy-config build-deploy build-release verify-version run test test-js test-audio-bench test-cry-model test-browser test-race bench coreml-model lint lint-install vet vulncheck vulncheck-install clean fmt check generate docker-build docker-push docker-build-hwaccel docker-push-hwaccel deploy release-patch release-minor release-major
 
 BINARY := vedetta
 BUILD_DIR := ./build
@@ -22,6 +22,9 @@ DEPLOY_HOST ?= UNSET
 GOLANGCI_LINT_VERSION := v2.15.0
 GOVULNCHECK_VERSION := v1.7.0
 PYTHON_VERSION := 3.15
+COREML_PYTHON_VERSION := 3.14
+ONNXRUNTIME_VERSION := 1.32.0
+COREML_ONNX_MODEL ?= internal/detect/models/yolov8n.onnx
 
 build:
 	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) ./cmd/vedetta
@@ -126,6 +129,16 @@ test-race:
 
 bench:
 	go test ./internal/detect/ -bench=. -benchmem -count=1
+
+# Convert the ONNX detection model into the archive the coreml backend loads
+# (macOS only: the conversion is ONNX Runtime's Core ML translation). Two
+# exports are never the same bytes, so after publishing a new one update
+# coreMLArchiveSHA256 to the checksum this prints. Runs on Python
+# $(COREML_PYTHON_VERSION) rather than $(PYTHON_VERSION) because onnxruntime
+# publishes no wheel for the newer one.
+coreml-model:
+	uv run --no-project --python $(COREML_PYTHON_VERSION) --with onnxruntime==$(ONNXRUNTIME_VERSION) --with numpy \
+		python tools/coreml/export.py "$(COREML_ONNX_MODEL)" internal/detect/models/yolov8n-coreml.zip
 
 # Install the linter CI uses. The version is pinned because an unpinned
 # "@latest" lets a golangci-lint release turn main red with no change to this

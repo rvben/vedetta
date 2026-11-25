@@ -52,7 +52,8 @@ updates.
 | NVDEC | Linux NVIDIA | Build-specific | H.264 hardware decode; requires the `hwaccel` build and NVIDIA runtime access. |
 | Pure-Go ONNX Runtime binding | Linux/macOS | Supported | CPU object inference. |
 | C ONNX Runtime binding | Linux/macOS | Build-specific | CPU object inference via `make build-capi`. |
-| CUDA, TensorRT, OpenVINO, Core ML inference | Any | Not supported | Hardware decode settings do not enable detector acceleration. |
+| Core ML | macOS | Opt-in | GPU object inference via `detect.backend: coreml`; needs a cgo build, which the macOS build is. Not selected by `auto`. |
+| CUDA, TensorRT, OpenVINO inference | Any | Not supported | Hardware decode settings do not enable detector acceleration. |
 | Remote detector workers | Any | Not supported | The proposed boundary is documented in [ADR 0002](adr/0002-optional-inference-workers.md). |
 
 `codecs.hwaccel: auto` intentionally prefers software decode for the typical

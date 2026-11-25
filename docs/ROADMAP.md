@@ -69,8 +69,8 @@ default.
   backpressure, deadlines, and normalized results.
 - Add optional same-host workers over a versioned local transport, with the CPU
   provider remaining in-process and always supported.
-- Prioritize providers from measured demand: Core ML, OpenVINO, CUDA/TensorRT,
-  then remote accelerators where maintainers can test them.
+- Prioritize providers from measured demand: OpenVINO, CUDA/TensorRT, then
+  remote accelerators where maintainers can test them.
 - Add per-camera model/provider selection and resource budgets.
 - Expose benchmark and diagnostics commands that compare end-to-end latency,
   throughput, memory, power where available, and dropped work.

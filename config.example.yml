@@ -51,6 +51,12 @@ cameras:
 
 detect:
   model_path: ""  # path to ONNX model (e.g., yolov8n.onnx)
+  # Inference backend. "auto" (default) and "go" run the built-in CPU runtime.
+  # "coreml" runs the model on the GPU through Core ML (macOS only); it takes
+  # no model_path for the default model, or a .mlpackage / .mlmodelc directory.
+  # A named backend is used exactly: if it cannot start, object detection is
+  # off rather than quietly on another backend.
+  # backend: auto
   score_threshold: 0.5
   object_match_threshold: 0.75  # cosine similarity threshold for object re-ID (0.0-1.0). Higher avoids matching look-alike vehicles to the wrong named object; per-object overrides are also supported.
   motion:

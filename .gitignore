@@ -22,6 +22,11 @@ snapshots/
 # ONNX models
 *.onnx
 
+# Core ML models: the exported archive, unpacked packages and compiled models
+yolov8n-coreml.zip
+*.mlpackage
+*.mlmodelc
+
 # Scripts (local/deploy)
 scripts/
 

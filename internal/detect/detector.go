@@ -213,6 +213,17 @@ func (d *Detector) Close() {
 }
 
 func (d *Detector) init(cfg config.DetectConfig) error {
+	// Core ML runs its own model format, so it resolves model_path itself and
+	// never loads the ONNX model.
+	if cfg.Backend == coreMLBackendName {
+		backend, err := openCoreMLBackend(cfg.ModelPath)
+		if err != nil {
+			return err
+		}
+		d.backend = backend
+		return nil
+	}
+
 	modelData, err := d.loadModelData(cfg.ModelPath)
 	if err != nil {
 		return fmt.Errorf("load model: %w", err)
@@ -267,7 +278,7 @@ func selectBackend(preference string, modelData []byte) (Backend, error) {
 		return NewGoBackend(modelData)
 
 	default:
-		return nil, fmt.Errorf("unknown backend %q: use \"auto\", \"go\", or \"onnxruntime_c\"", preference)
+		return nil, fmt.Errorf("unknown backend %q: use \"auto\", \"go\", \"onnxruntime_c\", or \"coreml\"", preference)
 	}
 }
 

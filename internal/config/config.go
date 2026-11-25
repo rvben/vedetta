@@ -273,7 +273,7 @@ type Zone struct {
 
 type DetectConfig struct {
 	ModelPath            string       `yaml:"model_path"`
-	Backend              string       `yaml:"backend"` // "auto" (default), "go", or "onnxruntime_c"
+	Backend              string       `yaml:"backend"` // "auto" (default), "go", "onnxruntime_c", or "coreml"
 	ScoreThreshold       float32      `yaml:"score_threshold"`
 	Motion               MotionConfig `yaml:"motion"`
 	Labels               []string     `yaml:"labels"`                 // Only emit events for these labels; empty = all

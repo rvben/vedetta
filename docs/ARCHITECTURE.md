@@ -91,8 +91,11 @@ Operators can exclude an unrelated event without deleting it and restore it
 later; both decisions remain attributable correction history, separate from
 immutable raw evidence.
 
-The pure-Go and C ONNX Runtime bindings currently execute inference on CPU.
-VideoToolbox, VA-API, and NVDEC are decode backends, not detector providers.
+The pure-Go and C ONNX Runtime bindings execute inference on CPU. On macOS the
+opt-in Core ML backend (`detect.backend: coreml`) runs the same YOLO model on
+the GPU, from a Core ML package that `tools/coreml/export.py` derives from the
+ONNX model. VideoToolbox, VA-API, and NVDEC are decode backends, not detector
+providers.
 
 ## Live and downstream streaming
 

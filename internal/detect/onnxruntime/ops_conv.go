@@ -161,7 +161,9 @@ func opConv(inputs []*Tensor, attrs *Attributes) ([]*Tensor, error) {
 
 	// 1×1 conv fast path: input data is already in GEMM format, no im2col needed
 	is1x1 := kH == 1 && kW == 1 && strideH == 1 && strideW == 1 && noPad
-	if is1x1 {
+	if cPerGroup == 1 && mPerGroup == 1 && !is1x1 {
+		convDepthwise(x.Data, w.Data, output.Data, N, C, H, W, kH, kW, strideH, strideW, padTop, padLeft, dilH, dilW, outH, outW)
+	} else if is1x1 {
 		for n := range N {
 			for g := range group {
 				wOffset := g * mPerGroup * cPerGroup

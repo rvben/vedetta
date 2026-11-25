@@ -76,12 +76,11 @@ func opRelu(inputs []*Tensor, _ *Attributes) ([]*Tensor, error) {
 	x := inputs[0]
 	out := newTensorUninit(x.Shape)
 
+	// max compiles to one instruction with no branch, where a comparison
+	// mispredicts on every sign change in the data.
+	dst := out.Data[:len(x.Data)]
 	for i, v := range x.Data {
-		if v > 0 {
-			out.Data[i] = v
-		} else {
-			out.Data[i] = 0
-		}
+		dst[i] = max(v, 0)
 	}
 
 	return []*Tensor{out}, nil

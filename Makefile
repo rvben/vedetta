@@ -21,6 +21,7 @@ CODESIGN_IDENTIFIER ?= UNSET
 DEPLOY_HOST ?= UNSET
 GOLANGCI_LINT_VERSION := v2.15.0
 GOVULNCHECK_VERSION := v1.7.0
+PYTHON_VERSION := 3.15
 
 build:
 	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) ./cmd/vedetta
@@ -95,9 +96,10 @@ run: build
 test: test-js test-audio-bench
 	go test ./...
 
-# Evaluation logic needs no ML packages or model downloads in CI.
+# Evaluation logic needs no ML packages or model downloads in CI. uv supplies
+# the interpreter, so the result does not depend on which python3 is on PATH.
 test-audio-bench:
-	python3 -m unittest discover -s tools/audiobench -p 'test_*.py'
+	uv run --no-project --python $(PYTHON_VERSION) python -m unittest discover -s tools/audiobench -p 'test_*.py'
 
 # Explicit reference-model parity; never downloads assets during normal checks.
 test-cry-model:

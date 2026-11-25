@@ -93,16 +93,16 @@ func TestOfferDoorbellFrameOwnsPixelsAndDoesNotBlock(t *testing.T) {
 	buf[0] = 200
 	detections := []detect.Detection{{Label: "person", Score: 0.9, Box: [4]int{0, 0, 32, 32}}}
 	at := time.Now()
-	cam.offerDoorbellFrame(buf, 32, 32, at, detections)
+	cam.offerDoorbellFrame(buf, 32, 32, at, detections, true)
 	buf[0] = 0
 	detections[0].Box[0] = 12
 	// A full analysis queue must not stall frame processing or doorbell presses.
-	cam.offerDoorbellFrame(buf, 32, 32, at.Add(time.Second), detections)
+	cam.offerDoorbellFrame(buf, 32, 32, at.Add(time.Second), detections, true)
 	job := <-d.pending
 	if job.frame.RGBAAt(0, 0).R != 200 || job.detections[0].Box[0] != 0 {
 		t.Fatal("candidate referenced reused decoder data")
 	}
-	cam.offerDoorbellFrame(buf, 32, 32, at.Add(100*time.Millisecond), detections)
+	cam.offerDoorbellFrame(buf, 32, 32, at.Add(100*time.Millisecond), detections, true)
 	if len(d.pending) != 0 {
 		t.Fatal("sampling exceeded twice per second")
 	}
@@ -144,7 +144,7 @@ func TestDoorbellStopDrainsConcurrentOffers(t *testing.T) {
 	go func() {
 		defer close(offersDone)
 		for i := 0; i < 100; i++ {
-			cam.offerDoorbellFrame(buf, 32, 32, time.Now().Add(time.Duration(i)*time.Second), detections)
+			cam.offerDoorbellFrame(buf, 32, 32, time.Now().Add(time.Duration(i)*time.Second), detections, true)
 		}
 	}()
 	cancel()
@@ -181,5 +181,63 @@ func TestDoorbellWorkerExpiresImagesWithoutNewFrames(t *testing.T) {
 		case <-deadline:
 			t.Fatal("offline camera retained old visitor photo")
 		}
+	}
+}
+
+// A still scene has no visitor to photograph, so its frames are not queued for
+// analysis. Motion, or a person in the frame, queues them again.
+func TestOfferDoorbellFrameSkipsAQuietScene(t *testing.T) {
+	person := []detect.Detection{{Label: "person", Score: 0.9, Box: [4]int{4, 4, 28, 28}}}
+	car := []detect.Detection{{Label: "car", Score: 0.9, Box: [4]int{4, 4, 28, 28}}}
+	cases := []struct {
+		name        string
+		detections  []detect.Detection
+		sceneActive bool
+		wantQueued  bool
+	}{
+		{"quiet and empty", nil, false, false},
+		{"quiet with a car", car, false, false},
+		{"quiet with a person", person, false, true},
+		{"recent motion and empty", nil, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cam := NewTestCamera("door")
+			cam.doorbellSnapshots = newDoorbellSnapshots(nil, nil)
+			cam.doorbellSnapshots.active.Store(true)
+			at := time.Now()
+			cam.offerDoorbellFrame(make([]byte, 32*32*3), 32, 32, at, tc.detections, tc.sceneActive)
+			if got := len(cam.doorbellSnapshots.pending) == 1; got != tc.wantQueued {
+				t.Fatalf("queued = %v, want %v", got, tc.wantQueued)
+			}
+			// A skipped frame must not start the sampling interval, or the first
+			// frame after motion begins would be dropped as too soon.
+			cam.offerDoorbellFrame(make([]byte, 32*32*3), 32, 32, at.Add(time.Millisecond), person, true)
+			if len(cam.doorbellSnapshots.pending) != 1 {
+				t.Fatal("the first frame of an active scene was not queued")
+			}
+		})
+	}
+}
+
+func TestDoorbellSceneActive(t *testing.T) {
+	now := time.Now()
+	cam := NewTestCamera("door")
+	cam.detectEnabled = true
+	if cam.doorbellSceneActive(now) {
+		t.Fatal("a camera that never saw motion counts as active")
+	}
+	cam.lastMotion = now.Add(-29 * time.Second)
+	if !cam.doorbellSceneActive(now) {
+		t.Fatal("motion inside the hold does not count as active")
+	}
+	cam.lastMotion = now.Add(-30 * time.Second)
+	if cam.doorbellSceneActive(now) {
+		t.Fatal("motion older than the hold still counts as active")
+	}
+	// Without detection there is no motion signal, so every frame is a candidate.
+	cam.detectEnabled = false
+	if !cam.doorbellSceneActive(now) {
+		t.Fatal("a camera without detection never analyses a frame")
 	}
 }

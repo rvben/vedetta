@@ -16,6 +16,13 @@ import (
 
 const doorbellSampleInterval = 500 * time.Millisecond
 
+// doorbellMotionHold is how long after qualifying motion a doorbell camera
+// keeps analysing frames for a visitor. Object detection only runs on motion, so
+// a visitor who stands still is invisible to it: the hold has to outlast the
+// wait between walking up and pressing, and the press itself is motion that
+// renews it.
+const doorbellMotionHold = 30 * time.Second
+
 type doorbellFrameJob struct {
 	frame      *image.RGBA
 	at         time.Time
@@ -148,9 +155,36 @@ func faceFrontalness(points [5][2]float32) float64 {
 
 func boxArea(b [4]int) int { return max(0, b[2]-b[0]) * max(0, b[3]-b[1]) }
 
-func (c *Camera) offerDoorbellFrame(buf []byte, w, h int, at time.Time, detections []detect.Detection) {
+// doorbellSceneActive reports whether a visitor could be arriving: the camera
+// saw qualifying motion within doorbellMotionHold. A camera without detection
+// has no motion signal, so its scene always counts as active.
+func (c *Camera) doorbellSceneActive(now time.Time) bool {
+	if !c.detectEnabled {
+		return true
+	}
+	c.mu.RLock()
+	last := c.lastMotion
+	c.mu.RUnlock()
+	return !last.IsZero() && now.Sub(last) < doorbellMotionHold
+}
+
+// offerDoorbellFrame queues a frame for visitor analysis. A frame of a scene
+// that is not active and shows no person is skipped: analysing it costs an
+// object detection and a whole-image face scan of the main stream, and a press
+// on a still scene is served by the live frame.
+func (c *Camera) offerDoorbellFrame(buf []byte, w, h int, at time.Time, detections []detect.Detection, sceneActive bool) {
 	d := c.doorbellSnapshots
 	if d == nil || !d.active.Load() {
+		return
+	}
+	person := false
+	for _, detection := range detections {
+		if detection.Label == "person" && detection.Score >= 0.5 && boxArea(detection.Box) > 0 {
+			person = true
+			break
+		}
+	}
+	if !sceneActive && !person {
 		return
 	}
 	d.mu.Lock()
@@ -163,13 +197,10 @@ func (c *Camera) offerDoorbellFrame(buf []byte, w, h int, at time.Time, detectio
 	if sc := c.snapshotConsumer(); sc != nil {
 		job.main, job.mainAt = sc.LastFrameAt()
 	}
-	for _, detection := range detections {
-		if detection.Label == "person" && detection.Score >= 0.5 && boxArea(detection.Box) > 0 {
-			// Raw detection buffers are reused by the decoder: own the copied pixels.
-			job.frame = rawToRGBA(buf, w, h)
-			job.detections = append([]detect.Detection(nil), detections...)
-			break
-		}
+	if person {
+		// Raw detection buffers are reused by the decoder: own the copied pixels.
+		job.frame = rawToRGBA(buf, w, h)
+		job.detections = append([]detect.Detection(nil), detections...)
 	}
 	select {
 	case d.pending <- job:

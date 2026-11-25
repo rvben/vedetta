@@ -782,7 +782,7 @@ func (c *Camera) processFrame(buf []byte, w, h int) {
 	c.saveCachedSnapshot()
 
 	if !c.detectEnabled {
-		c.offerDoorbellFrame(buf, w, h, frameAt, nil)
+		c.offerDoorbellFrame(buf, w, h, frameAt, nil, true)
 		return
 	}
 	metrics.FramesProcessed.Inc(c.config.Name)
@@ -844,7 +844,7 @@ func (c *Camera) processFrame(buf []byte, w, h int) {
 		metrics.YOLOInferenceDuration.Observe(c.config.Name, time.Since(yoloStart))
 	}
 
-	c.offerDoorbellFrame(buf, w, h, frameAt, detections)
+	c.offerDoorbellFrame(buf, w, h, frameAt, detections, c.doorbellSceneActive(now))
 
 	// Run the tracking pipeline every frame (with detections=nil during quiet
 	// periods) so unmatched tracks keep aging and eventually decay. Otherwise

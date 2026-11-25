@@ -19,10 +19,27 @@ function activityCard(id, timestamp, options = {}) {
   </a>`;
 }
 
-async function mockEventsPage(page) {
-  const now = new Date();
-  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 20, 0, 0);
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0, 0);
+// wallClock returns the instant at which a clock in timeZone reads `hour`
+// o'clock, `daysAgo` days before that zone's current date. The fixture times
+// follow the zone the browser renders in, whatever zone the runner is in.
+function wallClock(timeZone, daysAgo, hour) {
+  const partsIn = instant => {
+    const parts = {};
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone, hourCycle: 'h23',
+      year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+    }).formatToParts(instant).forEach(part => { parts[part.type] = Number(part.value); });
+    return parts;
+  };
+  const asUTC = p => Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  const today = partsIn(new Date());
+  const naive = Date.UTC(today.year, today.month - 1, today.day - daysAgo, hour);
+  return new Date(naive - (asUTC(partsIn(new Date(naive))) - naive));
+}
+
+async function mockEventsPage(page, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
+  const yesterday = wallClock(timeZone, 1, 20);
+  const today = wallClock(timeZone, 0, 9);
   const gallery = [
     activityCard('act_today-1', today.toISOString(), { title: 'Ruben', state: 'open' }),
     activityCard('act_today-2', new Date(today.getTime() - 60000).toISOString(), { label: 'car', camera: 'Driveway' }),
@@ -102,6 +119,10 @@ test('new activity waits for the user instead of replacing the review', async ({
 
 test.describe('absolute times', () => {
   test.use({ locale: 'en-GB', timezoneId: 'Europe/Amsterdam' });
+
+  test.beforeEach(async ({ page }) => {
+    await mockEventsPage(page, 'Europe/Amsterdam');
+  });
 
   test('cards show the local clock time under their day heading', async ({ page }) => {
     await page.goto('/events.html');

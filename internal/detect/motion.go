@@ -149,30 +149,59 @@ func (m *MotionDetector) Detect(frame []byte, width, height int) []MotionRegion 
 	return regions
 }
 
-// boxBlur3x3 applies a simple 3x3 box blur from src into dst.
-// dst must be at least w*h in length.
+// boxBlur3x3 writes into dst the mean of each src pixel and its neighbours.
+// A pixel on the border averages only the neighbours that exist.
+//
+// Nearly every pixel is interior, with all nine neighbours present, so those
+// are summed from three row slices without a bounds or edge test per
+// neighbour; the border goes through blurBorderPixel.
 func boxBlur3x3(src, dst []uint8, w, h int) {
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			var sum int
-			var count int
-			for dy := -1; dy <= 1; dy++ {
-				ny := y + dy
-				if ny < 0 || ny >= h {
-					continue
-				}
-				for dx := -1; dx <= 1; dx++ {
-					nx := x + dx
-					if nx < 0 || nx >= w {
-						continue
-					}
-					sum += int(src[ny*w+nx])
-					count++
-				}
+	if w <= 0 || h <= 0 {
+		return
+	}
+	// A single column has no interior and no second column to start the sums from.
+	if w < 2 {
+		for y := range h {
+			for x := range w {
+				dst[y*w+x] = blurBorderPixel(src, w, h, x, y)
 			}
-			dst[y*w+x] = uint8(sum / count)
+		}
+		return
+	}
+	for x := range w {
+		dst[x] = blurBorderPixel(src, w, h, x, 0)
+		dst[(h-1)*w+x] = blurBorderPixel(src, w, h, x, h-1)
+	}
+	for y := 1; y < h-1; y++ {
+		above := src[(y-1)*w : y*w]
+		row := src[y*w : (y+1)*w]
+		below := src[(y+1)*w : (y+2)*w]
+		out := dst[y*w : (y+1)*w]
+		out[0] = blurBorderPixel(src, w, h, 0, y)
+		out[w-1] = blurBorderPixel(src, w, h, w-1, y)
+		// Each column's three pixels are summed once and reused by the three
+		// output pixels that column contributes to.
+		left := uint32(above[0]) + uint32(row[0]) + uint32(below[0])
+		mid := uint32(above[1]) + uint32(row[1]) + uint32(below[1])
+		for x := 1; x < w-1; x++ {
+			right := uint32(above[x+1]) + uint32(row[x+1]) + uint32(below[x+1])
+			out[x] = uint8((left + mid + right) / 9)
+			left, mid = mid, right
 		}
 	}
+}
+
+// blurBorderPixel returns the mean of the pixel at (x, y) and whichever of its
+// eight neighbours lie inside the image.
+func blurBorderPixel(src []uint8, w, h, x, y int) uint8 {
+	var sum, count int
+	for ny := max(y-1, 0); ny <= min(y+1, h-1); ny++ {
+		for nx := max(x-1, 0); nx <= min(x+1, w-1); nx++ {
+			sum += int(src[ny*w+nx])
+			count++
+		}
+	}
+	return uint8(sum / count)
 }
 
 // connectedComponents performs two-pass connected component labeling on

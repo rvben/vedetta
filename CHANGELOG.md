@@ -4,6 +4,61 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.21](https://github.com/rvben/vedetta/compare/v0.7.20...v0.7.21) - 2026-11-25
+
+### Added
+
+- **api**: serve runtime profiles at /api/debug/pprof for admin callers ([cc8067c](https://github.com/rvben/vedetta/commit/cc8067c071d4dde20269fc8361cc1136b07d939d))
+- **ui**: put today's events beside the camera picture ([584ec16](https://github.com/rvben/vedetta/commit/584ec165daf3fb12ea08d3842c5390790e1543a1))
+- **ui**: show cameras as a wall of captioned pictures ([43d4619](https://github.com/rvben/vedetta/commit/43d4619c57c9a25fc18e739bddd057840497a9a0))
+- **cry**: add local crying recognition with a camera-page monitor ([1bcf503](https://github.com/rvben/vedetta/commit/1bcf5033dd1dccd1294af383bb96d9674232de27))
+- **live**: keep an audio-capable live transport and play HLS on any browser ([cef3f87](https://github.com/rvben/vedetta/commit/cef3f8769f1c87347eb35d7112d032f1cec44202))
+- **ui**: show clock times and jump-to-time on the activity page ([cc977ec](https://github.com/rvben/vedetta/commit/cc977ecff1e4dd253b87a60d6179c73ba0861abd))
+- **notify**: add fast Pushover doorbell photo notifications ([f831cce](https://github.com/rvben/vedetta/commit/f831cce6c1c618b1fb9d628527315234c73291d5))
+
+### Fixed
+
+- **ui**: make Try again reload a section that failed to load ([03429d9](https://github.com/rvben/vedetta/commit/03429d991af8fabba23b96f5c7ef7ab96d834daf))
+- **ui**: keep the cry monitor on one line on phones ([13fa112](https://github.com/rvben/vedetta/commit/13fa112e4b7abd9a69c375207008133b9faa6c48))
+- **ui**: keep keyboard focus on a tile when the dashboard re-renders ([d6bb007](https://github.com/rvben/vedetta/commit/d6bb007bd49d592182afb0da4db9db49c3684810))
+- **auth**: keep a valid session signed in when its last-seen time cannot be saved ([c64c8ee](https://github.com/rvben/vedetta/commit/c64c8eef292fcbcfd01fa4129350c499b7fab860))
+- **ui**: keep the player controls off the picture on touch screens ([c7c5abf](https://github.com/rvben/vedetta/commit/c7c5abf9f1011fdbff41c2ca60a030e669d3ff86))
+- **ui**: keep dashboard tiles true to the camera's state ([1ff6d52](https://github.com/rvben/vedetta/commit/1ff6d52370df970cf4d51f82b1b31a50ff29f53d))
+- **ui**: make amber text readable in the light theme ([7e2dd70](https://github.com/rvben/vedetta/commit/7e2dd70ae93bf4617612f7b3d2ec2a220ed5656c))
+- **ui**: show the whole camera frame on the dashboard ([0daa580](https://github.com/rvben/vedetta/commit/0daa58070416358a9c256ca98f83b830fd02bb2b))
+- **ui**: mark a rail event only while its playback is on screen ([54e825e](https://github.com/rvben/vedetta/commit/54e825e4c050fe5cb79e9782fdd5e5c9abb44fd7))
+- **ui**: keep keyboard focus when the rail and the dashboard refresh ([1fa0ea1](https://github.com/rvben/vedetta/commit/1fa0ea1e5d3d4668acf766058130c2e8abf2c2da))
+- **events**: count today's events from local midnight ([0891134](https://github.com/rvben/vedetta/commit/0891134a5fd0d99130daa211fdb018a2ce03dae1))
+- **ui**: keep live overlays off recorded footage ([1a5e3c4](https://github.com/rvben/vedetta/commit/1a5e3c4e6f2c061d8c51f2e2a19817079e92a8ed))
+- **ui**: use display names on the event and activity detail pages ([c95111e](https://github.com/rvben/vedetta/commit/c95111efb96fa5b398650be2ce64a7486dbc3a63))
+- **ui**: show every time in one format ([080ad22](https://github.com/rvben/vedetta/commit/080ad2246883469c397b2dea054733ab82a6d6d4))
+- **ui**: replace dead recognition placeholders with honest fallbacks ([845574a](https://github.com/rvben/vedetta/commit/845574aa29fbd30410a3ac20f8d13366166905b1))
+- **ui**: date the oldest recording on the viewer's calendar ([cec3b49](https://github.com/rvben/vedetta/commit/cec3b4978d136d7849c2f0e88cf98ce02b619e48))
+- **ui**: name cameras by their display name on the Storage page ([c2c89a5](https://github.com/rvben/vedetta/commit/c2c89a5c31243002c21437417c0a4b586eec10ff))
+- **ui**: show camera status in Settings as labelled state badges ([d4d4adc](https://github.com/rvben/vedetta/commit/d4d4adc8bcb9b54977dc5164f6f906988a82f67e))
+- **ui**: stop announcing the live transport in toasts ([fd806b6](https://github.com/rvben/vedetta/commit/fd806b66b7dfd5abe794af3087fc8165c8d627f1))
+- **api**: serve the stylesheet to the signed-out login page ([ccec087](https://github.com/rvben/vedetta/commit/ccec087d4aa8b66c337f861460b201501bce39e5))
+- **ui**: draw detection boxes only once the live video has a frame ([f0f24b8](https://github.com/rvben/vedetta/commit/f0f24b8ad1f31856516a9cad9398253cb3d62df3))
+- **ui**: report one storage figure on the dashboard, Settings and Storage ([c839bcc](https://github.com/rvben/vedetta/commit/c839bcc9abc313c24078abbae5c52903046088f3))
+- **ui**: keep the health pill degraded while page requests succeed ([96bc30a](https://github.com/rvben/vedetta/commit/96bc30a2357b34247b72bdbe40e1d5394965a582))
+- **ui**: serve tile-sized event snapshots to galleries ([51cc537](https://github.com/rvben/vedetta/commit/51cc53742fae8159b2fc7a1946b7f509550e2378))
+- **ui**: place recordings coverage relative to the selected day ([b0d9c6b](https://github.com/rvben/vedetta/commit/b0d9c6b10c633aab24cf11e8334cd9655d17797d))
+- **ui**: stop pulsing status dots on snapshot cards and drop decorative glows ([015a488](https://github.com/rvben/vedetta/commit/015a48836fb04e86e133caad4cbdad834b7267cf))
+- **detect**: compute exact sigmoid outside the lookup table range ([d6c45e3](https://github.com/rvben/vedetta/commit/d6c45e3f33dcc814b0fe14745b5a50a128a216de))
+- **audio**: tolerate G.711 timestamp jitter without splicing windows ([589d1ad](https://github.com/rvben/vedetta/commit/589d1ad0b93f5014242081e16c0862000e88e148))
+- **ui**: keep the range icon clear of the select label in WebKit ([a4db97d](https://github.com/rvben/vedetta/commit/a4db97d1b5c1c439e5ead3e9a56a1e5a61f72f7f))
+- **deps**: resolve security advisories and refresh dependencies ([788384a](https://github.com/rvben/vedetta/commit/788384ac308a5de0c70be476a22d2ed7c72d9e2a))
+- **deps**: require Go 1.27.3 in native and container builds ([8c8953a](https://github.com/rvben/vedetta/commit/8c8953aca7065eb3f687812fe43b2485dd0cf147))
+- **deps**: require patched Go and HTTP/2 versions ([e5fba5d](https://github.com/rvben/vedetta/commit/e5fba5d41622cb83249193ec224fa5df638ccaab))
+- **audio**: preserve G.711 recordings through playback and exports ([48f3eae](https://github.com/rvben/vedetta/commit/48f3eae43ec3e73f6b5c8ce56e583c5a1d96a312))
+- **ui**: polish evidence review and close audit defects ([dd330ee](https://github.com/rvben/vedetta/commit/dd330eebe53693a39e0a4ba14d8fbae70419e089))
+
+### Performance
+
+- **media**: reuse decoded frame buffers instead of allocating one per frame ([702ff46](https://github.com/rvben/vedetta/commit/702ff46a15450b7543991ba1eeb05a1bb11b7d13))
+- **detect**: vectorize the SiLU activation with Accelerate on macOS ([698c4a2](https://github.com/rvben/vedetta/commit/698c4a21fb9121fcfa44c250a5415733523fc15e))
+- **detect**: bound convolution buffer retention by concurrency ([526b464](https://github.com/rvben/vedetta/commit/526b464b76e375659e118a63033b1e4ae3dafc57))
+
 ## [0.7.20](https://github.com/rvben/vedetta/compare/v0.7.19...v0.7.20) - 2026-09-28
 
 ### Fixed

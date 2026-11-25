@@ -27,10 +27,11 @@ const (
 	// slow-request rule continues to apply to it.
 	classProbe
 
-	// classStream stays open for as long as it is healthy: server-sent events,
-	// WebSocket, and multipart MJPEG. Elapsed time on one of these measures how
-	// long the client watched, not how slow the server was, so timing it as a
-	// request is meaningless and pollutes any latency statistic it enters.
+	// classStream stays open for a time the client chooses: server-sent events,
+	// WebSocket, multipart MJPEG, and the timed profile captures. Elapsed time
+	// on one of these measures how long the client watched or asked to record,
+	// not how slow the server was, so timing it as a request is meaningless and
+	// pollutes any latency statistic it enters.
 	classStream
 )
 
@@ -48,6 +49,16 @@ func classifyRequest(r *http.Request) requestClass {
 		return classProbe
 	case "/api/events/stream":
 		return classStream
+	}
+
+	// A CPU profile or execution trace runs for a length the caller chose, and
+	// so does any other profile asked for an interval, so the elapsed time is a
+	// request parameter rather than a latency. A profile without an interval is
+	// a snapshot that returns at once.
+	if name, ok := strings.CutPrefix(p, "/api/debug/pprof/"); ok {
+		if name == "profile" || name == "trace" || r.URL.Query().Has("seconds") {
+			return classStream
+		}
 	}
 
 	// Per-camera live transports. WebRTC and talkback are deliberately absent:

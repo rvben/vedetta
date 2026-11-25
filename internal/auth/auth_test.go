@@ -770,3 +770,44 @@ func TestIdleSessionExpiresWhileLastSeenCannotBeWritten(t *testing.T) {
 		t.Fatalf("an idle session must expire, got %+v", principal)
 	}
 }
+
+// Profiles expose goroutine stacks and heap contents, and a CPU profile costs
+// the server real work for as long as it runs. A read token that may list
+// cameras must not be able to pull either, so the diagnostics tree demands the
+// admin scope even for GET.
+func TestDiagnosticsRequireAdminScopeEvenForReads(t *testing.T) {
+	paths := []string{
+		"/api/debug/pprof/heap",
+		"/api/debug/pprof/profile",
+		"/api/debug/anything-added-later",
+	}
+
+	denied := [][]string{{"api:read"}, {"api:write"}, {"api:*"}, {"metrics:read"}, {"tokens:write"}}
+	allowed := [][]string{{"admin"}, {"*"}}
+
+	for _, path := range paths {
+		for _, scopes := range denied {
+			p := &Principal{Username: "t", Kind: AuthKindToken, Scopes: scopes}
+			if p.Allows(http.MethodGet, path) {
+				t.Errorf("%v must be denied on GET %s", scopes, path)
+			}
+		}
+		for _, scopes := range allowed {
+			p := &Principal{Username: "t", Kind: AuthKindToken, Scopes: scopes}
+			if !p.Allows(http.MethodGet, path) {
+				t.Errorf("%v must be allowed on GET %s", scopes, path)
+			}
+		}
+		session := &Principal{Username: "admin", Kind: AuthKindSession}
+		if !session.Allows(http.MethodGet, path) {
+			t.Errorf("session must be allowed on GET %s", path)
+		}
+	}
+
+	// The prefix is a path segment, not a string prefix: an ordinary read that
+	// merely starts with the same letters stays an ordinary read.
+	reader := &Principal{Username: "t", Kind: AuthKindToken, Scopes: []string{"api:read"}}
+	if !reader.Allows(http.MethodGet, "/api/debugging") {
+		t.Error("api:read must still read a path that only resembles the diagnostics tree")
+	}
+}

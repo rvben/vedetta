@@ -302,11 +302,14 @@ func TestEveryMutatingRouteRequiresItsDeclaredScope(t *testing.T) {
 		len(routes), len(seen), admin, write)
 }
 
-// The read side needs no per-route table: every API read is api:read, and
-// anything outside /api/ is session-only. Walking the routes still catches a new
-// GET that lands somewhere a read token cannot reach.
+// The read side needs no per-route table: every API read is api:read, except
+// the diagnostics tree, which is admin-only, and anything outside /api/ is
+// session-only. Walking the routes still catches a new GET that lands somewhere
+// a read token cannot reach, or a diagnostic that a read token can.
 func TestReadRoutesAcceptTheReadScope(t *testing.T) {
 	apiRead := &auth.Principal{Username: "t", Kind: auth.AuthKindToken, Scopes: []string{"api:read"}}
+	admin := &auth.Principal{Username: "t", Kind: auth.AuthKindToken, Scopes: []string{"admin"}}
+	diagnostics := 0
 
 	for _, r := range allRoutes(t) {
 		if !isSafe(r.method) {
@@ -318,6 +321,14 @@ func TestReadRoutesAcceptTheReadScope(t *testing.T) {
 		// dedicated tests in internal/auth.
 		case path == "/metrics" || strings.HasPrefix(path, "/api/tokens"):
 			continue
+		case strings.HasPrefix(path, "/api/debug/"):
+			diagnostics++
+			if apiRead.Allows(r.method, path) {
+				t.Errorf("%s is a diagnostic but an api:read token may call it", r.key())
+			}
+			if !admin.Allows(r.method, path) {
+				t.Errorf("%s refuses an admin token", r.key())
+			}
 		case strings.HasPrefix(path, "/api/"):
 			if !apiRead.Allows(r.method, path) {
 				t.Errorf("%s refuses an api:read token", r.key())
@@ -327,5 +338,10 @@ func TestReadRoutesAcceptTheReadScope(t *testing.T) {
 				t.Errorf("%s is outside /api/ but an API token may call it", r.key())
 			}
 		}
+	}
+	// Proves the walk reaches the diagnostics branch: without a route in it,
+	// the refusal above would pass by asserting nothing.
+	if diagnostics == 0 {
+		t.Error("no /api/debug/ route was walked: the admin-only assertion ran on nothing")
 	}
 }

@@ -198,6 +198,12 @@ scrape `/metrics` without access to recordings, snapshots, or identities.
   as their `HEALTHCHECK`, so no HTTP client is needed in the runtime image.
 - `vedetta --version` prints the build identity to quote in a bug report.
 - `/metrics` exposes authenticated Prometheus metrics.
+- `/api/debug/pprof/{heap,allocs,goroutine,threadcreate,profile,trace}` serves
+  runtime profiles for `go tool pprof`, except `trace`, which is an execution
+  trace for `go tool trace`. `profile` and `trace` record for `?seconds=`
+  (1 to 120); the others given `?seconds=` report the change over that
+  interval. A token needs the `admin` scope:
+  `curl -H "Authorization: Bearer $TOKEN" -o cpu.pprof "http://HOST:5050/api/debug/pprof/profile?seconds=30"`.
 - Optional OTLP export covers HTTP/event traces and structured logs.
 - The OpenAPI contract lives at [`internal/api/openapi.yaml`](internal/api/openapi.yaml).
 

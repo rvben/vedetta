@@ -35,6 +35,14 @@ func TestClassifyRequest(t *testing.T) {
 		{"/api/cameras/front_door/mjpeg", classStream},
 		{"/api/cameras/front_door/mse/ws", classStream},
 
+		// Timed captures last as long as the caller asked; the snapshot
+		// profiles beside them return at once and stay ordinary.
+		{"/api/debug/pprof/profile", classStream},
+		{"/api/debug/pprof/trace", classStream},
+		{"/api/debug/pprof/heap", classOrdinary},
+		{"/api/debug/pprof/heap?seconds=30", classStream},
+		{"/api/cameras?seconds=30", classOrdinary},
+
 		{"/api/cameras", classOrdinary},
 		{"/api/cameras/front_door", classOrdinary},
 		{"/api/cameras/front_door/snapshot", classOrdinary},

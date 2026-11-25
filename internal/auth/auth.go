@@ -918,6 +918,10 @@ func (p *Principal) HasAnyScope(scopes ...string) bool {
 	return false
 }
 
+// diagnosticsPathPrefix is the tree of endpoints that expose the internals of
+// the running process.
+const diagnosticsPathPrefix = "/api/debug/"
+
 func (p *Principal) Allows(method, path string) bool {
 	if p == nil {
 		return false
@@ -940,6 +944,12 @@ func (p *Principal) Allows(method, path string) bool {
 			return p.HasAnyScope("tokens:read", "tokens:write", "api:*", "*")
 		}
 		return p.HasAnyScope("tokens:write", "api:*", "*")
+	}
+	// Diagnostics require the admin scope for every method, reads included: a
+	// profile carries goroutine stacks and heap contents, and capturing one
+	// costs the server work.
+	if strings.HasPrefix(path, diagnosticsPathPrefix) {
+		return p.HasAnyScope("admin", "*")
 	}
 	// Config-mutation endpoints require the explicit admin scope. api:write and
 	// api:* are deliberately insufficient so a general write token cannot

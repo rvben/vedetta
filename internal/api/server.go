@@ -258,6 +258,9 @@ func (s *Server) registerRoutes() {
 		s.GetCameraSnapshot(w, r, r.PathValue("name"))
 	})
 
+	// Runtime profiles (not in OpenAPI spec: the responses are pprof binaries)
+	s.mux.HandleFunc("GET /api/debug/pprof/{name}", s.handlePprof)
+
 	// HTML partial endpoints for htmx (not in OpenAPI spec)
 	s.mux.HandleFunc("GET /partials/camera-grid", s.handleCameraGridPartial)
 	s.mux.HandleFunc("GET /partials/dashboard-stats", s.handleDashboardStatsPartial)

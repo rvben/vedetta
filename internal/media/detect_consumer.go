@@ -1,6 +1,7 @@
 package media
 
 import (
+	"image"
 	"log/slog"
 	"sync"
 	"time"
@@ -13,7 +14,9 @@ import (
 	"github.com/rvben/vedetta/internal/rtsp"
 )
 
-// RawFrame holds a decoded RGB24 frame for detection.
+// RawFrame holds a decoded RGB24 frame for detection. The receiver owns Data
+// and hands it back with DetectConsumer.Recycle once it holds no reference to
+// it, which lets the consumer convert a later frame into the same buffer.
 type RawFrame struct {
 	Data   []byte
 	Width  int
@@ -37,9 +40,16 @@ type DetectConsumer struct {
 	h264Dec     FrameDecoder
 	sps         []byte
 	pps         []byte
+	// picture is the decoder's most recent output. Every access unit is decoded
+	// but each picture is finished with before the next decode, so the decoder
+	// overwrites it in place. It stays nil for a decoder that returns pictures
+	// of its own, which would never use it. Guarded by decMu.
+	picture *image.YCbCr
 
-	mu           sync.Mutex
-	frameCh      chan RawFrame
+	mu      sync.Mutex
+	frameCh chan RawFrame
+	// free holds RGB24 buffers handed back through Recycle.
+	free         chan []byte
 	lastDispatch time.Time
 	frameDelay   time.Duration
 	frameCount   uint64
@@ -56,6 +66,10 @@ type DetectConsumer struct {
 	fpsWindowDur time.Duration
 }
 
+// detectFrameQueue is how many converted frames may wait for the detector. One
+// more can be in the detector's hands, which bounds the buffers in circulation.
+const detectFrameQueue = 2
+
 // NewDetectConsumer creates a consumer that decodes H264 for detection.
 // Detection is disabled if the track cannot be decoded locally.
 func NewDetectConsumer(camera string, width, height, fps int, track *rtsp.TrackInfo) *DetectConsumer {
@@ -63,7 +77,8 @@ func NewDetectConsumer(camera string, width, height, fps int, track *rtsp.TrackI
 		width:        width,
 		height:       height,
 		camera:       camera,
-		frameCh:      make(chan RawFrame, 2),
+		frameCh:      make(chan RawFrame, detectFrameQueue),
+		free:         make(chan []byte, detectFrameQueue+1),
 		frameDelay:   time.Second / time.Duration(max(fps, 1)),
 		lastLog:      time.Now(),
 		fpsWindowDur: 5 * time.Second,
@@ -262,10 +277,13 @@ func (dc *DetectConsumer) processAccessUnit(au [][]byte, now time.Time) {
 	}
 
 	decodeStart := time.Now()
-	ycbcr := dc.h264Dec.Decode(nalStream)
+	ycbcr := decodeReusing(dc.h264Dec, nalStream, dc.picture)
 	metrics.FrameDecodeDuration.Observe(dc.camera, time.Since(decodeStart))
 	if ycbcr == nil {
 		return
+	}
+	if _, reuses := dc.h264Dec.(reusingFrameDecoder); reuses {
+		dc.picture = ycbcr
 	}
 	metrics.FramesDecoded.Inc(dc.camera)
 
@@ -278,7 +296,7 @@ func (dc *DetectConsumer) processAccessUnit(au [][]byte, now time.Time) {
 	dc.lastDispatch = now
 	dc.mu.Unlock()
 
-	rgb24 := ycbcrToRGB24Scaled(ycbcr, dc.width, dc.height)
+	rgb24 := ycbcrToRGB24Scaled(dc.recycled(), ycbcr, dc.width, dc.height)
 	dc.dispatchFrame(RawFrame{Data: rgb24, Width: dc.width, Height: dc.height})
 }
 
@@ -291,6 +309,31 @@ func (dc *DetectConsumer) dispatchFrame(frame RawFrame) {
 	case dc.frameCh <- frame:
 	default:
 		metrics.DetectInputDropped.Inc(dc.camera)
+		dc.Recycle(frame.Data)
+	}
+}
+
+// Recycle returns the pixels of a frame received from Frames for reuse. The
+// caller must not read or write buf afterwards. Buffers beyond the number that
+// can be in circulation are left to the garbage collector.
+func (dc *DetectConsumer) Recycle(buf []byte) {
+	if buf == nil {
+		return
+	}
+	select {
+	case dc.free <- buf:
+	default:
+	}
+}
+
+// recycled returns a buffer handed back through Recycle, or nil when there is
+// none.
+func (dc *DetectConsumer) recycled() []byte {
+	select {
+	case buf := <-dc.free:
+		return buf
+	default:
+		return nil
 	}
 }
 

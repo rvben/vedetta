@@ -16,6 +16,23 @@ type FrameDecoder interface {
 	Close()
 }
 
+// reusingFrameDecoder is a FrameDecoder that can write a picture into planes
+// the caller owns.
+type reusingFrameDecoder interface {
+	DecodeInto(nalData []byte, dst *image.YCbCr) *image.YCbCr
+}
+
+// decodeReusing decodes nalData for a caller that is finished with dst, the
+// picture it got from the previous call. A decoder that supports it overwrites
+// dst in place; any other decoder returns a picture of its own. The result is
+// nil when no picture was produced, and dst is then still intact.
+func decodeReusing(dec FrameDecoder, nalData []byte, dst *image.YCbCr) *image.YCbCr {
+	if r, ok := dec.(reusingFrameDecoder); ok {
+		return r.DecodeInto(nalData, dst)
+	}
+	return dec.Decode(nalData)
+}
+
 // HWAccel specifies the hardware-decode preference.
 type HWAccel string
 

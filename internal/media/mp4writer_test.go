@@ -168,14 +168,14 @@ func TestIsRandomAccess(t *testing.T) {
 
 func TestYCbCrToRGB24Scaled(t *testing.T) {
 	t.Run("identity", func(t *testing.T) {
-		rgb := ycbcrToRGB24Scaled(createTestYCbCr(4, 4), 4, 4)
+		rgb := ycbcrToRGB24Scaled(nil, createTestYCbCr(4, 4), 4, 4)
 		if len(rgb) != 4*4*3 {
 			t.Errorf("expected %d bytes, got %d", 4*4*3, len(rgb))
 		}
 	})
 
 	t.Run("downscale", func(t *testing.T) {
-		rgb := ycbcrToRGB24Scaled(createTestYCbCr(8, 8), 4, 4)
+		rgb := ycbcrToRGB24Scaled(nil, createTestYCbCr(8, 8), 4, 4)
 		if len(rgb) != 4*4*3 {
 			t.Errorf("expected %d bytes, got %d", 4*4*3, len(rgb))
 		}

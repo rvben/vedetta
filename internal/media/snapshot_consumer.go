@@ -4,6 +4,7 @@ import (
 	"image"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
@@ -16,6 +17,11 @@ import (
 // SnapshotConsumer decodes IDR frames from the main (high-res) stream
 // and caches the latest decoded frame for event snapshots.
 // Decoding runs in a dedicated goroutine to avoid blocking RTP fan-out.
+//
+// The frame is kept as the decoder produced it and converted to RGBA only when
+// something asks for it: snapshots are read on events, far less often than a
+// frame is decoded, and the conversion of a full-resolution frame is the
+// expensive part.
 type SnapshotConsumer struct {
 	camera string
 
@@ -24,9 +30,27 @@ type SnapshotConsumer struct {
 	sps         []byte
 	pps         []byte
 
-	mu        sync.RWMutex
+	// lastDecode is when the latest frame was decoded, nil before the first.
+	// OnVideoRTP reads it on the RTP fan-out goroutine, which must never wait
+	// for a conversion holding mu. It keeps the monotonic clock reading, so a
+	// step of the wall clock cannot stretch or skip the interval.
+	lastDecode atomic.Pointer[time.Time]
+
+	mu sync.Mutex
+	// picture is the latest decoded frame and lastTime when it was decoded.
+	picture  *image.YCbCr
+	lastTime time.Time
+	// lastFrame is picture converted to RGBA, built on first request. It is
+	// never written again once handed out.
 	lastFrame *image.RGBA
-	lastTime  time.Time
+
+	// spare is the picture before the latest one, owned by decodeLoop, which
+	// decodes the next frame into it: the two pictures alternate and
+	// steady-state decoding allocates nothing. A picture becomes the spare
+	// under mu, and readers only touch picture while holding mu, so none of
+	// them can still be converting it. It stays nil for a decoder that returns
+	// pictures of its own, which would never use it.
+	spare *image.YCbCr
 
 	decodeCh  chan []byte
 	done      chan struct{}
@@ -92,19 +116,33 @@ func (sc *SnapshotConsumer) decodeLoop() {
 			if !ok {
 				return
 			}
-			ycbcr := sc.frameDec.Decode(nalStream)
-			if ycbcr == nil {
-				continue
-			}
-			rgba := ycbcrToRGBA(ycbcr)
-			sc.mu.Lock()
-			sc.lastFrame = rgba
-			sc.lastTime = time.Now()
-			sc.mu.Unlock()
+			sc.decode(nalStream)
 		case <-sc.done:
 			return
 		}
 	}
+}
+
+// decode decodes one random-access unit and publishes its picture. Only
+// decodeLoop calls it.
+func (sc *SnapshotConsumer) decode(nalStream []byte) {
+	ycbcr := decodeReusing(sc.frameDec, nalStream, sc.spare)
+	if ycbcr == nil {
+		return
+	}
+	now := time.Now()
+
+	_, reuses := sc.frameDec.(reusingFrameDecoder)
+
+	sc.mu.Lock()
+	if reuses {
+		sc.spare = sc.picture
+	}
+	sc.picture = ycbcr
+	sc.lastFrame = nil
+	sc.lastTime = now
+	sc.mu.Unlock()
+	sc.lastDecode.Store(&now)
 }
 
 // LastFrame returns the most recently decoded full-resolution frame, or nil.
@@ -114,9 +152,13 @@ func (sc *SnapshotConsumer) LastFrame() *image.RGBA {
 }
 
 // LastFrameAt pairs immutable pixels with their decode timestamp atomically.
+// The first call after a new frame converts it; later calls share the result.
 func (sc *SnapshotConsumer) LastFrameAt() (*image.RGBA, time.Time) {
-	sc.mu.RLock()
-	defer sc.mu.RUnlock()
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.lastFrame == nil && sc.picture != nil {
+		sc.lastFrame = ycbcrToRGBA(sc.picture)
+	}
 	return sc.lastFrame, sc.lastTime
 }
 
@@ -139,10 +181,7 @@ func (sc *SnapshotConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	}
 
 	// Rate limit: at most 1 decode per second
-	sc.mu.RLock()
-	tooSoon := time.Since(sc.lastTime) < time.Second
-	sc.mu.RUnlock()
-	if tooSoon {
+	if last := sc.lastDecode.Load(); last != nil && time.Since(*last) < time.Second {
 		return
 	}
 

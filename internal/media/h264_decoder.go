@@ -189,6 +189,15 @@ func NewH264Decoder() *H264Decoder {
 // Separate decoder instances are thread-safe — only create/destroy and
 // encoder operations need the global mutex.
 func (d *H264Decoder) Decode(nalData []byte) *image.YCbCr {
+	return d.DecodeInto(nalData, nil)
+}
+
+// DecodeInto decodes like Decode and writes the picture into dst, reusing the
+// backing arrays of its planes when they are large enough, so a caller that
+// consumes each picture before decoding the next allocates nothing per frame.
+// It returns dst, or a new image when dst is nil. When no picture is produced
+// it returns nil and leaves dst as it was.
+func (d *H264Decoder) DecodeInto(nalData []byte, dst *image.YCbCr) *image.YCbCr {
 	if d == nil || d.decoder == nil || len(nalData) == 0 {
 		return nil
 	}
@@ -209,7 +218,7 @@ func (d *H264Decoder) Decode(nalData []byte) *image.YCbCr {
 		return nil
 	}
 
-	return frameFromRawDecoded(&output)
+	return frameFromRawDecoded(&output, dst)
 }
 
 // rawDecoderOutput is deliberately pointer-free. OpenH264 writes three
@@ -229,7 +238,7 @@ func (o *rawDecoderOutput) info() *openh264.SBufferInfo {
 	return (*openh264.SBufferInfo)(unsafe.Pointer(&o.bufferInfo[0]))
 }
 
-func frameFromRawDecoded(output *rawDecoderOutput) *image.YCbCr {
+func frameFromRawDecoded(output *rawDecoderOutput, dst *image.YCbCr) *image.YCbCr {
 	if output == nil {
 		return nil
 	}
@@ -249,7 +258,7 @@ func frameFromRawDecoded(output *rawDecoderOutput) *image.YCbCr {
 
 	yLen := yStride * h
 	cLen := cStride * (h / 2)
-	return copyDecodedFrame(output.planes, [3]int{yLen, cLen, cLen}, w, h, yStride, cStride)
+	return copyDecodedFrame(dst, output.planes, [3]int{yLen, cLen, cLen}, w, h, yStride, cStride)
 }
 
 // frameFromDecoded copies OpenH264's decoded planes into Go-owned buffers,
@@ -311,7 +320,7 @@ func frameFromDecoded(dst *[3][]byte, bufInfo *openh264.SBufferInfo) *image.YCbC
 		yLen > planeLen[0] || cLen > planeLen[1] || cLen > planeLen[2] {
 		return nil
 	}
-	return copyDecodedFrame(planePtr, planeLen, w, h, yStride, cStride)
+	return copyDecodedFrame(nil, planePtr, planeLen, w, h, yStride, cStride)
 }
 
 func validDecodedGeometry(w, h, yStride, cStride int) bool {
@@ -321,7 +330,9 @@ func validDecodedGeometry(w, h, yStride, cStride int) bool {
 		cStride*2 >= w && cStride <= maxDecodedDimension
 }
 
-func copyDecodedFrame(planePtr [3]uintptr, planeLen [3]int, w, h, yStride, cStride int) *image.YCbCr {
+// copyDecodedFrame copies the three library-owned planes into dst, or into a
+// new image when dst is nil. A rejected frame returns nil without touching dst.
+func copyDecodedFrame(dst *image.YCbCr, planePtr [3]uintptr, planeLen [3]int, w, h, yStride, cStride int) *image.YCbCr {
 	yLen := yStride * h
 	cLen := cStride * (h / 2)
 	if planePtr[0] == 0 || planePtr[1] == 0 || planePtr[2] == 0 ||
@@ -330,23 +341,31 @@ func copyDecodedFrame(planePtr [3]uintptr, planeLen [3]int, w, h, yStride, cStri
 		return nil
 	}
 
-	y := make([]byte, yLen)
-	cb := make([]byte, cLen)
-	cr := make([]byte, cLen)
-
-	copyFromCPlane(y, planePtr[0], yLen)
-	copyFromCPlane(cb, planePtr[1], cLen)
-	copyFromCPlane(cr, planePtr[2], cLen)
-
-	return &image.YCbCr{
-		Y:              y,
-		Cb:             cb,
-		Cr:             cr,
-		YStride:        yStride,
-		CStride:        cStride,
-		SubsampleRatio: image.YCbCrSubsampleRatio420,
-		Rect:           image.Rect(0, 0, w, h),
+	if dst == nil {
+		dst = &image.YCbCr{}
 	}
+	dst.Y = sizedPlane(dst.Y, yLen)
+	dst.Cb = sizedPlane(dst.Cb, cLen)
+	dst.Cr = sizedPlane(dst.Cr, cLen)
+
+	copyFromCPlane(dst.Y, planePtr[0], yLen)
+	copyFromCPlane(dst.Cb, planePtr[1], cLen)
+	copyFromCPlane(dst.Cr, planePtr[2], cLen)
+
+	dst.YStride = yStride
+	dst.CStride = cStride
+	dst.SubsampleRatio = image.YCbCrSubsampleRatio420
+	dst.Rect = image.Rect(0, 0, w, h)
+	return dst
+}
+
+// sizedPlane returns a plane of exactly n bytes, keeping the backing array of
+// plane when it is large enough.
+func sizedPlane(plane []byte, n int) []byte {
+	if cap(plane) >= n {
+		return plane[:n]
+	}
+	return make([]byte, n)
 }
 
 // copyFromCPlane copies n bytes from a library-owned buffer (addressed by a
@@ -384,7 +403,7 @@ func (d *H264Decoder) Flush() *image.YCbCr {
 		return nil
 	}
 
-	return frameFromRawDecoded(&output)
+	return frameFromRawDecoded(&output, nil)
 }
 
 // Close releases the decoder resources.
@@ -410,10 +429,12 @@ func OpenH264Lock()   { openh264Mu.Lock() }
 func OpenH264Unlock() { openh264Mu.Unlock() }
 
 // ycbcrToRGB24Scaled converts a YCbCr image to RGB24 at the target resolution.
-func ycbcrToRGB24Scaled(img *image.YCbCr, targetW, targetH int) []byte {
+// It writes into dst when dst has room for the frame and allocates otherwise;
+// every byte of the result is written, so dst may hold an earlier frame.
+func ycbcrToRGB24Scaled(dst []byte, img *image.YCbCr, targetW, targetH int) []byte {
 	srcW := img.Rect.Dx()
 	srcH := img.Rect.Dy()
-	rgb := make([]byte, targetW*targetH*3)
+	rgb := sizedPlane(dst, targetW*targetH*3)
 
 	for dy := range targetH {
 		sy := dy * srcH / targetH

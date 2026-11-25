@@ -642,6 +642,9 @@ func (c *Camera) readFrames(ctx context.Context) {
 			return
 		case frame := <-consumer.Frames():
 			c.processFrame(frame.Data, frame.Width, frame.Height)
+			// processFrame copies what it keeps, so the pixels can carry the
+			// next frame.
+			consumer.Recycle(frame.Data)
 		case <-reattach.C:
 			next, replaced := rtsp.ReattachIfDetached(source, consumer, newConsumer)
 			if !replaced {

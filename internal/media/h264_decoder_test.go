@@ -101,7 +101,7 @@ func TestFrameFromRawDecodedCopiesValidFrame(t *testing.T) {
 	}
 	output := rawOutputWith(planes, 1, w, h, yStride, cStride)
 
-	img := frameFromRawDecoded(&output)
+	img := frameFromRawDecoded(&output, nil)
 	if img == nil {
 		t.Fatal("frameFromRawDecoded returned nil for a valid frame")
 	}
@@ -116,7 +116,7 @@ func TestFrameFromRawDecodedCopiesValidFrame(t *testing.T) {
 
 func TestFrameFromRawDecodedRejectsMissingFrame(t *testing.T) {
 	output := rawOutputWith([3][]byte{}, 0, 4, 4, 4, 2)
-	if img := frameFromRawDecoded(&output); img != nil {
+	if img := frameFromRawDecoded(&output, nil); img != nil {
 		t.Fatalf("expected nil without a decoded frame, got %v", img.Rect)
 	}
 }

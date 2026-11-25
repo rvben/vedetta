@@ -31,6 +31,7 @@ type Model struct {
 	mu       sync.Mutex
 	session  *onnxruntime.Session
 	manifest manifest
+	frontend frontend
 }
 
 func readBounded(path string, limit int64) ([]byte, error) {
@@ -98,7 +99,7 @@ func Load(path, digest string) (*Model, error) {
 	if names := session.OutputNames(); len(names) != 1 || names[0] != "scores" {
 		return nil, fmt.Errorf("unexpected cry model output")
 	}
-	m := &Model{session: session, manifest: meta}
+	m := &Model{session: session, manifest: meta, frontend: newFrontend(meta)}
 	if _, err := m.Score(make([]int16, 16000)); err != nil {
 		return nil, fmt.Errorf("cry model warmup: %w", err)
 	}

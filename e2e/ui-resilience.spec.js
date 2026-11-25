@@ -283,6 +283,43 @@ test('event detail preserves review context while its partial retries', async ({
   await expect(error).toHaveCount(0);
 });
 
+// A section the page itself declares is requested once by htmx on load and has
+// no listener for a later "load" event, so its retry issues the request itself.
+for (const section of [
+  { page: '/', partial: '/partials/camera-grid', holder: '#camera-grid' },
+  { page: '/events.html', partial: '/partials/activities-gallery', holder: '#events-gallery' },
+]) {
+  test(`${section.partial} loads again from its retry, however often it fails`, async ({ page }) => {
+    let fails = true;
+    let requests = 0;
+    await page.route('**/partials/**', route => {
+      if (new URL(route.request().url()).pathname !== section.partial) {
+        return route.fulfill({ contentType: 'text/html', body: '' });
+      }
+      requests++;
+      if (fails) return route.fulfill({ status: 503, contentType: 'text/html', body: 'temporarily unavailable' });
+      return route.fulfill({ contentType: 'text/html', body: '<p>Section recovered</p>' });
+    });
+    await page.route('**/api/**', route => json(route, {}));
+
+    await page.goto(section.page);
+
+    const retry = page.locator(section.holder).getByRole('button', { name: 'Try again' });
+    await expect(retry).toBeVisible();
+    expect(requests).toBe(1);
+
+    await retry.click();
+    await expect.poll(() => requests).toBe(2);
+    await expect(retry).toBeEnabled();
+
+    fails = false;
+    await retry.click();
+    await expect(page.locator(section.holder).getByText('Section recovered')).toBeVisible();
+    await expect(retry).toHaveCount(0);
+    expect(requests).toBe(3);
+  });
+}
+
 test('setup separates a failed network scan from a valid empty result', async ({ page }) => {
   let discoveryFails = true;
   await page.route('**/api/**', route => {

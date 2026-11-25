@@ -4712,11 +4712,23 @@ function showHtmxFallback(target) {
   renderInlineError(target, {
     title: target.dataset.errorTitle || 'Could not load this content',
     message: target.dataset.errorMessage || 'The server did not return this section. Other content remains available.',
-    retry: function() {
-      target.innerHTML = '<div class="loading-state">Loading…</div>';
-      if (window.htmx) htmx.trigger(target, 'load');
-    }
+    retry: function() { reloadPartial(target); }
   });
+}
+
+// reloadPartial requests a section's partial again. The request is issued
+// directly: htmx listens for a "load" event only on an element it has
+// processed twice, so triggering one reaches nothing on most sections.
+function reloadPartial(holder) {
+  var url = holder && holder.getAttribute && holder.getAttribute('hx-get');
+  if (!url || !window.htmx) return;
+  holder.innerHTML = '<div class="loading-state">Loading…</div>';
+  // A failure is reported through htmx:sendError and htmx:responseError.
+  Promise.resolve(htmx.ajax('GET', url, {
+    source: holder,
+    target: holder,
+    swap: holder.getAttribute('hx-swap') || 'innerHTML'
+  })).catch(function() {});
 }
 
 document.addEventListener('htmx:sendError', function(e) {
@@ -4737,16 +4749,6 @@ document.addEventListener('htmx:responseError', function(e) {
   clearTimeout(connDebounceTimer);
   setConnLinkLost(true);
   if (e && e.detail) showHtmxFallback(e.detail.target || e.target);
-});
-
-document.addEventListener('click', function(e) {
-  var btn = e.target && e.target.closest && e.target.closest('[data-htmx-retry]');
-  if (!btn) return;
-  var holder = btn.closest('[hx-get]');
-  if (holder && window.htmx) {
-    holder.innerHTML = '<div class="loading-state">Loading…</div>';
-    htmx.trigger(holder, 'load');
-  }
 });
 
 document.addEventListener('htmx:afterRequest', function(e) {
@@ -8566,7 +8568,7 @@ function acSubmit() {
     }
     el('addcam-done-name').textContent = body.name + ' saved';
     _acStep('done');
-    if (typeof htmx !== 'undefined') { htmx.trigger(el('camera-grid'), 'load'); }
+    if (typeof htmx !== 'undefined' && el('camera-grid')) reloadCameraGrid();
   }).catch(function() {
     el('addcam-verify').innerHTML = '<div class="addcam-error">Save failed</div>';
     save.disabled = false;

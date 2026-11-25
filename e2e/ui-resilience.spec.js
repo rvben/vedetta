@@ -1,5 +1,9 @@
 const { test, expect } = require('@playwright/test');
 
+// A service worker registered by one page answers the next page's requests
+// itself, out of reach of the routes these tests install.
+test.use({ serviceWorkers: 'block' });
+
 function json(route, body, status = 200) {
   return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
@@ -412,9 +416,14 @@ test('authentication screens honor the saved theme without decorative elevation'
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
 });
 
+test.describe('recordings day', () => {
+  // The page lays a day out in the viewer's zone, so the zone is pinned and
+  // the fixtures carry its offset.
+  test.use({ timezoneId: 'Europe/Amsterdam' });
+
 test('recordings coverage bar spans the day when the first segment began before midnight', async ({ page }) => {
-  // Local wall-clock times: the browser's zone decides the UTC instants.
-  const iso = (d, h, m) => new Date(2026, 10, d, h, m, 0).toISOString();
+  const pad = n => String(n).padStart(2, '0');
+  const iso = (d, h, m) => new Date(`2026-11-${pad(d)}T${pad(h)}:${pad(m)}:00+01:00`).toISOString();
   const segments = [{ start_time: iso(23, 23, 56), end_time: iso(24, 0, 6), size: 1 }];
   for (let minute = 6; minute < 12 * 60; minute += 10) {
     segments.push({
@@ -444,6 +453,7 @@ test('recordings coverage bar spans the day when the first segment began before 
   expect(geometry.width).toBeLessThan(50.5);
   await expect(page.locator('.rec-segments-toggle')).toContainText('12h 6m');
 });
+});
 
 test('health pill keeps reporting degraded while page fragments load fine', async ({ page }) => {
   await page.route('**/api/**', route => {
@@ -458,12 +468,21 @@ test('health pill keeps reporting degraded while page fragments load fine', asyn
   await expect(label).toHaveText('Degraded');
   // A fragment request that succeeds marks the link healthy 300 ms later; it
   // must not relabel the degraded system as connected.
-  await page.evaluate(() => window.htmx.trigger(document.querySelector('[hx-get="/partials/dashboard-stats"]'), 'load'));
+  const fragment = page.waitForResponse(response => new URL(response.url()).pathname === '/partials/dashboard-stats');
+  await page.evaluate(() => window.reloadPartial(document.querySelector('[hx-get="/partials/dashboard-stats"]')));
+  await fragment;
   await page.waitForTimeout(800);
   await expect(label).toHaveText('Degraded');
 
   // The next page shows the known state before its own first poll answers.
-  await page.route('**/api/health', () => {});
+  let answerHealth;
+  const healthHeld = new Promise(resolve => { answerHealth = resolve; });
+  await page.route('**/api/health', async route => {
+    await healthHeld;
+    return json(route, { status: 'ok', checks: {} });
+  });
   await page.goto('/settings.html');
   await expect(label).toHaveText('Degraded');
+  answerHealth();
+  await expect(label).toHaveText('Connected');
 });

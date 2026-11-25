@@ -13,10 +13,11 @@
 .cry-monitor-message { flex-basis: 100%; color: var(--danger); }
 @media (max-width: 600px) {
   .camera-page-header { align-items: flex-start; gap: 0; }
-  .cry-monitor { display: grid; grid-template-columns: auto 1fr; width: 100%; gap: 0 12px; }
-  .cry-monitor-mode { justify-self: end; }
+  .cry-monitor { display: grid; grid-template-columns: auto 1fr auto; width: 100%; gap: 0 12px; }
   .cry-monitor .btn { margin-left: 0; padding-inline: 0; }
-  #cry-events { justify-self: start; }
+  #cry-events { justify-self: end; }
+  #cry-snooze,
+  .cry-monitor-message { grid-column: 1 / -1; }
   #cry-snooze { justify-self: end; }
 }
 

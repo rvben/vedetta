@@ -2,6 +2,7 @@ package detect
 
 import (
 	"archive/zip"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -29,6 +30,10 @@ const (
 	coreMLPackageExt  = ".mlpackage"
 	coreMLCompiledExt = ".mlmodelc"
 
+	// Names inside a cache entry.
+	coreMLEntryModel = "model" + coreMLCompiledExt
+	coreMLEntryID    = "id"
+
 	// maxCoreMLArchiveEntries bounds how many files an archive may unpack. A
 	// model package holds three.
 	maxCoreMLArchiveEntries = 64
@@ -54,13 +59,13 @@ func openCoreMLBackend(modelPath string) (Backend, error) {
 	}
 
 	cacheDir := filepath.Join(modelCacheDir(), "coreml")
-	compiled, err := prepareCoreMLModel(modelPath, cacheDir, compileCoreMLModel, nil)
+	compiled, err := prepareCoreMLModel(modelPath, cacheDir, compileCoreMLModel, "")
 	if err != nil {
 		return nil, fmt.Errorf("core ML backend: %w", err)
 	}
-	// Taken before the load, so that it names the copy the load was given and
+	// Read before the load, so that it names the copy the load was given and
 	// not one published while it ran.
-	loaded, _ := os.Stat(compiled)
+	loaded := coreMLCacheID(compiled)
 	backend, err := NewCoreMLBackend(compiled)
 	if err == nil {
 		return backend, nil
@@ -91,10 +96,10 @@ func openCoreMLBackend(modelPath string) (Backend, error) {
 // downloaded. A package is compiled into cacheDir under a name derived from its
 // content, so a changed package never meets a stale compiled copy.
 //
-// failed, when not nil, describes a cached copy that did not load. That copy is
-// discarded and compiled again; a different copy at the same path was published
-// since by another detector or another process, and is used as it is.
-func prepareCoreMLModel(modelPath, cacheDir string, compile func(src, dst string) error, failed os.FileInfo) (string, error) {
+// failed, when not empty, is the coreMLCacheID of a cached copy that did not
+// load. That copy is discarded and compiled again; a copy with another id was
+// published since by another detector or another process, and is used as it is.
+func prepareCoreMLModel(modelPath, cacheDir string, compile func(src, dst string) error, failed string) (string, error) {
 	switch {
 	case modelPath == "":
 	case strings.HasSuffix(modelPath, coreMLCompiledExt):
@@ -130,15 +135,18 @@ func prepareCoreMLModel(modelPath, cacheDir string, compile func(src, dst string
 		}
 		key = sum
 	}
-	compiled := filepath.Join(cacheDir, key[:16]+coreMLCompiledExt)
+	// A cache entry is a directory holding the compiled model and the id of
+	// this compilation, published together by one rename.
+	entry := filepath.Join(cacheDir, key[:16])
+	compiled := filepath.Join(entry, coreMLEntryModel)
 
-	current, err := os.Stat(compiled)
-	if err == nil && failed != nil && os.SameFile(current, failed) {
-		if err := os.RemoveAll(compiled); err != nil {
+	if _, err := os.Stat(compiled); err == nil {
+		if failed == "" || coreMLCacheID(compiled) != failed {
+			return compiled, nil
+		}
+		if err := os.RemoveAll(entry); err != nil {
 			return "", fmt.Errorf("discard cached model: %w", err)
 		}
-	} else if err == nil {
-		return compiled, nil
 	}
 
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
@@ -161,12 +169,18 @@ func prepareCoreMLModel(modelPath, cacheDir string, compile func(src, dst string
 		}
 	}
 
-	staged := filepath.Join(work, "model"+coreMLCompiledExt)
+	staged := filepath.Join(work, "entry")
+	if err := os.Mkdir(staged, 0o755); err != nil {
+		return "", fmt.Errorf("create cache entry: %w", err)
+	}
 	slog.Info("compiling Core ML model", "package", pkg)
-	if err := compile(pkg, staged); err != nil {
+	if err := compile(pkg, filepath.Join(staged, coreMLEntryModel)); err != nil {
 		return "", fmt.Errorf("compile %s: %w", pkg, err)
 	}
-	if err := os.Rename(staged, compiled); err != nil {
+	if err := os.WriteFile(filepath.Join(staged, coreMLEntryID), []byte(rand.Text()), 0o644); err != nil {
+		return "", fmt.Errorf("write cache entry id: %w", err)
+	}
+	if err := os.Rename(staged, entry); err != nil {
 		// Another process sharing this cache can publish the same model
 		// between the check above and this rename. Its copy came from the same
 		// content, so it is the one to use.
@@ -177,6 +191,18 @@ func prepareCoreMLModel(modelPath, cacheDir string, compile func(src, dst string
 	}
 	slog.Info("Core ML model compiled", "path", compiled)
 	return compiled, nil
+}
+
+// coreMLCacheID returns the id of the compilation a cached compiled model came
+// from, or "" when the path is not a readable cache entry. A rebuilt entry has
+// the same path as the one it replaced and a different id, which is what tells
+// the two apart.
+func coreMLCacheID(compiled string) string {
+	id, err := os.ReadFile(filepath.Join(filepath.Dir(compiled), coreMLEntryID))
+	if err != nil {
+		return ""
+	}
+	return string(id)
 }
 
 // fetchDefaultCoreMLPackage makes the default model archive available in

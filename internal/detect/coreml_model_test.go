@@ -47,11 +47,11 @@ func TestPrepareCoreMLModel_CompilesAPackageOnce(t *testing.T) {
 	cache := t.TempDir()
 	compiler := &countingCompiler{}
 
-	first, err := prepareCoreMLModel(pkg, cache, compiler.compile, nil)
+	first, err := prepareCoreMLModel(pkg, cache, compiler.compile, "")
 	if err != nil {
 		t.Fatalf("first prepare: %v", err)
 	}
-	second, err := prepareCoreMLModel(pkg, cache, compiler.compile, nil)
+	second, err := prepareCoreMLModel(pkg, cache, compiler.compile, "")
 	if err != nil {
 		t.Fatalf("second prepare: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestPrepareCoreMLModel_CompilesAPackageOnce(t *testing.T) {
 	if compiler.calls != 1 {
 		t.Fatalf("compiled %d times, want 1", compiler.calls)
 	}
-	if filepath.Dir(first) != cache || !strings.HasSuffix(first, coreMLCompiledExt) {
+	if filepath.Dir(filepath.Dir(first)) != cache || !strings.HasSuffix(first, coreMLCompiledExt) {
 		t.Fatalf("compiled model at %q, want a %s directory in %q", first, coreMLCompiledExt, cache)
 	}
 	if info, err := os.Stat(first); err != nil || !info.IsDir() {
@@ -81,11 +81,11 @@ func TestPrepareCoreMLModel_FollowsALinkToThePackage(t *testing.T) {
 	cache := t.TempDir()
 	compiler := &countingCompiler{}
 
-	direct, err := prepareCoreMLModel(pkg, cache, compiler.compile, nil)
+	direct, err := prepareCoreMLModel(pkg, cache, compiler.compile, "")
 	if err != nil {
 		t.Fatalf("prepare package: %v", err)
 	}
-	linked, err := prepareCoreMLModel(link, cache, compiler.compile, nil)
+	linked, err := prepareCoreMLModel(link, cache, compiler.compile, "")
 	if err != nil {
 		t.Fatalf("prepare link: %v", err)
 	}
@@ -101,14 +101,14 @@ func TestPrepareCoreMLModel_ChangedPackageIsCompiledAgain(t *testing.T) {
 	cache := t.TempDir()
 	compiler := &countingCompiler{}
 
-	before, err := prepareCoreMLModel(pkg, cache, compiler.compile, nil)
+	before, err := prepareCoreMLModel(pkg, cache, compiler.compile, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(pkg, "Data", "weights.bin"), []byte("retrained"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	after, err := prepareCoreMLModel(pkg, cache, compiler.compile, nil)
+	after, err := prepareCoreMLModel(pkg, cache, compiler.compile, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestPrepareCoreMLModel_RebuildsTheCopyThatFailedOnce(t *testing.T) {
 	cache := t.TempDir()
 	compiler := &countingCompiler{}
 
-	compiled, err := prepareCoreMLModel(pkg, cache, compiler.compile, nil)
+	compiled, err := prepareCoreMLModel(pkg, cache, compiler.compile, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,9 +134,9 @@ func TestPrepareCoreMLModel_RebuildsTheCopyThatFailedOnce(t *testing.T) {
 	if err := os.WriteFile(marker, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	failed, err := os.Stat(compiled)
-	if err != nil {
-		t.Fatal(err)
+	failed := coreMLCacheID(compiled)
+	if failed == "" {
+		t.Fatal("the cached model has no id")
 	}
 
 	if _, err := prepareCoreMLModel(pkg, cache, compiler.compile, failed); err != nil {
@@ -176,12 +176,12 @@ func TestPrepareCoreMLModel_UsesTheCopyAnotherProcessPublished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	published := filepath.Join(cache, key[:16]+coreMLCompiledExt)
+	published := filepath.Join(cache, key[:16], coreMLEntryModel)
 
 	compile := func(_, dst string) error {
 		// The other process publishes while this one is still compiling. A
 		// file inside makes the directory one a rename cannot replace.
-		if err := os.Mkdir(published, 0o755); err != nil {
+		if err := os.MkdirAll(published, 0o755); err != nil {
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(published, "model.mil"), []byte("theirs"), 0o644); err != nil {
@@ -190,7 +190,7 @@ func TestPrepareCoreMLModel_UsesTheCopyAnotherProcessPublished(t *testing.T) {
 		return os.Mkdir(dst, 0o755)
 	}
 
-	got, err := prepareCoreMLModel(pkg, cache, compile, nil)
+	got, err := prepareCoreMLModel(pkg, cache, compile, "")
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestPrepareCoreMLModel_FailedCompileLeavesTheCacheEmpty(t *testing.T) {
 	want := errors.New("compiler said no")
 	compiler := &countingCompiler{err: want}
 
-	_, err := prepareCoreMLModel(pkg, cache, compiler.compile, nil)
+	_, err := prepareCoreMLModel(pkg, cache, compiler.compile, "")
 	if !errors.Is(err, want) {
 		t.Fatalf("error = %v, want one wrapping the compiler's", err)
 	}
@@ -235,7 +235,7 @@ func TestPrepareCoreMLModel_UsesACompiledModelAsItIs(t *testing.T) {
 	}
 	compiler := &countingCompiler{}
 
-	got, err := prepareCoreMLModel(compiled, t.TempDir(), compiler.compile, nil)
+	got, err := prepareCoreMLModel(compiled, t.TempDir(), compiler.compile, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestPrepareCoreMLModel_UsesACompiledModelAsItIs(t *testing.T) {
 	}
 
 	missing := filepath.Join(t.TempDir(), "absent"+coreMLCompiledExt)
-	if _, err := prepareCoreMLModel(missing, t.TempDir(), compiler.compile, nil); err == nil {
+	if _, err := prepareCoreMLModel(missing, t.TempDir(), compiler.compile, ""); err == nil {
 		t.Fatal("a missing compiled model was accepted")
 	}
 }
@@ -253,7 +253,7 @@ func TestPrepareCoreMLModel_UsesACompiledModelAsItIs(t *testing.T) {
 // replaced by the default model behind the operator's back.
 func TestPrepareCoreMLModel_RejectsOtherModelFormats(t *testing.T) {
 	compiler := &countingCompiler{}
-	_, err := prepareCoreMLModel("/models/yolov8n.onnx", t.TempDir(), compiler.compile, nil)
+	_, err := prepareCoreMLModel("/models/yolov8n.onnx", t.TempDir(), compiler.compile, "")
 	if err == nil {
 		t.Fatal("an ONNX model was accepted")
 	}

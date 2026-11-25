@@ -37,7 +37,7 @@ func compileTestCoreMLModel(t *testing.T) string {
 	if err != nil || len(packages) != 1 {
 		t.Fatalf("archive holds %d model packages (%v), want 1", len(packages), err)
 	}
-	compiled, err := prepareCoreMLModel(packages[0], t.TempDir(), compileCoreMLModel, nil)
+	compiled, err := prepareCoreMLModel(packages[0], t.TempDir(), compileCoreMLModel, "")
 	if err != nil {
 		t.Fatalf("compile model: %v", err)
 	}

@@ -72,6 +72,9 @@ test('snooze and resume preserve clear notification state', async ({ page }) => 
   await expect(page.locator('#cry-action-status')).toHaveText('Could not change alerts. Try again.');
   await expect(page.locator('#cry-snooze')).toBeEnabled();
   await page.evaluate(() => {
+    // The camera is offline, so the page rechecks it on a timer and would put
+    // the state panel back over the controls this step uncovers.
+    window.clearCameraAvailabilityWatch();
     window.hideLiveOffline();
     window.updateMuteButton(true);
     const video = document.getElementById('live-video');

@@ -391,8 +391,9 @@ func opConvSiLU(inputs []*Tensor, attrs *Attributes) ([]*Tensor, error) {
 	return []*Tensor{output}, nil
 }
 
-// applySiLU applies bias + SiLU activation in-place on GEMM output.
-func applySiLU(dst []float32, bias []float32, chanOffset, mPerGroup, outSpatial int) {
+// applySiLUGo applies bias + SiLU activation in-place on GEMM output, one
+// element at a time through the sigmoid lookup table.
+func applySiLUGo(dst []float32, bias []float32, chanOffset, mPerGroup, outSpatial int) {
 	if bias != nil {
 		for m := range mPerGroup {
 			b := bias[chanOffset+m]

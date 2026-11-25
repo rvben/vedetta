@@ -202,7 +202,11 @@ func (d *Detector) Labels() []string {
 	return labels
 }
 
+// Close releases the backend. It waits for an inference in progress, because a
+// native backend freed under a running call is a use-after-free.
 func (d *Detector) Close() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.backend != nil {
 		d.backend.Close()
 	}

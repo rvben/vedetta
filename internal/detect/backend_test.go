@@ -6,7 +6,9 @@ import (
 	"image"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rvben/vedetta/internal/config"
 )
@@ -424,4 +426,75 @@ func tryLoadModel() ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("model not found")
+}
+
+// blockingBackend holds every Run until released and records whether Close
+// arrived while one was in progress.
+type blockingBackend struct {
+	started          chan struct{}
+	release          chan struct{}
+	running          atomic.Bool
+	closedDuringRun  atomic.Bool
+	closed           atomic.Bool
+	output           []float32
+	startedSignalled sync.Once
+}
+
+func (b *blockingBackend) Run(_ []float32) ([]float32, error) {
+	b.running.Store(true)
+	b.startedSignalled.Do(func() { close(b.started) })
+	<-b.release
+	b.running.Store(false)
+	return b.output, nil
+}
+
+func (b *blockingBackend) Close() {
+	if b.running.Load() {
+		b.closedDuringRun.Store(true)
+	}
+	b.closed.Store(true)
+}
+
+func (b *blockingBackend) Name() string { return "blocking" }
+
+// A native backend freed while a call is inside it is a use-after-free, and
+// shutdown closes detectors without waiting for the cameras that use them. So
+// Close has to wait for the inference in progress.
+func TestDetector_CloseWaitsForInferenceInProgress(t *testing.T) {
+	backend := &blockingBackend{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		output:  make([]float32, yoloOutputSize),
+	}
+	d := &Detector{backend: backend, enabled: true}
+
+	detected := make(chan struct{})
+	go func() {
+		defer close(detected)
+		d.Detect(image.NewRGBA(image.Rect(0, 0, 64, 64)))
+	}()
+	<-backend.started
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		d.Close()
+	}()
+
+	// Give a Close that does not wait the time to get through. One that waits
+	// is still blocked when this expires, and that is the passing case.
+	select {
+	case <-closed:
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(backend.release)
+	<-detected
+	<-closed
+
+	if backend.closedDuringRun.Load() {
+		t.Fatal("the backend was closed while an inference was running")
+	}
+	if !backend.closed.Load() {
+		t.Fatal("the backend was never closed")
+	}
 }

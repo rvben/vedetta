@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.2](https://github.com/rvben/vedetta/compare/v0.8.1...v0.8.2) - 2026-11-27
+
+### Performance
+
+- **detect**: convert a detection frame to RGB only when something reads it ([7ceaa54](https://github.com/rvben/vedetta/commit/7ceaa547599b4bf4afbe027ece7bb5116b11b28a))
+- **detect**: mark motion pixels and blend the background in one branch-free pass ([9d50fb4](https://github.com/rvben/vedetta/commit/9d50fb4a6138d504c79bb654aebe0fdf476431c6))
+
 ## [0.8.1](https://github.com/rvben/vedetta/compare/v0.8.0...v0.8.1) - 2026-11-26
 
 ### Fixed

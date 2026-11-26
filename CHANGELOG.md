@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.1](https://github.com/rvben/vedetta/compare/v0.8.0...v0.8.1) - 2026-11-26
+
+### Fixed
+
+- **media**: show every open-GOP keyframe in main-stream snapshots ([ec018ce](https://github.com/rvben/vedetta/commit/ec018ceef6902707956c87375526f8460c081789))
+- **media**: decode main-stream snapshots on demand, from the keyframe that arrived ([4b400dd](https://github.com/rvben/vedetta/commit/4b400dd28d2a67c6233018f40f93dc5a2f7e63e1))
+
 ## [0.8.0](https://github.com/rvben/vedetta/compare/v0.7.21...v0.8.0) - 2026-11-26
 
 ### Added

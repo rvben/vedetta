@@ -20,3 +20,16 @@ func NewTestSnapshotConsumer(frame *image.RGBA) *SnapshotConsumer {
 func NewTestSnapshotConsumerWithKeyframe(dec FrameDecoder) *SnapshotConsumer {
 	return &SnapshotConsumer{frameDec: dec, unit: keyUnit{data: []byte{0, 0, 0, 1, 0x65}, at: time.Now()}}
 }
+
+// NewTestRawFrame returns a frame of one grey level, for tests that feed the
+// detection loop without a decoder.
+func NewTestRawFrame(w, h int, level byte) RawFrame {
+	data := make([]byte, rawFrameSize(w, h))
+	for i := range data[:w*h] {
+		data[i] = level
+	}
+	for i := w * h; i < len(data); i++ {
+		data[i] = 128
+	}
+	return RawFrame{Data: data, Width: w, Height: h}
+}

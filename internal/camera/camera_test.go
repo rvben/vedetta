@@ -10,6 +10,7 @@ import (
 
 	"github.com/rvben/vedetta/internal/config"
 	"github.com/rvben/vedetta/internal/detect"
+	"github.com/rvben/vedetta/internal/media"
 	"github.com/rvben/vedetta/internal/metrics"
 	"github.com/rvben/vedetta/internal/rtsp"
 )
@@ -31,7 +32,7 @@ func TestProcessFrameRecordsDetectionMetrics(t *testing.T) {
 	cam.motionMinRegionScore = 1e9
 
 	w, h := 16, 16
-	cam.processFrame(make([]byte, w*h*3), w, h)
+	cam.processFrame(media.NewTestRawFrame(w, h, 0))
 
 	var b strings.Builder
 	metrics.WriteProm(&b)
@@ -401,7 +402,7 @@ func TestProcessFrame_PreservesDetectorDegradedState(t *testing.T) {
 		t.Fatalf("initial status = %+v, want degraded object detector unavailable", st)
 	}
 
-	cam.processFrame(make([]byte, 4*4*3), 4, 4)
+	cam.processFrame(media.NewTestRawFrame(4, 4, 0))
 
 	if st := cam.Status(); !st.Degraded || st.DegradedReason != "object detector unavailable" {
 		t.Fatalf("status after frame = %+v, want degraded object detector unavailable", st)
@@ -459,7 +460,7 @@ func TestRunTrackingPipeline_TrackDecaysAcrossQuietPeriods(t *testing.T) {
 	// Default tracker is NewTracker(30, 3): confirm after 3 hits, decay after
 	// 30 misses. Drive 3 detection frames to confirm and emit the first event.
 	for i := 0; i < 3; i++ {
-		cam.runTrackingPipeline(car, nil, 100, 100)
+		cam.runTrackingPipeline(car, rgbFrame(nil, 100, 100))
 	}
 
 	var firstEv Event
@@ -477,7 +478,7 @@ func TestRunTrackingPipeline_TrackDecaysAcrossQuietPeriods(t *testing.T) {
 	// (the tracker is never updated), the EventEnd never fires, and the
 	// confirmedTracks entry persists across the gap.
 	for i := 0; i < 32; i++ {
-		cam.runTrackingPipeline(nil, nil, 100, 100)
+		cam.runTrackingPipeline(nil, rgbFrame(nil, 100, 100))
 	}
 
 	var endEv EventEnd
@@ -499,7 +500,7 @@ func TestRunTrackingPipeline_TrackDecaysAcrossQuietPeriods(t *testing.T) {
 	// the new detection onto the old (stale) track and the confirmedTracks
 	// lookup would suppress emission entirely — i.e., events <- nothing.
 	for i := 0; i < 3; i++ {
-		cam.runTrackingPipeline(car, nil, 100, 100)
+		cam.runTrackingPipeline(car, rgbFrame(nil, 100, 100))
 	}
 
 	var secondEv Event
@@ -546,7 +547,7 @@ func TestRunTrackingPipeline_NoEventWithoutMotion(t *testing.T) {
 	)
 
 	for i := 0; i < 50; i++ {
-		cam.runTrackingPipeline(nil, nil, 100, 100)
+		cam.runTrackingPipeline(nil, rgbFrame(nil, 100, 100))
 	}
 
 	select {
@@ -588,7 +589,7 @@ func TestProcessFrame_DrivesPipelineDuringQuietFrames(t *testing.T) {
 
 	car := []detect.Detection{{Label: "car", Score: 0.9, Box: [4]int{1, 1, 10, 10}}}
 	for i := 0; i < 3; i++ {
-		cam.runTrackingPipeline(car, nil, 32, 32)
+		cam.runTrackingPipeline(car, rgbFrame(nil, 32, 32))
 	}
 	select {
 	case <-events:
@@ -596,9 +597,9 @@ func TestProcessFrame_DrivesPipelineDuringQuietFrames(t *testing.T) {
 		t.Fatal("setup: expected event after confirming track")
 	}
 
-	black := make([]byte, 32*32*3)
+	black := media.NewTestRawFrame(32, 32, 0)
 	for i := 0; i < 40; i++ { // 40 > tracker maxDisappeared (30)
-		cam.processFrame(black, 32, 32)
+		cam.processFrame(black)
 	}
 
 	select {
@@ -632,7 +633,7 @@ func TestRunTrackingPipeline_StableTrackEmitsExactlyOnce(t *testing.T) {
 
 	person := []detect.Detection{{Label: "person", Score: 0.9, Box: [4]int{30, 30, 70, 70}}}
 	for i := 0; i < 50; i++ {
-		cam.runTrackingPipeline(person, nil, 100, 100)
+		cam.runTrackingPipeline(person, rgbFrame(nil, 100, 100))
 	}
 
 	count := 0
@@ -682,7 +683,7 @@ func TestSetTrackName_PropagatesToBroadcast(t *testing.T) {
 
 	// Drive 3 frames to confirm the track and emit the first event.
 	for i := 0; i < 3; i++ {
-		cam.runTrackingPipeline(car, nil, 100, 100)
+		cam.runTrackingPipeline(car, rgbFrame(nil, 100, 100))
 	}
 	var ev Event
 	select {
@@ -696,7 +697,7 @@ func TestSetTrackName_PropagatesToBroadcast(t *testing.T) {
 
 	// Before naming: drain detection frames and assert no Name set.
 	drainDetections(detections)
-	cam.runTrackingPipeline(car, nil, 100, 100)
+	cam.runTrackingPipeline(car, rgbFrame(nil, 100, 100))
 	pre := mustReceiveDetectionFrame(t, detections)
 	if len(pre.Boxes) != 1 || pre.Boxes[0].Name != "" {
 		t.Fatalf("pre-name detection box should have empty Name, got %+v", pre.Boxes)
@@ -704,7 +705,7 @@ func TestSetTrackName_PropagatesToBroadcast(t *testing.T) {
 
 	// Push a name and assert the next broadcast carries it.
 	cam.SetTrackName(ev.TrackID, "Renault Trafic")
-	cam.runTrackingPipeline(car, nil, 100, 100)
+	cam.runTrackingPipeline(car, rgbFrame(nil, 100, 100))
 	post := mustReceiveDetectionFrame(t, detections)
 	if len(post.Boxes) != 1 {
 		t.Fatalf("expected 1 box, got %d", len(post.Boxes))
@@ -743,7 +744,7 @@ func TestSetTrackName_ClearedOnTrackDelete(t *testing.T) {
 	car := []detect.Detection{{Label: "car", Score: 0.9, Box: [4]int{10, 10, 50, 50}}}
 
 	for i := 0; i < 3; i++ {
-		cam.runTrackingPipeline(car, nil, 100, 100)
+		cam.runTrackingPipeline(car, rgbFrame(nil, 100, 100))
 	}
 	var ev Event
 	select {
@@ -755,7 +756,7 @@ func TestSetTrackName_ClearedOnTrackDelete(t *testing.T) {
 
 	// Decay the track.
 	for i := 0; i < 32; i++ {
-		cam.runTrackingPipeline(nil, nil, 100, 100)
+		cam.runTrackingPipeline(nil, rgbFrame(nil, 100, 100))
 	}
 
 	cam.mu.RLock()

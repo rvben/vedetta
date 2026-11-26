@@ -154,12 +154,42 @@ func TestCopyDecodedFrameLeavesThePictureAloneWhenRejected(t *testing.T) {
 	}
 }
 
-func TestYCbCrToRGB24ScaledIntoAUsedBuffer(t *testing.T) {
-	img := createTestYCbCr(8, 8)
-	want := ycbcrToRGB24Scaled(nil, img, 4, 4)
+func TestScaleToRawFrameIntoAUsedBuffer(t *testing.T) {
+	img := noiseYCbCr(8, 8, 1)
+	size := rawFrameSize(4, 4)
+	want := scaleToRawFrame(nil, img, 4, 4).Data
+	if len(want) != size {
+		t.Fatalf("a 4x4 frame is %d bytes, want %d", len(want), size)
+	}
+
+	dirty := bytes.Repeat([]byte{0xAB}, size)
+	got := scaleToRawFrame(dirty, img, 4, 4).Data
+	if !samePixels(got, dirty) {
+		t.Fatal("a buffer of the right size was not reused")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("pixels from the buffer's earlier frame survived the scaling")
+	}
+
+	roomy := bytes.Repeat([]byte{0xAB}, size+30)
+	got = scaleToRawFrame(roomy, img, 4, 4).Data
+	if len(got) != size || !bytes.Equal(got, want) {
+		t.Fatalf("a larger buffer gave %d bytes, want exactly %d with the frame's pixels", len(got), size)
+	}
+
+	short := make([]byte, size-1)
+	got = scaleToRawFrame(short, img, 4, 4).Data
+	if samePixels(got, short) || !bytes.Equal(got, want) {
+		t.Fatal("a buffer too small for the frame must be replaced, not written past")
+	}
+}
+
+func TestRawFrameRGB24IntoAUsedBuffer(t *testing.T) {
+	frame := scaleToRawFrame(nil, noiseYCbCr(4, 4, 2), 4, 4)
+	want := frame.RGB24(nil)
 
 	dirty := bytes.Repeat([]byte{0xAB}, 4*4*3)
-	got := ycbcrToRGB24Scaled(dirty, img, 4, 4)
+	got := frame.RGB24(dirty)
 	if !samePixels(got, dirty) {
 		t.Fatal("a buffer of the right size was not reused")
 	}
@@ -168,13 +198,13 @@ func TestYCbCrToRGB24ScaledIntoAUsedBuffer(t *testing.T) {
 	}
 
 	roomy := bytes.Repeat([]byte{0xAB}, 4*4*3+30)
-	got = ycbcrToRGB24Scaled(roomy, img, 4, 4)
+	got = frame.RGB24(roomy)
 	if len(got) != 4*4*3 || !bytes.Equal(got, want) {
 		t.Fatalf("a larger buffer gave %d bytes, want exactly %d with the frame's pixels", len(got), 4*4*3)
 	}
 
 	short := make([]byte, 4*4*3-1)
-	got = ycbcrToRGB24Scaled(short, img, 4, 4)
+	got = frame.RGB24(short)
 	if samePixels(got, short) || !bytes.Equal(got, want) {
 		t.Fatal("a buffer too small for the frame must be replaced, not written past")
 	}
@@ -194,7 +224,7 @@ func newReuseDetectConsumer(dec FrameDecoder) *DetectConsumer {
 	}
 }
 
-// Every access unit is decoded but only some are converted, so the decoder is
+// Every access unit is decoded but only some are dispatched, so the decoder is
 // handed its previous picture to overwrite instead of allocating one per frame.
 func TestDetectConsumerDecodesIntoItsPreviousPicture(t *testing.T) {
 	dec := &paintingDecoder{w: 8, h: 8}
@@ -224,7 +254,7 @@ func TestDetectConsumerDecodesIntoItsPreviousPicture(t *testing.T) {
 	}
 }
 
-func TestDetectConsumerConvertsIntoRecycledPixels(t *testing.T) {
+func TestDetectConsumerScalesIntoRecycledPixels(t *testing.T) {
 	dec := &paintingDecoder{w: 8, h: 8}
 	dc := newReuseDetectConsumer(dec)
 
@@ -256,8 +286,11 @@ func TestDetectConsumerConvertsIntoRecycledPixels(t *testing.T) {
 	if !samePixels(third.Data, first.Data) {
 		t.Fatal("recycled pixels were not reused for the next frame")
 	}
-	if third.Data[0] != 30 || third.Data[len(third.Data)-1] != 30 {
-		t.Fatalf("frame in recycled pixels reads %d..%d, want the third picture (30)", third.Data[0], third.Data[len(third.Data)-1])
+	if !third.Valid() || third.Width != 4 || third.Height != 4 {
+		t.Fatalf("the consumer dispatched a %dx%d frame of %d bytes, want its 4x4 detection size", third.Width, third.Height, len(third.Data))
+	}
+	if luma := third.Luma(); luma[0] != 30 || luma[len(luma)-1] != 30 {
+		t.Fatalf("frame in recycled pixels reads %d..%d, want the third picture (30)", luma[0], luma[len(luma)-1])
 	}
 	if held.Data[0] != 20 {
 		t.Fatalf("the held frame changed to %d while another was recycled", held.Data[0])
@@ -270,9 +303,9 @@ func TestDetectConsumerRecyclesDroppedFrames(t *testing.T) {
 	dc := newReuseDetectConsumer(&paintingDecoder{w: 8, h: 8})
 
 	for range detectFrameQueue {
-		dc.dispatchFrame(RawFrame{Data: make([]byte, 48), Width: 4, Height: 4})
+		dc.dispatchFrame(RawFrame{Data: make([]byte, rawFrameSize(4, 4)), Width: 4, Height: 4})
 	}
-	dropped := make([]byte, 48)
+	dropped := make([]byte, rawFrameSize(4, 4))
 	dc.dispatchFrame(RawFrame{Data: dropped, Width: 4, Height: 4})
 
 	if got := dc.recycled(); !samePixels(got, dropped) {
@@ -292,7 +325,7 @@ func TestDetectConsumerRecycleNeverBlocks(t *testing.T) {
 		defer close(done)
 		dc.Recycle(nil)
 		for range 4 * (detectFrameQueue + 1) {
-			dc.Recycle(make([]byte, 48))
+			dc.Recycle(make([]byte, rawFrameSize(4, 4)))
 		}
 	}()
 	select {
@@ -329,8 +362,8 @@ func TestDetectConsumerKeepsNoPictureForADecoderThatCannotReuseIt(t *testing.T) 
 	}
 	select {
 	case frame := <-dc.frameCh:
-		if len(frame.Data) != 4*4*3 {
-			t.Fatalf("frame holds %d bytes, want %d", len(frame.Data), 4*4*3)
+		if !frame.Valid() {
+			t.Fatalf("frame holds %d bytes, which does not fit its 4x4 size", len(frame.Data))
 		}
 	default:
 		t.Fatal("no frame from a decoder that returns its own pictures")

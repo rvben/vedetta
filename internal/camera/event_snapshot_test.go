@@ -53,13 +53,13 @@ func TestRunTrackingPipeline_OutOfZoneTrackDoesNotCopyFrameEveryFrame(t *testing
 	// Warm the tracker past minHits so the out-of-zone object is a confirmed,
 	// returned track for the whole measurement window.
 	for range 5 {
-		cam.runTrackingPipeline(dets, buf, detW, detH)
+		cam.runTrackingPipeline(dets, rgbFrame(buf, detW, detH))
 	}
 
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	for range iterations {
-		cam.runTrackingPipeline(dets, buf, detW, detH)
+		cam.runTrackingPipeline(dets, rgbFrame(buf, detW, detH))
 	}
 	runtime.ReadMemStats(&after)
 
@@ -108,7 +108,7 @@ func TestRunTrackingPipeline_QualifyingTrackCapturesSnapshot(t *testing.T) {
 
 	// Feed past minHits so the track confirms and emits its start event.
 	for range 4 {
-		cam.runTrackingPipeline(dets, buf, detW, detH)
+		cam.runTrackingPipeline(dets, rgbFrame(buf, detW, detH))
 	}
 
 	select {

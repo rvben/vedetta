@@ -2,7 +2,6 @@ package media
 
 import (
 	"errors"
-	"image"
 	"os"
 	"path/filepath"
 	"testing"
@@ -163,34 +162,6 @@ func TestIsRandomAccess(t *testing.T) {
 	nonIdr := [][]byte{{0x41, 0x9a, 0x00}}
 	if h264.IsRandomAccess(nonIdr) {
 		t.Error("expected non-IDR to not be random access")
-	}
-}
-
-func TestYCbCrToRGB24Scaled(t *testing.T) {
-	t.Run("identity", func(t *testing.T) {
-		rgb := ycbcrToRGB24Scaled(nil, createTestYCbCr(4, 4), 4, 4)
-		if len(rgb) != 4*4*3 {
-			t.Errorf("expected %d bytes, got %d", 4*4*3, len(rgb))
-		}
-	})
-
-	t.Run("downscale", func(t *testing.T) {
-		rgb := ycbcrToRGB24Scaled(nil, createTestYCbCr(8, 8), 4, 4)
-		if len(rgb) != 4*4*3 {
-			t.Errorf("expected %d bytes, got %d", 4*4*3, len(rgb))
-		}
-	})
-}
-
-func createTestYCbCr(w, h int) *image.YCbCr {
-	return &image.YCbCr{
-		Y:              make([]byte, w*h),
-		Cb:             make([]byte, (w/2)*(h/2)),
-		Cr:             make([]byte, (w/2)*(h/2)),
-		YStride:        w,
-		CStride:        w / 2,
-		SubsampleRatio: image.YCbCrSubsampleRatio420,
-		Rect:           image.Rect(0, 0, w, h),
 	}
 }
 

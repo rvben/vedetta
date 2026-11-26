@@ -94,16 +94,16 @@ func TestOfferDoorbellFrameOwnsPixelsAndDoesNotBlock(t *testing.T) {
 	buf[0] = 200
 	detections := []detect.Detection{{Label: "person", Score: 0.9, Box: [4]int{0, 0, 32, 32}}}
 	at := time.Now()
-	cam.offerDoorbellFrame(buf, 32, 32, at, detections, true)
+	cam.offerDoorbellFrame(rgbFrame(buf, 32, 32), at, detections, true)
 	buf[0] = 0
 	detections[0].Box[0] = 12
 	// A full analysis queue must not stall frame processing or doorbell presses.
-	cam.offerDoorbellFrame(buf, 32, 32, at.Add(time.Second), detections, true)
+	cam.offerDoorbellFrame(rgbFrame(buf, 32, 32), at.Add(time.Second), detections, true)
 	job := <-d.pending
 	if job.frame.RGBAAt(0, 0).R != 200 || job.detections[0].Box[0] != 0 {
 		t.Fatal("candidate referenced reused decoder data")
 	}
-	cam.offerDoorbellFrame(buf, 32, 32, at.Add(100*time.Millisecond), detections, true)
+	cam.offerDoorbellFrame(rgbFrame(buf, 32, 32), at.Add(100*time.Millisecond), detections, true)
 	if len(d.pending) != 0 {
 		t.Fatal("sampling exceeded twice per second")
 	}
@@ -130,14 +130,14 @@ func TestDoorbellMainFrameIsDecodedByTheWorker(t *testing.T) {
 	d.active.Store(true)
 
 	// A camera without a main stream queues its frames all the same.
-	cam.offerDoorbellFrame(make([]byte, 32*32*3), 32, 32, time.Now(), nil, true)
+	cam.offerDoorbellFrame(rgbFrame(make([]byte, 32*32*3), 32, 32), time.Now(), nil, true)
 	if job := <-d.pending; job.mainSource != nil {
 		t.Fatal("a camera without a main stream queued a main-frame source")
 	}
 
 	dec := signallingDecoder{decodes: make(chan struct{}, 4)}
 	cam.snapConsumer = media.NewTestSnapshotConsumerWithKeyframe(dec)
-	cam.offerDoorbellFrame(make([]byte, 32*32*3), 32, 32, time.Now().Add(time.Second), nil, true)
+	cam.offerDoorbellFrame(rgbFrame(make([]byte, 32*32*3), 32, 32), time.Now().Add(time.Second), nil, true)
 	if len(d.pending) != 1 {
 		t.Fatal("the frame was not queued")
 	}
@@ -192,7 +192,7 @@ func TestDoorbellStopDrainsConcurrentOffers(t *testing.T) {
 	go func() {
 		defer close(offersDone)
 		for i := 0; i < 100; i++ {
-			cam.offerDoorbellFrame(buf, 32, 32, time.Now().Add(time.Duration(i)*time.Second), detections, true)
+			cam.offerDoorbellFrame(rgbFrame(buf, 32, 32), time.Now().Add(time.Duration(i)*time.Second), detections, true)
 		}
 	}()
 	cancel()
@@ -254,13 +254,13 @@ func TestOfferDoorbellFrameSkipsAQuietScene(t *testing.T) {
 			cam.doorbellSnapshots = newDoorbellSnapshots(nil, nil)
 			cam.doorbellSnapshots.active.Store(true)
 			at := time.Now()
-			cam.offerDoorbellFrame(make([]byte, 32*32*3), 32, 32, at, tc.detections, tc.sceneActive)
+			cam.offerDoorbellFrame(rgbFrame(make([]byte, 32*32*3), 32, 32), at, tc.detections, tc.sceneActive)
 			if got := len(cam.doorbellSnapshots.pending) == 1; got != tc.wantQueued {
 				t.Fatalf("queued = %v, want %v", got, tc.wantQueued)
 			}
 			// A skipped frame must not start the sampling interval, or the first
 			// frame after motion begins would be dropped as too soon.
-			cam.offerDoorbellFrame(make([]byte, 32*32*3), 32, 32, at.Add(time.Millisecond), person, true)
+			cam.offerDoorbellFrame(rgbFrame(make([]byte, 32*32*3), 32, 32), at.Add(time.Millisecond), person, true)
 			if len(cam.doorbellSnapshots.pending) != 1 {
 				t.Fatal("the first frame of an active scene was not queued")
 			}

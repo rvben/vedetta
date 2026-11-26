@@ -66,10 +66,13 @@ func (c *Camera) cryFrame(now time.Time) *image.RGBA {
 			return img
 		}
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.rawFrame != nil && fresh(c.lastFrameTime) {
-		return rawToRGBA(c.rawFrame, c.frameW, c.frameH)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !fresh(c.lastFrameTime) {
+		return nil
+	}
+	if rgb := c.rgbFrameLocked(); rgb != nil {
+		return rawToRGBA(rgb, c.frameW, c.frameH)
 	}
 	return nil
 }

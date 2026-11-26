@@ -30,6 +30,7 @@ func (c *Camera) SetTestFrame(img *image.RGBA) {
 	defer c.mu.Unlock()
 	if img == nil {
 		c.rawFrame = nil
+		c.rawStale = false
 		c.frameW = 0
 		c.frameH = 0
 		return
@@ -47,6 +48,7 @@ func (c *Camera) SetTestFrame(img *image.RGBA) {
 		}
 	}
 	c.rawFrame = rgb
+	c.rawStale = false
 	c.frameW = w
 	c.frameH = h
 }

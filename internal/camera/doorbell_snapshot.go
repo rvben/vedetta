@@ -177,7 +177,7 @@ func (c *Camera) doorbellSceneActive(now time.Time) bool {
 // that is not active and shows no person is skipped: analysing it costs an
 // object detection and a whole-image face scan of the main stream, and a press
 // on a still scene is served by the live frame.
-func (c *Camera) offerDoorbellFrame(buf []byte, w, h int, at time.Time, detections []detect.Detection, sceneActive bool) {
+func (c *Camera) offerDoorbellFrame(frame *detectFrame, at time.Time, detections []detect.Detection, sceneActive bool) {
 	d := c.doorbellSnapshots
 	if d == nil || !d.active.Load() {
 		return
@@ -201,7 +201,7 @@ func (c *Camera) offerDoorbellFrame(buf []byte, w, h int, at time.Time, detectio
 	job := doorbellFrameJob{at: at, mainSource: c.snapshotConsumer()}
 	if person {
 		// Raw detection buffers are reused by the decoder: own the copied pixels.
-		job.frame = rawToRGBA(buf, w, h)
+		job.frame = rawToRGBA(frame.RGB24(), frame.w, frame.h)
 		job.detections = append([]detect.Detection(nil), detections...)
 	}
 	select {

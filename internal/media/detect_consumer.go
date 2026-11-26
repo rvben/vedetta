@@ -14,16 +14,8 @@ import (
 	"github.com/rvben/vedetta/internal/rtsp"
 )
 
-// RawFrame holds a decoded RGB24 frame for detection. The receiver owns Data
-// and hands it back with DetectConsumer.Recycle once it holds no reference to
-// it, which lets the consumer convert a later frame into the same buffer.
-type RawFrame struct {
-	Data   []byte
-	Width  int
-	Height int
-}
-
-// DetectConsumer implements rtsp.Consumer and decodes H264 frames to RGB24.
+// DetectConsumer implements rtsp.Consumer and decodes H264 into frames at the
+// detection resolution.
 type DetectConsumer struct {
 	width  int
 	height int
@@ -48,7 +40,7 @@ type DetectConsumer struct {
 
 	mu      sync.Mutex
 	frameCh chan RawFrame
-	// free holds RGB24 buffers handed back through Recycle.
+	// free holds frame buffers handed back through Recycle.
 	free         chan []byte
 	lastDispatch time.Time
 	frameDelay   time.Duration
@@ -66,7 +58,7 @@ type DetectConsumer struct {
 	fpsWindowDur time.Duration
 }
 
-// detectFrameQueue is how many converted frames may wait for the detector. One
+// detectFrameQueue is how many scaled frames may wait for the detector. One
 // more can be in the detector's hands, which bounds the buffers in circulation.
 const detectFrameQueue = 2
 
@@ -153,7 +145,7 @@ func (dc *DetectConsumer) Close() {
 	}
 }
 
-// OnVideoRTP processes a video RTP packet, decoding frames to RGB24 after the
+// OnVideoRTP processes a video RTP packet, decoding frames after the
 // first random-access unit has initialized decoder state.
 func (dc *DetectConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	// Hold decMu for the whole call so Close cannot free the OpenH264 C decoder
@@ -296,8 +288,7 @@ func (dc *DetectConsumer) processAccessUnit(au [][]byte, now time.Time) {
 	dc.lastDispatch = now
 	dc.mu.Unlock()
 
-	rgb24 := ycbcrToRGB24Scaled(dc.recycled(), ycbcr, dc.width, dc.height)
-	dc.dispatchFrame(RawFrame{Data: rgb24, Width: dc.width, Height: dc.height})
+	dc.dispatchFrame(scaleToRawFrame(dc.recycled(), ycbcr, dc.width, dc.height))
 }
 
 // dispatchFrame hands a decoded frame to the detection goroutine. It drops the

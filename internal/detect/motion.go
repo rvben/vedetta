@@ -49,7 +49,6 @@ type MotionDetector struct {
 	bg      []int32
 
 	// Pre-allocated working buffers, sized on first Detect call.
-	gray         []uint8
 	blurred      []uint8
 	binary       []uint8
 	labels       []int
@@ -85,36 +84,29 @@ func NewMotionDetector(threshold uint8, minArea int, bgAlpha float64) *MotionDet
 // blending step is far below one grey level for any usable blending factor.
 const bgFracBits = 16
 
-// Detect processes an RGB24 frame and returns bounding boxes of motion regions.
-func (m *MotionDetector) Detect(frame []byte, width, height int) []MotionRegion {
+// Detect processes a frame of one grey level per pixel, such as the luma plane
+// of a decoded picture, and returns bounding boxes of motion regions. It does
+// not keep the frame.
+func (m *MotionDetector) Detect(gray []byte, width, height int) []MotionRegion {
 	pixels := width * height
-	if len(frame) != pixels*3 {
+	if pixels <= 0 || len(gray) != pixels {
 		return nil
 	}
 
 	// Ensure working buffers are allocated and correctly sized.
-	if cap(m.gray) < pixels {
-		m.gray = make([]uint8, pixels)
+	if cap(m.blurred) < pixels {
 		m.blurred = make([]uint8, pixels)
 		m.binary = make([]uint8, pixels)
 		m.labels = make([]int, pixels)
 	}
-	m.gray = m.gray[:pixels]
 	m.blurred = m.blurred[:pixels]
 	m.binary = m.binary[:pixels]
 	m.labels = m.labels[:pixels]
 
-	// Convert to grayscale
-	for i := 0; i < pixels; i++ {
-		off := i * 3
-		// Fast luminance approximation: (R + G + G + B) >> 2
-		m.gray[i] = uint8((int(frame[off]) + int(frame[off+1])*2 + int(frame[off+2])) >> 2)
-	}
-
 	// Initialize background model on first frame
 	if m.bg == nil {
 		m.bg = make([]int32, pixels)
-		for i, v := range m.gray {
+		for i, v := range gray {
 			m.bg[i] = int32(v) << bgFracBits
 		}
 		m.lastCoverage = 0
@@ -122,7 +114,7 @@ func (m *MotionDetector) Detect(frame []byte, width, height int) []MotionRegion 
 	}
 
 	// Apply 3x3 box blur to reduce noise
-	boxBlur3x3(m.gray, m.blurred, width, height)
+	boxBlur3x3(gray, m.blurred, width, height)
 
 	// One pass marks every pixel that differs from the background by more
 	// than the threshold and then blends the pixel into the background. The

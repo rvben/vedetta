@@ -47,25 +47,20 @@ func TestMotionScore_DifferentLengths(t *testing.T) {
 	}
 }
 
-// makeRGB creates a uniform RGB24 frame of the given color.
-func makeRGB(w, h int, r, g, b uint8) []byte {
-	frame := make([]byte, w*h*3)
-	for i := 0; i < w*h; i++ {
-		frame[i*3] = r
-		frame[i*3+1] = g
-		frame[i*3+2] = b
+// makeGray creates a uniform frame of one grey level per pixel.
+func makeGray(w, h int, level uint8) []byte {
+	frame := make([]byte, w*h)
+	for i := range frame {
+		frame[i] = level
 	}
 	return frame
 }
 
-// drawRect fills a rectangle in an RGB24 frame with the given color.
-func drawRect(frame []byte, w, x1, y1, x2, y2 int, r, g, b uint8) {
+// drawRect fills a rectangle in a grey frame with the given level.
+func drawRect(frame []byte, w, x1, y1, x2, y2 int, level uint8) {
 	for y := y1; y < y2; y++ {
 		for x := x1; x < x2; x++ {
-			off := (y*w + x) * 3
-			frame[off] = r
-			frame[off+1] = g
-			frame[off+2] = b
+			frame[y*w+x] = level
 		}
 	}
 }
@@ -73,7 +68,7 @@ func drawRect(frame []byte, w, x1, y1, x2, y2 int, r, g, b uint8) {
 func TestMotionDetector_StaticScene(t *testing.T) {
 	md := NewMotionDetector(25, 50, 0.05)
 	w, h := 100, 100
-	frame := makeRGB(w, h, 128, 128, 128)
+	frame := makeGray(w, h, 128)
 
 	// First frame initializes background
 	regions := md.Detect(frame, w, h)
@@ -93,12 +88,12 @@ func TestMotionDetector_SingleMovingObject(t *testing.T) {
 	w, h := 100, 100
 
 	// Frame 1: uniform background
-	bg := makeRGB(w, h, 50, 50, 50)
+	bg := makeGray(w, h, 50)
 	md.Detect(bg, w, h)
 
 	// Frame 2: bright rectangle appears
-	frame2 := makeRGB(w, h, 50, 50, 50)
-	drawRect(frame2, w, 30, 30, 60, 60, 200, 200, 200)
+	frame2 := makeGray(w, h, 50)
+	drawRect(frame2, w, 30, 30, 60, 60, 200)
 	regions := md.Detect(frame2, w, h)
 
 	if len(regions) != 1 {
@@ -119,13 +114,13 @@ func TestMotionDetector_TwoSeparateRegions(t *testing.T) {
 	md := NewMotionDetector(25, 10, 0.01)
 	w, h := 200, 100
 
-	bg := makeRGB(w, h, 50, 50, 50)
+	bg := makeGray(w, h, 50)
 	md.Detect(bg, w, h)
 
 	// Two separate bright rectangles far apart
-	frame2 := makeRGB(w, h, 50, 50, 50)
-	drawRect(frame2, w, 10, 10, 40, 40, 200, 200, 200)   // left side
-	drawRect(frame2, w, 150, 60, 190, 90, 200, 200, 200) // right side
+	frame2 := makeGray(w, h, 50)
+	drawRect(frame2, w, 10, 10, 40, 40, 200)   // left side
+	drawRect(frame2, w, 150, 60, 190, 90, 200) // right side
 
 	regions := md.Detect(frame2, w, h)
 	if len(regions) != 2 {
@@ -137,12 +132,12 @@ func TestMotionDetector_SmallNoiseBelowMinArea(t *testing.T) {
 	md := NewMotionDetector(25, 500, 0.01) // high minArea
 	w, h := 100, 100
 
-	bg := makeRGB(w, h, 50, 50, 50)
+	bg := makeGray(w, h, 50)
 	md.Detect(bg, w, h)
 
 	// Small 5x5 change, area=25, well below minArea=500
-	frame2 := makeRGB(w, h, 50, 50, 50)
-	drawRect(frame2, w, 45, 45, 50, 50, 200, 200, 200)
+	frame2 := makeGray(w, h, 50)
+	drawRect(frame2, w, 45, 45, 50, 50, 200)
 
 	regions := md.Detect(frame2, w, h)
 	if len(regions) != 0 {
@@ -154,11 +149,11 @@ func TestMotionDetector_BackgroundAdaptation(t *testing.T) {
 	md := NewMotionDetector(25, 10, 0.5) // high alpha for fast adaptation
 	w, h := 50, 50
 
-	bg := makeRGB(w, h, 50, 50, 50)
+	bg := makeGray(w, h, 50)
 	md.Detect(bg, w, h)
 
 	// Sudden change
-	changed := makeRGB(w, h, 200, 200, 200)
+	changed := makeGray(w, h, 200)
 	regions := md.Detect(changed, w, h)
 	if len(regions) == 0 {
 		t.Fatal("should detect motion on first change")
@@ -212,11 +207,11 @@ func TestMotionDetector_FrameCoverage(t *testing.T) {
 	md := NewMotionDetector(25, 50, 0.5)
 	w, h := 100, 100
 
-	frame1 := make([]byte, w*h*3)
+	frame1 := make([]byte, w*h)
 	md.Detect(frame1, w, h)
 
-	frame2 := make([]byte, w*h*3)
-	for i := 0; i < w*h*3/5; i++ {
+	frame2 := make([]byte, w*h)
+	for i := 0; i < w*h/5; i++ {
 		frame2[i] = 255
 	}
 	md.Detect(frame2, w, h)
@@ -239,11 +234,11 @@ func BenchmarkMotionDetector_Detect(b *testing.B) {
 	w, h := 320, 240
 	md := NewMotionDetector(25, 50, 0.05)
 
-	bg := makeRGB(w, h, 50, 50, 50)
+	bg := makeGray(w, h, 50)
 	md.Detect(bg, w, h) // initialize background
 
-	frame := makeRGB(w, h, 50, 50, 50)
-	drawRect(frame, w, 80, 60, 240, 180, 200, 200, 200)
+	frame := makeGray(w, h, 50)
+	drawRect(frame, w, 80, 60, 240, 180, 200)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -252,13 +247,13 @@ func BenchmarkMotionDetector_Detect(b *testing.B) {
 	}
 }
 
-// noisyRGB returns frames of a mid-grey scene with a few levels of sensor
+// noisyGray returns frames of a mid-grey scene with a few levels of sensor
 // noise, the input a camera gives while nothing moves.
-func noisyRGB(w, h, frames int) [][]byte {
+func noisyGray(w, h, frames int) [][]byte {
 	rng := rand.New(rand.NewPCG(1, 2))
 	out := make([][]byte, frames)
 	for f := range out {
-		frame := make([]byte, w*h*3)
+		frame := make([]byte, w*h)
 		for i := range frame {
 			frame[i] = uint8(118 + rng.IntN(5))
 		}
@@ -270,7 +265,7 @@ func noisyRGB(w, h, frames int) [][]byte {
 func BenchmarkMotionDetector_QuietScene(b *testing.B) {
 	w, h := 640, 480
 	md := NewMotionDetector(25, 200, 0.05)
-	frames := noisyRGB(w, h, 8)
+	frames := noisyGray(w, h, 8)
 	md.Detect(frames[0], w, h)
 
 	b.ReportAllocs()
@@ -298,19 +293,19 @@ func TestMotionDetectorBackgroundFollowsTheBlend(t *testing.T) {
 		foreground := 0
 		for f := range 120 {
 			// A noisy scene that brightens slowly, crossed by a bright block.
-			frame := make([]byte, w*h*3)
+			frame := make([]byte, w*h)
 			for i := range frame {
 				frame[i] = uint8(60 + f/2 + rng.IntN(7))
 			}
 			if f > 0 {
 				x := (f * 3) % (w - 20)
-				drawRect(frame, w, x, 20, x+20, 40, uint8(100+f), uint8(100+f), uint8(100+f))
+				drawRect(frame, w, x, 20, x+20, 40, uint8(100+f))
 			}
 			md.Detect(frame, w, h)
 
 			if want == nil {
 				want = make([]float64, w*h)
-				for i, v := range md.gray {
+				for i, v := range frame {
 					want[i] = float64(v)
 				}
 				continue
@@ -358,7 +353,7 @@ func TestMotionDetectorBackgroundSettlesOnALevelThatHolds(t *testing.T) {
 		w, h      = 32, 32
 		threshold = 25
 	)
-	gray := func(level uint8) []byte { return makeRGB(w, h, level, level, level) }
+	gray := func(level uint8) []byte { return makeGray(w, h, level) }
 	for _, tc := range []struct {
 		name                       string
 		from, to                   uint8
@@ -399,16 +394,36 @@ func TestMotionDetectorBackgroundSettlesOnALevelThatHolds(t *testing.T) {
 func TestMotionDetectorAdaptsWithAVerySmallBlendingFactor(t *testing.T) {
 	const w, h = 32, 32
 	md := NewMotionDetector(25, 10, 1e-9)
-	md.Detect(makeRGB(w, h, 100, 100, 100), w, h)
-	md.Detect(makeRGB(w, h, 140, 140, 140), w, h)
+	md.Detect(makeGray(w, h, 100), w, h)
+	md.Detect(makeGray(w, h, 140), w, h)
 	if got, start := md.bg[0], int32(100)<<bgFracBits; got <= start {
 		t.Fatalf("the background did not move towards a brighter scene: %d, started at %d", got, start)
 	}
 
 	static := NewMotionDetector(25, 10, 0)
-	static.Detect(makeRGB(w, h, 100, 100, 100), w, h)
-	static.Detect(makeRGB(w, h, 140, 140, 140), w, h)
+	static.Detect(makeGray(w, h, 100), w, h)
+	static.Detect(makeGray(w, h, 140), w, h)
 	if got, start := static.bg[0], int32(100)<<bgFracBits; got != start {
 		t.Fatalf("a blending factor of 0 moved the background: %d, started at %d", got, start)
+	}
+}
+
+// A caller that hands over anything but one grey level per pixel, such as a
+// packed colour frame, gets no regions and leaves the background alone.
+func TestMotionDetectorRejectsAFrameOfTheWrongLength(t *testing.T) {
+	const w, h = 64, 48
+	md := NewMotionDetector(25, 20, 0.05)
+	md.Detect(makeGray(w, h, 0), w, h)
+
+	for _, size := range []int{w*h - 1, w*h + 1, w * h * 3, w*h + w*h/2} {
+		if regions := md.Detect(make([]byte, size), w, h); regions != nil {
+			t.Fatalf("a %d byte frame for %dx%d gave %d regions, want none", size, w, h, len(regions))
+		}
+	}
+
+	moved := makeGray(w, h, 0)
+	drawRect(moved, w, 10, 10, 30, 30, 255)
+	if regions := md.Detect(moved, w, h); len(regions) != 1 {
+		t.Fatalf("after the rejected frames a moving block gave %d regions, want 1", len(regions))
 	}
 }

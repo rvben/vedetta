@@ -160,8 +160,21 @@ type Camera struct {
 	// detect goroutine; drives periodic re-confirmation of stationary objects.
 	lastDetectAt time.Time
 
-	mu               sync.RWMutex
-	rawFrame         []byte // RGB24 frame data, guarded by mu
+	// detectRGB is the detection goroutine's own RGB24 copy of the frame it is
+	// working on, filled on demand. Only that goroutine touches it.
+	detectRGB []byte
+
+	mu sync.RWMutex
+	// The latest frame, guarded by mu. A frame from the detection stream is
+	// kept as it arrives, in rawPlanes, and rawFrame holds its RGB24 pixels only
+	// once a reader has asked for them (rawStale says it does not yet). A frame
+	// from elsewhere, such as the snapshot cached on disk, is RGB24 from the
+	// start. Readers go through rgbFrameLocked. rawSeq counts the frames taken
+	// from the detection stream.
+	rawFrame         []byte
+	rawPlanes        media.RawFrame
+	rawStale         bool
+	rawSeq           uint64
 	frameW, frameH   int
 	lastMotion       time.Time
 	lastFrameTime    time.Time
@@ -383,14 +396,27 @@ func (c *Camera) Reconnects() int64 {
 	return c.reconnects.Load()
 }
 
-// LastSnapshot converts the stored RGB24 frame to RGBA on demand.
+// rgbFrameLocked returns the RGB24 pixels of the latest frame, converting it
+// first when no reader has asked since it arrived, and nil when there is no
+// frame. The caller holds mu for writing and does not keep the slice past
+// the unlock.
+func (c *Camera) rgbFrameLocked() []byte {
+	if c.rawStale {
+		c.rawFrame = c.rawPlanes.RGB24(c.rawFrame)
+		c.rawStale = false
+	}
+	return c.rawFrame
+}
+
+// LastSnapshot converts the latest frame to RGBA on demand.
 func (c *Camera) LastSnapshot() *image.RGBA {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.rawFrame == nil {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rgb := c.rgbFrameLocked()
+	if rgb == nil {
 		return nil
 	}
-	return rawToRGBA(c.rawFrame, c.frameW, c.frameH)
+	return rawToRGBA(rgb, c.frameW, c.frameH)
 }
 
 // LastFrameTime returns the wall-clock time at which the most recent frame was
@@ -483,6 +509,7 @@ func (c *Camera) loadCachedSnapshot() {
 	case res := <-result:
 		c.mu.Lock()
 		c.rawFrame = res.rgb
+		c.rawStale = false
 		c.frameW = res.w
 		c.frameH = res.h
 		c.cachedSnapshotTime = res.mtime
@@ -495,22 +522,23 @@ func (c *Camera) loadCachedSnapshot() {
 
 // saveCachedSnapshot writes the current frame to disk (throttled to every 30s).
 func (c *Camera) saveCachedSnapshot() {
-	c.mu.RLock()
-	if c.rawFrame == nil {
-		c.mu.RUnlock()
-		return
-	}
-	if time.Since(c.lastSnapshotSave) < 30*time.Second {
-		c.mu.RUnlock()
-		return
-	}
-	img := rawToRGBA(c.rawFrame, c.frameW, c.frameH)
-	c.mu.RUnlock()
-
 	path := c.snapshotPath()
 	if path == "" {
 		return
 	}
+	c.mu.Lock()
+	if time.Since(c.lastSnapshotSave) < 30*time.Second {
+		c.mu.Unlock()
+		return
+	}
+	rgb := c.rgbFrameLocked()
+	if rgb == nil {
+		c.mu.Unlock()
+		return
+	}
+	img := rawToRGBA(rgb, c.frameW, c.frameH)
+	c.mu.Unlock()
+
 	// The shared writer replaces the file by rename, so a reader holding this
 	// path sees the previous capture or the new one and never a half-encoded
 	// frame. Report a failed write and leave the throttle alone: advancing it
@@ -641,7 +669,7 @@ func (c *Camera) readFrames(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case frame := <-consumer.Frames():
-			c.processFrame(frame.Data, frame.Width, frame.Height)
+			c.processFrame(frame)
 			// processFrame copies what it keeps, so the pixels can carry the
 			// next frame.
 			consumer.Recycle(frame.Data)
@@ -762,34 +790,64 @@ func (c *Camera) setSnapshotConsumer(sc *media.SnapshotConsumer) {
 	c.snapConsumer = sc
 }
 
-// processFrame handles a decoded RGB24 frame — motion detection + YOLO.
-func (c *Camera) processFrame(buf []byte, w, h int) {
-	frameSize := w * h * 3
+// newDetectFrame returns the detection goroutine's view of raw, the frame it
+// has just stored for readers as number seq. Its RGB24 pixels are converted on
+// first use into detectRGB and shared with readers, who are then spared a
+// conversion of their own, unless a later frame has taken its place by then.
+func (c *Camera) newDetectFrame(raw media.RawFrame, seq uint64) *detectFrame {
+	frame := &detectFrame{w: raw.Width, h: raw.Height}
+	frame.convert = func() []byte {
+		c.detectRGB = raw.RGB24(c.detectRGB)
+		c.mu.Lock()
+		if c.rawStale && c.rawSeq == seq {
+			if cap(c.rawFrame) < len(c.detectRGB) {
+				c.rawFrame = make([]byte, len(c.detectRGB))
+			}
+			c.rawFrame = c.rawFrame[:len(c.detectRGB)]
+			copy(c.rawFrame, c.detectRGB)
+			c.rawStale = false
+		}
+		c.mu.Unlock()
+		return c.detectRGB
+	}
+	return frame
+}
+
+// processFrame handles a decoded frame: motion detection on its grey levels,
+// then object detection and tracking. It keeps no reference to the frame's
+// pixels once it returns.
+func (c *Camera) processFrame(raw media.RawFrame) {
+	if !raw.Valid() {
+		return
+	}
+	w, h := raw.Width, raw.Height
 	frameAt := time.Now()
 
-	// Store raw RGB24 frame for on-demand snapshot conversion.
+	// Keep the frame for readers, who convert it when they ask.
 	c.mu.Lock()
-	if c.rawFrame == nil || len(c.rawFrame) != frameSize {
-		c.rawFrame = make([]byte, frameSize)
-	}
-	copy(c.rawFrame, buf)
+	c.rawPlanes = raw.Clone(c.rawPlanes.Data)
+	c.rawStale = true
+	c.rawSeq++
+	seq := c.rawSeq
 	c.frameW = w
 	c.frameH = h
 	c.lastFrameTime = frameAt
 	c.mu.Unlock()
 
+	frame := c.newDetectFrame(raw, seq)
+
 	// Periodically save snapshot to disk for offline display
 	c.saveCachedSnapshot()
 
 	if !c.detectEnabled {
-		c.offerDoorbellFrame(buf, w, h, frameAt, nil, true)
+		c.offerDoorbellFrame(frame, frameAt, nil, true)
 		return
 	}
 	metrics.FramesProcessed.Inc(c.config.Name)
 
 	// Contour-based motion detection
 	motionStart := time.Now()
-	motionRegions := c.motionDetector.Detect(buf, w, h)
+	motionRegions := c.motionDetector.Detect(raw.Luma(), w, h)
 	metrics.MotionDetectDuration.Observe(c.config.Name, time.Since(motionStart))
 
 	if c.motionActivity != nil {
@@ -840,25 +898,26 @@ func (c *Camera) processFrame(buf []byte, w, h int) {
 		}
 		c.lastDetectAt = now
 		yoloStart := time.Now()
-		detections = c.detector.DetectRGB24(buf, w, h)
+		detections = c.detector.DetectRGB24(frame.RGB24(), w, h)
 		metrics.YOLOInferenceDuration.Observe(c.config.Name, time.Since(yoloStart))
 	}
 
-	c.offerDoorbellFrame(buf, w, h, frameAt, detections, c.doorbellSceneActive(now))
+	c.offerDoorbellFrame(frame, frameAt, detections, c.doorbellSceneActive(now))
 
 	// Run the tracking pipeline every frame (with detections=nil during quiet
 	// periods) so unmatched tracks keep aging and eventually decay. Otherwise
 	// stale tracks linger indefinitely; IoU matching reassigns their TrackIDs
 	// to fresh detections, the c.confirmedTracks lookup hits the prior
 	// eventID, and event emission is silently suppressed.
-	c.runTrackingPipeline(detections, buf, w, h)
+	c.runTrackingPipeline(detections, frame)
 }
 
 // runTrackingPipeline drives per-frame tracking work: tracker update, detection
 // broadcast, snapshot capture for new tracks, zone/presence updates, event
 // start/end emission, and face recognition. Must be called every frame (with
 // detections=nil during quiet periods) so tracks decay correctly.
-func (c *Camera) runTrackingPipeline(detections []detect.Detection, buf []byte, w, h int) {
+func (c *Camera) runTrackingPipeline(detections []detect.Detection, frame *detectFrame) {
+	w, h := frame.w, frame.h
 	tracked := c.tracker.Update(detections)
 
 	c.broadcastDetections(tracked, w, h)
@@ -909,7 +968,7 @@ func (c *Camera) runTrackingPipeline(detections []detect.Detection, buf []byte, 
 			// This track qualifies for an event: capture the shared full-resolution
 			// snapshot once, reused by every new event in this frame.
 			if c.eventSnapDir != "" && cleanFrame == nil {
-				cleanFrame, annotatedFrame = c.captureEventSnapshot(tracked, buf, w, h)
+				cleanFrame, annotatedFrame = c.captureEventSnapshot(tracked, frame)
 			}
 
 			eventID := fmt.Sprintf("%s-t%d-%d", c.config.Name, obj.TrackID, time.Now().UnixMilli())
@@ -990,7 +1049,7 @@ func (c *Camera) runTrackingPipeline(detections []detect.Detection, buf []byte, 
 				continue
 			}
 			if rgbaFrame == nil {
-				rgbaFrame = rawToRGBA(buf, w, h)
+				rgbaFrame = rawToRGBA(frame.RGB24(), w, h)
 			}
 			results := c.faceRecognizer.DetectAndEmbed(rgbaFrame, obj.Box, c.faceCropDir)
 			c.faceProcessed[obj.TrackID] = now
@@ -1036,7 +1095,8 @@ func (c *Camera) runTrackingPipeline(detections []detect.Detection, buf []byte, 
 // resolution. Callers invoke it lazily - only once a track actually qualifies for
 // an event - so a track that never emits one (outside every zone, or its event
 // repeatedly dropped) never triggers a full-resolution copy.
-func (c *Camera) captureEventSnapshot(tracked []detect.TrackedObject, buf []byte, w, h int) (clean, annotated *image.RGBA) {
+func (c *Camera) captureEventSnapshot(tracked []detect.TrackedObject, frame *detectFrame) (clean, annotated *image.RGBA) {
+	w, h := frame.w, frame.h
 	allDetections := make([]detect.Detection, len(tracked))
 	for i, obj := range tracked {
 		allDetections[i] = detect.Detection{
@@ -1078,7 +1138,7 @@ func (c *Camera) captureEventSnapshot(tracked []detect.TrackedObject, buf []byte
 	}
 
 	// No full-res frame available, use the detection frame.
-	clean = rawToRGBA(buf, w, h)
+	clean = rawToRGBA(frame.RGB24(), w, h)
 	annotated = image.NewRGBA(clean.Bounds())
 	copy(annotated.Pix, clean.Pix)
 	snapshot.DrawDetectionsInPlace(annotated, allDetections)
@@ -1221,18 +1281,16 @@ func (c *Camera) Status() CameraStatus {
 	}
 }
 
-// SnapshotRGB24 copies the raw RGB24 frame into dst and returns dimensions.
+// SnapshotRGB24 copies the latest frame into dst as RGB24 and returns its
+// dimensions.
 func (c *Camera) SnapshotRGB24(dst []byte) (w, h int, ok bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.rawFrame == nil {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rgb := c.rgbFrameLocked()
+	if rgb == nil || len(dst) < len(rgb) {
 		return 0, 0, false
 	}
-	needed := len(c.rawFrame)
-	if len(dst) < needed {
-		return 0, 0, false
-	}
-	copy(dst, c.rawFrame)
+	copy(dst, rgb)
 	return c.frameW, c.frameH, true
 }
 

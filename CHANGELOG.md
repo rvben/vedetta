@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.0](https://github.com/rvben/vedetta/compare/v0.7.21...v0.8.0) - 2026-11-26
+
+### Added
+
+- **notify**: support a configurable Pushover API endpoint ([567018c](https://github.com/rvben/vedetta/commit/567018c97518aac81e5a13999eca5118f120baa2))
+- **detect**: add an opt-in Core ML detection backend for macOS ([c80f7ab](https://github.com/rvben/vedetta/commit/c80f7abc54109a6aa622bc0ec092500eb205756a))
+
+### Fixed
+
+- **recording**: keep in-order G.711 audio in one encoder run ([6b09aed](https://github.com/rvben/vedetta/commit/6b09aed6211fe0f18e3cbf8635604adaf79426fc))
+- **build**: build with Go 1.27.4 ([a1d4884](https://github.com/rvben/vedetta/commit/a1d4884207b1c3bb3abc7a0f38931f75aca805a5))
+- **deps**: update gorilla/websocket and the OpenTelemetry log SDK past two advisories ([7a557df](https://github.com/rvben/vedetta/commit/7a557df74aee8e55793075348d35e797ec7cb38c))
+- **detect**: wait for a running inference before closing the backend ([2413c56](https://github.com/rvben/vedetta/commit/2413c56ef94b73b495b6a7065aac7ac650cb3629))
+
+### Performance
+
+- **camera**: analyse doorbell frames only while the scene is active ([f3130c0](https://github.com/rvben/vedetta/commit/f3130c0079c37388fff6622acdbc4f8d9b1ba070))
+- **detect**: blur interior pixels without per-neighbour bounds tests ([ecb87bc](https://github.com/rvben/vedetta/commit/ecb87bcb4538d4dd871118fa4100f9572db0c3d4))
+- **cry**: skip the zero terms of the audio frontend ([ef53bc6](https://github.com/rvben/vedetta/commit/ef53bc6d3520adbf64ced2fdcbb978a0979851c7))
+- **detect**: convolve depthwise layers directly and make ReLU branchless ([d514da9](https://github.com/rvben/vedetta/commit/d514da9c3936dac58250afb4bf60a92f6bf30b6f))
+
 ## [0.7.21](https://github.com/rvben/vedetta/compare/v0.7.20...v0.7.21) - 2026-11-25
 
 ### Added

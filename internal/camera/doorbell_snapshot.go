@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rvben/vedetta/internal/detect"
+	"github.com/rvben/vedetta/internal/media"
 	"github.com/rvben/vedetta/internal/snapshot"
 )
 
@@ -27,8 +28,10 @@ type doorbellFrameJob struct {
 	frame      *image.RGBA
 	at         time.Time
 	detections []detect.Detection
-	main       *image.RGBA
-	mainAt     time.Time
+	// mainSource supplies the main-stream frame when the job is analysed:
+	// asking for it can decode a full-resolution keyframe, which must not hold
+	// up the detection loop that queues the job. Nil without a main stream.
+	mainSource *media.SnapshotConsumer
 }
 
 type doorbellSnapshots struct {
@@ -73,18 +76,20 @@ func (d *doorbellSnapshots) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
+			var main *image.RGBA
+			var mainAt time.Time
+			if job.mainSource != nil {
+				main, mainAt = job.mainSource.LastFrameAt()
+			}
 			// Analyse a main-stream image only once, using detections from that image
 			// itself. Detection-stream boxes must never be applied to an older frame.
-			if job.main != nil && job.mainAt.After(lastMain) && job.at.Sub(job.mainAt) <= snapshot.DoorbellWindow {
-				lastMain = job.mainAt
-				img := job.main
-				if img != nil {
-					var detections []detect.Detection
-					if d.detector.Available() {
-						detections = d.detector.TryDetect(img)
-					}
-					d.buffer.Add(img, job.mainAt, d.subjects(img, detections))
+			if main != nil && mainAt.After(lastMain) && job.at.Sub(mainAt) <= snapshot.DoorbellWindow {
+				lastMain = mainAt
+				var detections []detect.Detection
+				if d.detector.Available() {
+					detections = d.detector.TryDetect(main)
 				}
+				d.buffer.Add(main, mainAt, d.subjects(main, detections))
 			}
 			if ctx.Err() != nil {
 				return
@@ -193,10 +198,7 @@ func (c *Camera) offerDoorbellFrame(buf []byte, w, h int, at time.Time, detectio
 		return
 	}
 	d.lastOffer = at
-	job := doorbellFrameJob{at: at}
-	if sc := c.snapshotConsumer(); sc != nil {
-		job.main, job.mainAt = sc.LastFrameAt()
-	}
+	job := doorbellFrameJob{at: at, mainSource: c.snapshotConsumer()}
 	if person {
 		// Raw detection buffers are reused by the decoder: own the copied pixels.
 		job.frame = rawToRGBA(buf, w, h)

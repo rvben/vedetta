@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rvben/vedetta/internal/detect"
+	"github.com/rvben/vedetta/internal/media"
 	"github.com/rvben/vedetta/internal/snapshot"
 )
 
@@ -105,6 +106,53 @@ func TestOfferDoorbellFrameOwnsPixelsAndDoesNotBlock(t *testing.T) {
 	cam.offerDoorbellFrame(buf, 32, 32, at.Add(100*time.Millisecond), detections, true)
 	if len(d.pending) != 0 {
 		t.Fatal("sampling exceeded twice per second")
+	}
+}
+
+// signallingDecoder reports each keyframe it is asked to decode and produces
+// no picture.
+type signallingDecoder struct{ decodes chan struct{} }
+
+func (d signallingDecoder) Decode([]byte) *image.YCbCr {
+	d.decodes <- struct{}{}
+	return nil
+}
+func (signallingDecoder) Flush() *image.YCbCr { return nil }
+func (signallingDecoder) Close()              {}
+
+// Asking the snapshot consumer for its frame decodes a full-resolution
+// keyframe. Queuing runs on the detection loop, which must not wait for that:
+// the job carries the consumer, and the worker that analyses the job asks it.
+func TestDoorbellMainFrameIsDecodedByTheWorker(t *testing.T) {
+	cam := NewTestCamera("door")
+	d := newDoorbellSnapshots(nil, nil)
+	cam.doorbellSnapshots = d
+	d.active.Store(true)
+
+	// A camera without a main stream queues its frames all the same.
+	cam.offerDoorbellFrame(make([]byte, 32*32*3), 32, 32, time.Now(), nil, true)
+	if job := <-d.pending; job.mainSource != nil {
+		t.Fatal("a camera without a main stream queued a main-frame source")
+	}
+
+	dec := signallingDecoder{decodes: make(chan struct{}, 4)}
+	cam.snapConsumer = media.NewTestSnapshotConsumerWithKeyframe(dec)
+	cam.offerDoorbellFrame(make([]byte, 32*32*3), 32, 32, time.Now().Add(time.Second), nil, true)
+	if len(d.pending) != 1 {
+		t.Fatal("the frame was not queued")
+	}
+	if len(dec.decodes) != 0 {
+		t.Fatal("queuing a frame decoded the main-stream keyframe on the detection loop")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { d.run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	select {
+	case <-dec.decodes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker did not decode the main-stream keyframe of the job it analysed")
 	}
 }
 

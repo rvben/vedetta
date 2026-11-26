@@ -3,14 +3,8 @@ package media
 import (
 	"bytes"
 	"image"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/pion/rtp"
-
-	"github.com/rvben/vedetta/internal/rtsp"
 )
 
 // paintingDecoder is a reusing decoder whose pictures are a flat grey of a
@@ -311,186 +305,6 @@ func TestDetectConsumerRecycleNeverBlocks(t *testing.T) {
 	}
 }
 
-func newReuseSnapshotConsumer(dec FrameDecoder) *SnapshotConsumer {
-	return &SnapshotConsumer{
-		camera:   "reuse",
-		frameDec: dec,
-		decodeCh: make(chan []byte, 1),
-		done:     make(chan struct{}),
-	}
-}
-
-func TestSnapshotConsumerConvertsOnceOnRequest(t *testing.T) {
-	dec := &paintingDecoder{w: 4, h: 4}
-	sc := newReuseSnapshotConsumer(dec)
-
-	if frame, at := sc.LastFrameAt(); frame != nil || !at.IsZero() {
-		t.Fatalf("before any decode: frame=%v at=%v, want none", frame, at)
-	}
-
-	before := time.Now()
-	sc.decode([]byte{1})
-	if sc.lastFrame != nil {
-		t.Fatal("the frame was converted before anything asked for it")
-	}
-
-	frame, at := sc.LastFrameAt()
-	if frame == nil || frame.Bounds() != image.Rect(0, 0, 4, 4) {
-		t.Fatalf("frame = %v, want a 4x4 image", frame)
-	}
-	if got := frame.Pix[:4]; !bytes.Equal(got, []byte{10, 10, 10, 255}) {
-		t.Fatalf("first pixel = %v, want the first picture's grey", got)
-	}
-	if at.Before(before) || at.After(time.Now()) {
-		t.Fatalf("decode time %v is outside the decode", at)
-	}
-	if again, againAt := sc.LastFrameAt(); again != frame || !againAt.Equal(at) {
-		t.Fatal("a second request for the same frame converted it again")
-	}
-}
-
-// Pictures alternate between two buffers, so a frame that was handed out must
-// be a conversion of its own: later decodes may not show through it.
-func TestSnapshotConsumerHandedOutFramesNeverChange(t *testing.T) {
-	dec := &paintingDecoder{w: 4, h: 4}
-	sc := newReuseSnapshotConsumer(dec)
-
-	var frames []*image.RGBA
-	for range 5 {
-		sc.decode([]byte{1})
-		frames = append(frames, sc.LastFrame())
-	}
-	for i, frame := range frames {
-		want := byte(10 * (i + 1))
-		if frame.Pix[0] != want || frame.Pix[len(frame.Pix)-2] != want {
-			t.Fatalf("frame %d now reads %d, want its own picture (%d)", i+1, frame.Pix[0], want)
-		}
-	}
-}
-
-// The decoder may only overwrite the picture before the published one. Handing
-// it the published picture would let a reader convert a half-written frame.
-func TestSnapshotConsumerNeverDecodesIntoThePublishedPicture(t *testing.T) {
-	dec := &paintingDecoder{w: 4, h: 4}
-	sc := newReuseSnapshotConsumer(dec)
-	dec.before = func(dst *image.YCbCr) {
-		sc.mu.Lock()
-		defer sc.mu.Unlock()
-		if dst != nil && dst == sc.picture {
-			t.Error("the decoder was handed the published picture")
-		}
-	}
-
-	for range 6 {
-		sc.decode([]byte{1})
-	}
-	if dec.dsts[0] != nil || dec.dsts[1] != nil {
-		t.Fatal("the first two decodes have no earlier picture to overwrite")
-	}
-	for i := 2; i < len(dec.dsts); i++ {
-		if dec.dsts[i] == nil {
-			t.Fatalf("decode %d allocated a picture although one was spare", i+1)
-		}
-	}
-	if dec.dsts[2] == dec.dsts[3] || dec.dsts[2] != dec.dsts[4] || dec.dsts[3] != dec.dsts[5] {
-		t.Fatal("the two pictures do not alternate")
-	}
-}
-
-func TestSnapshotConsumerKeepsTheLastFrameWhenDecodeFails(t *testing.T) {
-	dec := &paintingDecoder{w: 4, h: 4}
-	sc := newReuseSnapshotConsumer(dec)
-	sc.decode([]byte{1})
-	sc.decode([]byte{1})
-	frame, at := sc.LastFrameAt()
-
-	dec.fail = true
-	sc.decode([]byte{1})
-	if got, gotAt := sc.LastFrameAt(); got != frame || !gotAt.Equal(at) {
-		t.Fatal("a decode that produced no picture replaced the last frame")
-	}
-
-	dec.fail = false
-	sc.decode([]byte{1})
-	if got := sc.LastFrame(); got == frame || got.Pix[0] != 30 {
-		t.Fatalf("after recovering, the frame reads %d, want the third picture (30)", got.Pix[0])
-	}
-	if frame.Pix[0] != 20 {
-		t.Fatalf("the earlier frame changed to %d", frame.Pix[0])
-	}
-}
-
-// At most one random-access unit a second is queued for decode, counted from
-// the last decoded frame.
-func TestSnapshotConsumerQueuesOneDecodePerSecond(t *testing.T) {
-	h264Format := &format.H264{PayloadTyp: 96, PacketizationMode: 1}
-	rtpDec, err := h264Format.CreateDecoder()
-	if err != nil {
-		t.Fatalf("CreateDecoder: %v", err)
-	}
-	sc := newReuseSnapshotConsumer(&paintingDecoder{w: 4, h: 4})
-	sc.h264Decoder = rtsp.NewH264AccessUnitDecoder(rtpDec)
-	sc.sps = []byte{0x67, 0x42}
-
-	// An access unit is complete once a packet with a later timestamp arrives,
-	// so each random-access unit is followed by the start of a predicted frame.
-	var seq uint16
-	packet := func(payload ...byte) *rtp.Packet {
-		seq++
-		return &rtp.Packet{
-			Header:  rtp.Header{SequenceNumber: seq, Timestamp: uint32(seq) * 3000},
-			Payload: payload,
-		}
-	}
-	deliverIDR := func() {
-		sc.OnVideoRTP(packet(0x65, 0x88, 0x84, 0x00))
-		sc.OnVideoRTP(packet(0x41, 0x9a, 0x00, 0x00))
-	}
-	queued := func() bool {
-		select {
-		case <-sc.decodeCh:
-			return true
-		default:
-			return false
-		}
-	}
-
-	deliverIDR()
-	if !queued() {
-		t.Fatal("the first random-access unit was not queued")
-	}
-
-	sc.decode([]byte{1})
-	deliverIDR()
-	if queued() {
-		t.Fatal("a random-access unit right after a decoded frame was queued")
-	}
-
-	earlier := time.Now().Add(-1500 * time.Millisecond)
-	sc.lastDecode.Store(&earlier)
-	deliverIDR()
-	if !queued() {
-		t.Fatal("a random-access unit more than a second after the last frame was not queued")
-	}
-}
-
-// The interval is measured on the monotonic clock: a wall clock stepped back
-// by NTP or by hand would otherwise hold snapshots still until it caught up.
-// time.Time prints its monotonic reading as "m=", and loses it when rebuilt
-// from a wall-clock value.
-func TestSnapshotConsumerTimesDecodesOnTheMonotonicClock(t *testing.T) {
-	sc := newReuseSnapshotConsumer(&paintingDecoder{w: 4, h: 4})
-	sc.decode([]byte{1})
-
-	stamp := sc.lastDecode.Load()
-	if stamp == nil {
-		t.Fatal("a decoded frame left no timestamp")
-	}
-	if !strings.Contains(stamp.String(), " m=") {
-		t.Fatalf("decode timestamp %v has no monotonic reading", stamp)
-	}
-}
-
 // freshFrameDecoder returns a picture of its own for every decode, like the
 // hardware backends.
 type freshFrameDecoder struct{}
@@ -519,21 +333,6 @@ func TestDetectConsumerKeepsNoPictureForADecoderThatCannotReuseIt(t *testing.T) 
 			t.Fatalf("frame holds %d bytes, want %d", len(frame.Data), 4*4*3)
 		}
 	default:
-		t.Fatal("no frame from a decoder that returns its own pictures")
-	}
-}
-
-// A decoder that cannot decode into a picture would never use a spare one, so
-// keeping the previous frame for it only holds memory.
-func TestSnapshotConsumerKeepsNoSpareForADecoderThatCannotReuseIt(t *testing.T) {
-	sc := newReuseSnapshotConsumer(freshFrameDecoder{})
-	for range 3 {
-		sc.decode([]byte{1})
-	}
-	if sc.spare != nil {
-		t.Fatal("the previous picture is retained although the decoder never reuses it")
-	}
-	if sc.LastFrame() == nil {
 		t.Fatal("no frame from a decoder that returns its own pictures")
 	}
 }

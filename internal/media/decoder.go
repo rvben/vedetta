@@ -22,6 +22,31 @@ type reusingFrameDecoder interface {
 	DecodeInto(nalData []byte, dst *image.YCbCr) *image.YCbCr
 }
 
+// keyframeDecoder is a FrameDecoder that returns the picture of a random-access
+// unit from the call that submits it, whatever it was fed before.
+type keyframeDecoder interface {
+	DecodeKeyframeInto(unit []byte, dst *image.YCbCr) *image.YCbCr
+}
+
+// decodeKeyframe decodes one random-access unit for a caller that is finished
+// with dst, and returns the picture of that unit or nil.
+//
+// A decoder without DecodeKeyframeInto either returns the picture from the call
+// that submits the unit or buffers the unit and returns nothing. In the second
+// case it is drained, which releases the picture and ends the decoder's
+// stream: spent reports that it accepts no further input and must be replaced.
+// A caller that replaces every spent decoder never meets one holding a picture
+// of an earlier unit.
+func decodeKeyframe(dec FrameDecoder, unit []byte, dst *image.YCbCr) (picture *image.YCbCr, spent bool) {
+	if k, ok := dec.(keyframeDecoder); ok {
+		return k.DecodeKeyframeInto(unit, dst), false
+	}
+	if picture = decodeReusing(dec, unit, dst); picture != nil {
+		return picture, false
+	}
+	return dec.Flush(), true
+}
+
 // decodeReusing decodes nalData for a caller that is finished with dst, the
 // picture it got from the previous call. A decoder that supports it overwrites
 // dst in place; any other decoder returns a picture of its own. The result is

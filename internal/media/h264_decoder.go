@@ -384,8 +384,58 @@ func copyFromCPlane(dst []byte, src uintptr, n int) {
 	copy(dst, unsafe.Slice((*byte)(unsafe.Pointer(src)), n)) //nolint:govet // unsafeptr: address held as uintptr; the slice is transient and consumed by memmove
 }
 
+// DecodeKeyframeInto decodes one random-access unit and returns the picture of
+// that unit, or nil when the unit does not decode. The picture is written into
+// dst as DecodeInto does; dst is scratch space and may be overwritten even
+// when the result is nil.
+//
+// The decoder holds a picture back until it knows nothing precedes it in
+// output order, so the call that submits a unit returns the picture of the
+// unit before it. Fed every frame of a stream that is a lag of one frame; fed
+// only the keyframes someone asked for, it is the picture of whenever the
+// previous request was. Draining the decoder after the unit releases the
+// unit's own picture, and draining it before the unit discards whatever
+// earlier input left behind, which would otherwise pass for the picture of a
+// unit the decoder rejected.
+func (d *H264Decoder) DecodeKeyframeInto(unit []byte, dst *image.YCbCr) *image.YCbCr {
+	if held := d.drainInto(dst); held != nil {
+		dst = held
+	}
+	picture := d.DecodeInto(unit, dst)
+	if picture != nil {
+		dst = picture
+	}
+	if held := d.drainInto(dst); held != nil {
+		picture = held
+	}
+	return picture
+}
+
+// drainInto flushes every picture the decoder holds and returns the last one,
+// or nil when it held none.
+func (d *H264Decoder) drainInto(dst *image.YCbCr) *image.YCbCr {
+	var last *image.YCbCr
+	for range maxHeldPictures {
+		held := d.flushInto(dst)
+		if held == nil {
+			break
+		}
+		last, dst = held, held
+	}
+	return last
+}
+
+// maxHeldPictures is the most pictures an H.264 decoder may hold for
+// reordering (the largest decoded picture buffer the standard allows).
+const maxHeldPictures = 16
+
 // Flush retrieves any buffered frame from the decoder without feeding new data.
 func (d *H264Decoder) Flush() *image.YCbCr {
+	return d.flushInto(nil)
+}
+
+// flushInto is Flush writing into dst as DecodeInto does.
+func (d *H264Decoder) flushInto(dst *image.YCbCr) *image.YCbCr {
 	if d == nil || d.decoder == nil {
 		return nil
 	}
@@ -403,7 +453,7 @@ func (d *H264Decoder) Flush() *image.YCbCr {
 		return nil
 	}
 
-	return frameFromRawDecoded(&output, nil)
+	return frameFromRawDecoded(&output, dst)
 }
 
 // Close releases the decoder resources.

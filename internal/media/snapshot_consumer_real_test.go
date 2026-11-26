@@ -91,8 +91,7 @@ func TestSnapshotConsumerShowsTheKeyframeItDecoded(t *testing.T) {
 	deliver := func(i int) {
 		sc.mu.Lock()
 		defer sc.mu.Unlock()
-		sc.seq++
-		sc.older, sc.unit = sc.unit, keyUnit{data: units[i], at: time.Now(), seq: sc.seq}
+		sc.older, sc.unit = sc.unit, keyUnit{data: units[i], at: time.Now()}
 	}
 	last := len(units) - 1
 	for _, i := range []int{0, last, 1, last - 1, last - 1, 2} {
@@ -172,9 +171,9 @@ func TestDecodeKeyframeIntoSkipsAHeldPicture(t *testing.T) {
 // openGOPAccessUnits returns the access units of an open-GOP stream: one IDR
 // keyframe, then keyframes that are recovery points ahead of a non-IDR slice.
 // Every access unit starts with an access unit delimiter.
-func openGOPAccessUnits(t *testing.T) [][][]byte {
+func openGOPAccessUnits(t *testing.T, fixture string) [][][]byte {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("testdata", "open_gop.h264"))
+	raw, err := os.ReadFile(filepath.Join("testdata", fixture))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -189,112 +188,138 @@ func openGOPAccessUnits(t *testing.T) [][][]byte {
 }
 
 // A camera with an open GOP sends one IDR and then keyframes that are recovery
-// points. OpenH264 decodes such a keyframe only after every keyframe since the
-// IDR, so the consumer decodes them in order, whether or not the IDR was read.
-func TestSnapshotConsumerShowsARecoveryPointKeyframe(t *testing.T) {
+// points. Whichever of them are read, each read shows the picture of the latest
+// keyframe, the same one a decoder given the whole stream produces. With
+// B-frames the stream has pictures between the keyframes that a keyframe-only
+// decoder never sees, in decoding order as well as in numbering.
+func TestSnapshotConsumerShowsEveryOpenGOPKeyframe(t *testing.T) {
 	if !ensureOpenH264() {
 		t.Skip("OpenH264 not available")
 	}
-	units := openGOPAccessUnits(t)
+	fixtures := []struct {
+		name string
+		// gop is the distance between keyframes and keyframes how many there are.
+		gop, keyframes int
+	}{
+		{"open_gop.h264", 10, 3},
+		{"open_gop_bframes.h264", 20, 4},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			units := openGOPAccessUnits(t, fixture.name)
 
-	// The keyframes, each as the camera sent it, and what each shows: a
-	// decoder given every keyframe up to it.
-	var keyframes [][]byte
-	for _, unit := range units {
-		var annexB []byte
-		key := false
-		for _, nalu := range unit {
-			key = key || h264.NALUType(nalu[0]&0x1f) == h264.NALUTypeSPS
-			annexB = append(append(annexB, 0, 0, 0, 1), nalu...)
-		}
-		if key {
-			keyframes = append(keyframes, annexB)
-		}
-	}
-	if len(keyframes) != 3 {
-		t.Fatalf("fixture has %d keyframes, want 3", len(keyframes))
-	}
-	reference := NewH264Decoder()
-	defer reference.Close()
-	shows := make([][]byte, len(keyframes))
-	for i, keyframe := range keyframes {
-		picture := reference.DecodeKeyframeInto(keyframe, nil)
-		if picture == nil {
-			t.Fatalf("keyframe %d does not decode after the ones before it", i)
-		}
-		shows[i] = ycbcrToRGBA(picture).Pix
-	}
-	if bytes.Equal(shows[0], shows[1]) || bytes.Equal(shows[1], shows[2]) || bytes.Equal(shows[0], shows[2]) {
-		t.Fatal("fixture keyframes show the same picture, so they cannot be told apart")
-	}
-
-	// The fixture has what the test is about: its last keyframe decodes
-	// neither on its own nor straight after the IDR.
-	for _, before := range [][]byte{nil, keyframes[0]} {
-		dec := NewH264Decoder()
-		if before != nil && dec.DecodeKeyframeInto(before, nil) == nil {
-			t.Fatal("the IDR keyframe does not decode")
-		}
-		picture := dec.DecodeKeyframeInto(keyframes[2], nil)
-		dec.Close()
-		if picture != nil {
-			t.Fatal("the last keyframe decodes without the one before it, so the fixture proves nothing")
-		}
-	}
-
-	// readAfter lists the keyframes after which the frame is read.
-	run := func(name string, readAfter ...int) {
-		h264Format := &format.H264{PayloadTyp: 96, PacketizationMode: 1}
-		rtpDec, err := h264Format.CreateDecoder()
-		if err != nil {
-			t.Fatalf("CreateDecoder: %v", err)
-		}
-		sc := &SnapshotConsumer{
-			camera:      "test",
-			frameDec:    NewH264Decoder(),
-			newDecoder:  func() FrameDecoder { return NewH264Decoder() },
-			h264Decoder: rtsp.NewH264AccessUnitDecoder(rtpDec),
-		}
-		defer sc.Close()
-		packetizer := rtph264.Encoder{PayloadType: 96, PacketizationMode: 1}
-		if err := packetizer.Init(); err != nil {
-			t.Fatal(err)
-		}
-		keyframe := -1
-		for i, unit := range units {
-			packets, err := packetizer.Encode(unit)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, p := range packets {
-				p.Timestamp = uint32(i * 9000)
-				sc.OnVideoRTP(p)
-			}
-			sc.mu.Lock()
-			arrived := int(sc.seq) - 1
-			sc.mu.Unlock()
-			if arrived == keyframe {
-				continue
-			}
-			keyframe = arrived
-			for _, at := range readAfter {
-				if at != keyframe {
-					continue
+			// Every picture of the stream, in display order.
+			var stream [][]byte
+			full := NewH264Decoder()
+			var keyframes [][]byte
+			for _, unit := range units {
+				var annexB []byte
+				key := false
+				for _, nalu := range unit {
+					key = key || h264.NALUType(nalu[0]&0x1f) == h264.NALUTypeSPS
+					annexB = append(append(annexB, 0, 0, 0, 1), nalu...)
 				}
-				frame := sc.LastFrame()
-				if frame == nil {
-					t.Fatalf("%s: no frame after keyframe %d", name, keyframe)
+				if key {
+					keyframes = append(keyframes, annexB)
 				}
-				if !bytes.Equal(frame.Pix, shows[keyframe]) {
-					t.Fatalf("%s: the frame read after keyframe %d shows another picture", name, keyframe)
+				if picture := full.Decode(annexB); picture != nil {
+					stream = append(stream, ycbcrToRGBA(picture).Pix)
 				}
 			}
-		}
-		if keyframe != len(keyframes)-1 {
-			t.Fatalf("%s: the consumer saw %d keyframes, want %d", name, keyframe+1, len(keyframes))
-		}
+			for picture := full.Flush(); picture != nil; picture = full.Flush() {
+				stream = append(stream, ycbcrToRGBA(picture).Pix)
+			}
+			full.Close()
+			if len(keyframes) != fixture.keyframes || len(stream) != len(units) {
+				t.Fatalf("%d keyframes and %d pictures from %d units, want %d keyframes and every picture", len(keyframes), len(stream), len(units), fixture.keyframes)
+			}
+			shows := func(keyframe int) []byte { return stream[keyframe*fixture.gop] }
+			for i := 1; i < fixture.keyframes; i++ {
+				if bytes.Equal(shows(i-1), shows(i)) {
+					t.Fatal("fixture keyframes show the same picture, so they cannot be told apart")
+				}
+			}
+
+			// The fixture has what the test is about: as the camera sent it, its
+			// last keyframe decodes neither on its own nor straight after the IDR.
+			for _, before := range [][]byte{nil, keyframes[0]} {
+				dec := NewH264Decoder()
+				if before != nil && dec.DecodeKeyframeInto(before, nil) == nil {
+					t.Fatal("the IDR keyframe does not decode")
+				}
+				picture := dec.DecodeKeyframeInto(keyframes[len(keyframes)-1], nil)
+				dec.Close()
+				if picture != nil {
+					t.Fatal("the last keyframe decodes without the ones before it, so the fixture proves nothing")
+				}
+			}
+
+			// readAfter lists the keyframes after which the frame is read.
+			run := func(name string, readAfter ...int) {
+				h264Format := &format.H264{PayloadTyp: 96, PacketizationMode: 1}
+				rtpDec, err := h264Format.CreateDecoder()
+				if err != nil {
+					t.Fatalf("CreateDecoder: %v", err)
+				}
+				sc := &SnapshotConsumer{
+					camera:      "test",
+					frameDec:    NewH264Decoder(),
+					newDecoder:  func() FrameDecoder { return NewH264Decoder() },
+					h264Decoder: rtsp.NewH264AccessUnitDecoder(rtpDec),
+				}
+				defer sc.Close()
+				packetizer := rtph264.Encoder{PayloadType: 96, PacketizationMode: 1}
+				if err := packetizer.Init(); err != nil {
+					t.Fatal(err)
+				}
+				keyframe := -1
+				var lastAt time.Time
+				for i, unit := range units {
+					packets, err := packetizer.Encode(unit)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, p := range packets {
+						p.Timestamp = uint32(i * 9000)
+						sc.OnVideoRTP(p)
+					}
+					sc.mu.Lock()
+					arrivedAt := sc.unit.at
+					sc.mu.Unlock()
+					if arrivedAt.IsZero() || arrivedAt.Equal(lastAt) {
+						continue
+					}
+					lastAt = arrivedAt
+					keyframe++
+					for _, at := range readAfter {
+						if at != keyframe {
+							continue
+						}
+						frame, frameAt := sc.LastFrameAt()
+						if frame == nil || !frameAt.Equal(arrivedAt) {
+							t.Fatalf("%s: frame=%v at %v after keyframe %d, which arrived at %v", name, frame != nil, frameAt, keyframe, arrivedAt)
+						}
+						if !bytes.Equal(frame.Pix, shows(keyframe)) {
+							at := -1
+							for n, picture := range stream {
+								if bytes.Equal(frame.Pix, picture) {
+									at = n
+								}
+							}
+							t.Fatalf("%s: the frame read after keyframe %d is picture %d of the stream, want %d", name, keyframe, at, keyframe*fixture.gop)
+						}
+					}
+				}
+				if keyframe != len(keyframes)-1 {
+					t.Fatalf("%s: the consumer saw %d keyframes, want %d", name, keyframe+1, len(keyframes))
+				}
+			}
+			last := fixture.keyframes - 1
+			run("every keyframe read", 0, 1, 2, 3)
+			run("only the last read", last)
+			run("IDR read, then a gap", 0, last)
+			run("IDR unread", 1, last)
+			run("the recovery points one by one", 1, 2)
+		})
 	}
-	run("every keyframe read", 0, 1, 2)
-	run("IDR unread", 2)
-	run("IDR read, then a gap", 0, 2)
 }

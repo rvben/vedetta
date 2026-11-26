@@ -78,17 +78,10 @@ func (f *snapshotFeed) keyframe(tag byte) {
 }
 
 // recoveryPoint delivers a unit that is random access through a recovery
-// point SEI with recovery_frame_cnt 0 ahead of a non-IDR slice ending in tag.
+// point SEI with recovery_frame_cnt 0 ahead of a non-IDR I slice ending in tag.
 func (f *snapshotFeed) recoveryPoint(tag byte) {
 	f.packet(24, 0, 5, 0x06, 0x06, 0x01, 0x84, 0x80, 0, 4, 0x41, 0x88, 0x84, tag)
 	f.packet(0x41, 0x9a, 0x00, 0x00)
-}
-
-func recoveryPointUnit(tag byte) []byte {
-	return []byte{
-		0, 0, 0, 1, 0x67, 0x42, 0, 30, 0x80, 0, 0, 0, 1, 0x68, 0xce,
-		0, 0, 0, 1, 0x06, 0x06, 0x01, 0x84, 0x80, 0, 0, 0, 1, 0x41, 0x88, 0x84, tag,
-	}
 }
 
 func keyframeUnit(tag byte) []byte {
@@ -552,8 +545,7 @@ func TestSnapshotConsumerCarriesTheParameterSetsTheKeyframeRefersTo(t *testing.T
 	}
 }
 
-// The sets a unit needs are those of its first slice, wherever the unit is
-// random access from: an IDR slice or a recovery point ahead of an ordinary one.
+// The sets a unit needs are those of its first slice.
 func TestSnapshotConsumerReadsTheFirstSliceOfTheKeyframe(t *testing.T) {
 	dec := &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}}
 	feed := newSnapshotFeed(t, dec)
@@ -564,21 +556,9 @@ func TestSnapshotConsumerReadsTheFirstSliceOfTheKeyframe(t *testing.T) {
 	feed.packet(24, 0, 4, 0x65, 0x88, 0x84, 1, 0, 4, 0x65, 0x88, 0x40, 1)
 	feed.packet(0x41, 0x9a, 0x00, 0x00)
 	feed.sc.LastFrame()
-	feed.recoveryPoint(2)
-	feed.sc.LastFrame()
 
-	want := [][]byte{
-		bytes.Join([][]byte{sps0, pps0, {0, 0, 0, 1, 0x65, 0x88, 0x84, 1, 0, 0, 0, 1, 0x65, 0x88, 0x40, 1}}, nil),
-		recoveryPointUnit(2),
-	}
-	if len(dec.units) != len(want) {
-		t.Fatalf("decoded units = %x, want %x", dec.units, want)
-	}
-	for i := range want {
-		if !bytes.Equal(dec.units[i], want[i]) {
-			t.Fatalf("unit %d = %x, want %x", i, dec.units[i], want[i])
-		}
-	}
+	wantUnits(t, "the decoder", dec.units,
+		bytes.Join([][]byte{sps0, pps0, {0, 0, 0, 1, 0x65, 0x88, 0x84, 1, 0, 0, 0, 1, 0x65, 0x88, 0x40, 1}}, nil))
 }
 
 // A decoder needs the SPS ahead of the PPS that refers to it, whatever order
@@ -597,183 +577,302 @@ func TestSnapshotConsumerPutsTheSPSAheadOfItsPPS(t *testing.T) {
 	}
 }
 
-// A decoder accepts a recovery-point keyframe only straight after the keyframe
-// before it. The IDR may have gone by unread, so it heads the run, and every
-// keyframe after it is decoded in arrival order.
-func TestSnapshotConsumerDecodesRecoveryPointsInOrderFromTheirIDR(t *testing.T) {
-	dec := &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}}
-	feed := newSnapshotFeed(t, dec)
+// openGOPSPS is SPS 0 of a real stream, with a frame_num of 4 bits. The feeds
+// of the recovery-point tests use it: a recovery-point unit is renumbered, and
+// that takes an SPS that can be read in full.
+var openGOPSPS = []byte{
+	0x67, 0x4d, 0x40, 0x0a, 0xec, 0xa1, 0x42, 0x3f, 0x2e, 0x02, 0x20, 0x00, 0x00,
+	0x03, 0x00, 0x20, 0x00, 0x00, 0x03, 0x02, 0x81, 0xe2, 0x44, 0xb2, 0xc0,
+}
 
-	feed.keyframe(1)
-	feed.recoveryPoint(2)
-	feed.recoveryPoint(3)
-	frame, at := feed.sc.LastFrameAt()
-	if frame == nil {
-		t.Fatal("no frame, want the picture of the newest recovery point")
+// newOpenGOPFeed is a feed whose track has openGOPSPS as SPS 0, and a consumer
+// that takes its new decoders from the returned list, in order.
+func newOpenGOPFeed(t *testing.T, decoders ...*unitDecoder) (*snapshotFeed, *int) {
+	t.Helper()
+	feed := newSnapshotFeed(t, decoders[0])
+	if id, ok := feed.sc.rememberParameterSet(openGOPSPS); !ok || id != 0 {
+		t.Fatalf("SPS: id=%d ok=%v, want id 0", id, ok)
 	}
-	want := [][]byte{keyframeUnit(1), recoveryPointUnit(2), recoveryPointUnit(3)}
-	if len(dec.units) != 3 || !bytes.Equal(dec.units[0], want[0]) || !bytes.Equal(dec.units[1], want[1]) || !bytes.Equal(dec.units[2], want[2]) {
-		t.Fatalf("decoded units = %x, want %x", dec.units, want)
+	built := new(int)
+	feed.sc.newDecoder = func() FrameDecoder {
+		*built++
+		if *built >= len(decoders) {
+			return nil
+		}
+		return decoders[*built]
 	}
+	return feed, built
+}
 
-	// An IDR that was read is not decoded again for the keyframe after it.
-	feed.keyframe(4)
-	_, idrAt := feed.sc.LastFrameAt()
-	feed.recoveryPoint(5)
-	_, rpAt := feed.sc.LastFrameAt()
-	if len(dec.units) != 5 || !bytes.Equal(dec.units[3], keyframeUnit(4)) || !bytes.Equal(dec.units[4], recoveryPointUnit(5)) {
-		t.Fatalf("decoded units = %x, want the IDR and its recovery point once each", dec.units[3:])
+func newUnitDecoders(n int) []*unitDecoder {
+	decoders := make([]*unitDecoder, n)
+	for i := range decoders {
+		decoders[i] = &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}}
 	}
-	if !at.Before(idrAt) || !idrAt.Before(rpAt) {
-		t.Fatalf("frame times %v, %v, %v do not follow the keyframes", at, idrAt, rpAt)
+	return decoders
+}
+
+// openGOPUnit is a unit of a newOpenGOPFeed as the consumer stores it.
+func openGOPUnit(nalus ...[]byte) []byte {
+	var unit []byte
+	for _, nalu := range append([][]byte{openGOPSPS, {0x68, 0xce}}, nalus...) {
+		unit = append(append(unit, 0, 0, 0, 1), nalu...)
+	}
+	return unit
+}
+
+func openGOPKeyframe(tag byte) []byte { return openGOPUnit([]byte{0x65, 0x88, 0x84, tag}) }
+
+// openGOPRecoveryPoint is the unit of recoveryPoint(tag) with its frame_num,
+// the four bits after the PPS ID, set to 1: 0x84 becomes 0x8c.
+func openGOPRecoveryPoint(tag byte) []byte {
+	return openGOPUnit([]byte{0x06, 0x06, 0x01, 0x84, 0x80}, []byte{0x41, 0x88, 0x8c, tag})
+}
+
+func wantUnits(t *testing.T, name string, got [][]byte, want ...[]byte) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s decoded %d units, want %d: %x", name, len(got), len(want), got)
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("%s unit %d = %x, want %x", name, i, got[i], want[i])
+		}
 	}
 }
 
-// Nothing has to ask for a recovery-point keyframe: one that is skipped leaves
-// the decoder unable to take the next.
-func TestSnapshotConsumerDecodesARecoveryPointUnasked(t *testing.T) {
-	dec := &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}}
-	feed := newSnapshotFeed(t, dec)
+// A decoder takes a recovery-point keyframe only as the picture after an IDR
+// picture. So it is decoded by a decoder that has seen nothing else: the latest
+// IDR unit first, then the keyframe, renumbered to follow it. That decoder is
+// not used again.
+func TestSnapshotConsumerDecodesARecoveryPointAfterItsIDR(t *testing.T) {
+	decoders := newUnitDecoders(6)
+	feed, built := newOpenGOPFeed(t, decoders...)
+	sc := feed.sc
 
 	feed.keyframe(1)
+	_, idrAt := sc.LastFrameAt()
+	wantUnits(t, "the first decoder", decoders[0].units, openGOPKeyframe(1))
+
+	// The first decoder has decoded a unit, so the recovery point gets a new one.
+	before := time.Now()
 	feed.recoveryPoint(2)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		feed.sc.decodeMu.Lock()
-		decoded := len(dec.units)
-		feed.sc.decodeMu.Unlock()
-		if decoded == 2 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d units decoded without a read, want the IDR and the recovery point", decoded)
-		}
-		time.Sleep(time.Millisecond)
+	after := time.Now()
+	frame, at := sc.LastFrameAt()
+	if frame == nil || at.Before(before) || at.After(after) || !at.After(idrAt) {
+		t.Fatalf("frame=%v at %v, want the recovery point that arrived in %v..%v", frame, at, before, after)
 	}
-}
+	wantUnits(t, "the first decoder", decoders[0].units, openGOPKeyframe(1))
+	wantUnits(t, "the second decoder", decoders[1].units, openGOPKeyframe(1), openGOPRecoveryPoint(2))
+	if decoders[0].closes != 1 || decoders[1].closes != 1 || *built != 2 {
+		t.Fatalf("closes %d and %d, %d decoders built, want both decoders retired and a third in place", decoders[0].closes, decoders[1].closes, *built)
+	}
+	if frame.Pix[0] != 20 {
+		t.Fatalf("pixel %d, want the second picture of the decoder (20), not the IDR picture", frame.Pix[0])
+	}
 
-// A replaced decoder has decoded nothing, so the recovery points after a
-// damaged keyframe are left alone until the next IDR.
-func TestSnapshotConsumerWaitsForAnIDRAfterADamagedKeyframe(t *testing.T) {
-	first := &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}, damaged: recoveryPointUnit(3)}
-	second := &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}}
-	feed := newSnapshotFeed(t, first)
-	built := 0
-	feed.sc.newDecoder = func() FrameDecoder { built++; return second }
-
-	feed.keyframe(1)
-	feed.recoveryPoint(2)
+	// A recovery point nobody read is not needed for the one after it, and a
+	// decoder that has decoded nothing is used as it is.
 	feed.recoveryPoint(3)
-	frame, at := feed.sc.LastFrameAt()
-	if frame == nil || len(first.units) != 3 || built != 1 {
-		t.Fatalf("frame=%v decodes=%d rebuilt=%d, want the frame before the damaged keyframe and one new decoder", frame, len(first.units), built)
-	}
 	feed.recoveryPoint(4)
-	feed.recoveryPoint(5)
-	if _, again := feed.sc.LastFrameAt(); !again.Equal(at) || len(second.units) != 0 || built != 1 {
-		t.Fatalf("decodes=%d rebuilt=%d, want the recovery points left alone", len(second.units), built)
+	sc.LastFrame()
+	wantUnits(t, "the third decoder", decoders[2].units, openGOPKeyframe(1), openGOPRecoveryPoint(4))
+	if *built != 3 {
+		t.Fatalf("%d decoders built, want 3", *built)
 	}
+
+	// A new IDR is decoded on its own and becomes what later recovery points
+	// follow, read or not.
+	feed.keyframe(5)
+	sc.LastFrame()
 	feed.keyframe(6)
 	feed.recoveryPoint(7)
-	feed.sc.LastFrame()
-	want := [][]byte{keyframeUnit(6), recoveryPointUnit(7)}
-	if len(second.units) != 2 || !bytes.Equal(second.units[0], want[0]) || !bytes.Equal(second.units[1], want[1]) {
-		t.Fatalf("the new decoder decoded %x, want %x", second.units, want)
+	sc.LastFrame()
+	wantUnits(t, "the fourth decoder", decoders[3].units, openGOPKeyframe(5))
+	wantUnits(t, "the fifth decoder", decoders[4].units, openGOPKeyframe(6), openGOPRecoveryPoint(7))
+	if decoders[3].closes != 1 || *built != 5 {
+		t.Fatalf("closes %d, %d decoders built, want the used decoder replaced for the recovery point", decoders[3].closes, *built)
 	}
 }
 
-// A recovery point follows on from the keyframe before it, not from whichever
-// keyframe the decoder happened to decode last.
-func TestSnapshotConsumerLeavesARecoveryPointAfterASkippedKeyframe(t *testing.T) {
-	dec := &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}}
-	feed := newSnapshotFeed(t, dec)
+// When the newest recovery point is damaged, the unread keyframe before it is
+// decoded the same way, by another new decoder.
+func TestSnapshotConsumerFallsBackToThePreviousRecoveryPoint(t *testing.T) {
+	decoders := newUnitDecoders(4)
+	decoders[0].damaged = openGOPRecoveryPoint(3)
+	feed, built := newOpenGOPFeed(t, decoders...)
 
 	feed.keyframe(1)
-	feed.sc.LastFrame()
-	// A recovery point whose slice names PPS 1, which nobody sent, is not kept.
-	feed.packet(24, 0, 5, 0x06, 0x06, 0x01, 0x84, 0x80, 0, 4, 0x41, 0x88, 0x40, 2)
-	feed.packet(0x41, 0x9a, 0x00, 0x00)
+	before := time.Now()
+	feed.recoveryPoint(2)
+	after := time.Now()
 	feed.recoveryPoint(3)
-	feed.sc.LastFrame()
-	if len(dec.units) != 1 {
-		t.Fatalf("decoded units = %x, want the IDR alone", dec.units)
+	frame, at := feed.sc.LastFrameAt()
+	if frame == nil || at.Before(before) || at.After(after) {
+		t.Fatalf("frame=%v at %v, want the recovery point that arrived in %v..%v", frame, at, before, after)
+	}
+	wantUnits(t, "the first decoder", decoders[0].units, openGOPKeyframe(1), openGOPRecoveryPoint(3))
+	wantUnits(t, "the second decoder", decoders[1].units, openGOPKeyframe(1), openGOPRecoveryPoint(2))
+	if *built != 2 {
+		t.Fatalf("%d decoders built, want one after the failure and one after the recovery point", *built)
 	}
 }
 
-// A decoder that had to be drained for its picture is replaced, and the new
-// one has not decoded the keyframe a recovery point follows on from.
+// When no unread recovery point decodes, the IDR unit they follow is itself a
+// keyframe nobody has seen: it becomes the frame, under its own arrival time.
+// Once it is the frame it is not decoded a third time.
+func TestSnapshotConsumerFallsBackToTheIDRBehindFailedRecoveryPoints(t *testing.T) {
+	decoders := newUnitDecoders(6)
+	decoders[0].damaged = openGOPRecoveryPoint(3)
+	decoders[1].damaged = openGOPRecoveryPoint(2)
+	decoders[3].damaged = openGOPRecoveryPoint(4)
+	feed, built := newOpenGOPFeed(t, decoders...)
+
+	before := time.Now()
+	feed.keyframe(1)
+	after := time.Now()
+	feed.recoveryPoint(2)
+	feed.recoveryPoint(3)
+	frame, at := feed.sc.LastFrameAt()
+	if frame == nil || at.Before(before) || at.After(after) {
+		t.Fatalf("frame=%v at %v, want the IDR picture that arrived in %v..%v", frame, at, before, after)
+	}
+	wantUnits(t, "the first decoder", decoders[0].units, openGOPKeyframe(1), openGOPRecoveryPoint(3))
+	wantUnits(t, "the second decoder", decoders[1].units, openGOPKeyframe(1), openGOPRecoveryPoint(2))
+	wantUnits(t, "the third decoder", decoders[2].units, openGOPKeyframe(1))
+
+	feed.recoveryPoint(4)
+	if got, gotAt := feed.sc.LastFrameAt(); got != frame || !gotAt.Equal(at) {
+		t.Fatal("the frame changed although the recovery point did not decode")
+	}
+	wantUnits(t, "the fourth decoder", decoders[3].units, openGOPKeyframe(1), openGOPRecoveryPoint(4))
+	if *built != 4 || len(decoders[4].units) != 0 {
+		t.Fatalf("%d decoders built and %d units on the last, want the IDR unit left alone once it is the frame", *built, len(decoders[4].units))
+	}
+}
+
+// A recovery point follows the IDR unit, so without a picture from that unit
+// it is not decoded.
+func TestSnapshotConsumerLeavesARecoveryPointWhoseIDRDoesNotDecode(t *testing.T) {
+	decoders := newUnitDecoders(4)
+	for _, dec := range decoders {
+		dec.damaged = openGOPKeyframe(1)
+	}
+	feed, _ := newOpenGOPFeed(t, decoders...)
+
+	feed.keyframe(1)
+	feed.recoveryPoint(2)
+	if frame := feed.sc.LastFrame(); frame != nil {
+		t.Fatal("a frame came from a recovery point whose IDR did not decode")
+	}
+	wantUnits(t, "the first decoder", decoders[0].units, openGOPKeyframe(1))
+	wantUnits(t, "the second decoder", decoders[1].units, openGOPKeyframe(1))
+	wantUnits(t, "the third decoder", decoders[2].units, openGOPKeyframe(1))
+}
+
+// A decoder that releases the IDR picture only when drained takes no more
+// input, so it cannot decode the recovery point after it. The IDR, still
+// unread, is the frame.
 func TestSnapshotConsumerLeavesARecoveryPointAfterADrainedDecoder(t *testing.T) {
-	first, second := &bufferingDecoder{grey: 10}, &bufferingDecoder{grey: 20}
-	feed := newSnapshotFeed(t, first)
-	feed.sc.newDecoder = func() FrameDecoder { return second }
+	decoders := []*bufferingDecoder{{grey: 10}, {grey: 20}, {grey: 30}}
+	feed := newSnapshotFeed(t, decoders[0])
+	feed.sc.rememberParameterSet(openGOPSPS)
+	built := 0
+	feed.sc.newDecoder = func() FrameDecoder { built++; return decoders[built] }
 
 	feed.keyframe(1)
 	feed.recoveryPoint(2)
-	if frame := feed.sc.LastFrame(); frame == nil || frame.RGBAAt(0, 0).R != 10 {
-		t.Fatalf("frame = %v, want the picture of the IDR", frame)
+	if frame := feed.sc.LastFrame(); frame == nil || frame.RGBAAt(0, 0).R != 20 {
+		t.Fatalf("frame = %v, want the IDR picture from the second decoder", frame)
 	}
-	if second.fed != 0 {
-		t.Fatalf("the new decoder was fed %d units, want the recovery point left alone", second.fed)
-	}
-}
-
-// A read decodes the keyframes in arrival order: the ones waiting to be
-// decoded in sequence are older than the unread IDR.
-func TestSnapshotConsumerReadsTheWaitingKeyframesAheadOfTheNewestIDR(t *testing.T) {
-	dec := &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}}
-	feed := newSnapshotFeed(t, dec)
-	// Only the read decodes here.
-	feed.sc.draining = true
-
-	feed.keyframe(1)
-	feed.recoveryPoint(2)
-	feed.keyframe(3)
-	feed.sc.LastFrame()
-	want := [][]byte{keyframeUnit(1), recoveryPointUnit(2), keyframeUnit(3)}
-	if len(dec.units) != 3 || !bytes.Equal(dec.units[0], want[0]) || !bytes.Equal(dec.units[1], want[1]) || !bytes.Equal(dec.units[2], want[2]) {
-		t.Fatalf("decoded units = %x, want %x", dec.units, want)
-	}
-}
-
-// Keyframes that wait for a stalled decoder are bounded. Dropping them breaks
-// the run, so the ones after them wait for the next IDR.
-func TestSnapshotConsumerBoundsTheKeyframesWaitingToBeDecoded(t *testing.T) {
-	dec := &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}}
-	feed := newSnapshotFeed(t, dec)
-
-	feed.sc.decodeMu.Lock()
-	feed.keyframe(1)
-	for tag := byte(2); tag < 2+maxChainedUnits; tag++ {
-		feed.recoveryPoint(tag)
-		feed.sc.mu.Lock()
-		waiting := len(feed.sc.chain)
-		feed.sc.mu.Unlock()
-		if waiting > maxChainedUnits {
-			t.Fatalf("%d keyframes waiting, want at most %d", waiting, maxChainedUnits)
+	for i, dec := range decoders {
+		if dec.fedAfterDrain != 0 || dec.fed > 1 {
+			t.Fatalf("decoder %d was fed %d units and %d after its drain, want one unit at most", i, dec.fed, dec.fedAfterDrain)
 		}
 	}
-	feed.sc.decodeMu.Unlock()
-	if frame := feed.sc.LastFrame(); frame != nil || len(dec.units) != 0 {
-		t.Fatalf("frame=%v decodes=%d, want nothing decoded from a broken run", frame, len(dec.units))
-	}
-	feed.keyframe(20)
-	feed.recoveryPoint(21)
-	if frame := feed.sc.LastFrame(); frame == nil || len(dec.units) != 2 {
-		t.Fatalf("frame=%v decodes=%d, want the next IDR and its recovery point", frame, len(dec.units))
-	}
 }
 
-// Without an IDR picture nothing can decode a recovery point: the unit is left
-// alone and the decoder is not replaced over it.
-func TestSnapshotConsumerLeavesARecoveryPointWithoutAnIDR(t *testing.T) {
+// A decoder that has decoded anything cannot take a recovery point, so without
+// a way to build another one the unit is left alone.
+func TestSnapshotConsumerLeavesARecoveryPointWithoutANewDecoder(t *testing.T) {
+	decoders := newUnitDecoders(1)
+	feed, _ := newOpenGOPFeed(t, decoders...)
+	feed.sc.newDecoder = nil
+
+	feed.keyframe(1)
+	frame, at := feed.sc.LastFrameAt()
+	if frame == nil {
+		t.Fatal("the IDR unit did not decode")
+	}
+	feed.recoveryPoint(2)
+	if got, gotAt := feed.sc.LastFrameAt(); got != frame || !gotAt.Equal(at) {
+		t.Fatal("a recovery point was decoded on a decoder that had decoded another unit")
+	}
+	wantUnits(t, "the only decoder", decoders[0].units, openGOPKeyframe(1))
+}
+
+// A recovery point is only kept when something can decode it: after an IDR
+// unit, and with nothing but I slices. A recovery point on a picture with
+// inter slices promises a correct picture only to a decoder that had the
+// pictures before it.
+func TestSnapshotConsumerKeepsOnlyIntraRecoveryPointsAfterAnIDR(t *testing.T) {
+	decoders := newUnitDecoders(2)
+	feed, built := newOpenGOPFeed(t, decoders...)
+	sei := []byte{24, 0, 5, 0x06, 0x06, 0x01, 0x84, 0x80}
+
+	feed.recoveryPoint(1)
+	if frame := feed.sc.LastFrame(); frame != nil || len(decoders[0].units) != 0 || *built != 0 {
+		t.Fatalf("frame=%v decodes=%d rebuilt=%d for a recovery point without an IDR, want nothing done", frame, len(decoders[0].units), *built)
+	}
+
+	feed.keyframe(2)
+	frame := feed.sc.LastFrame()
+	// A P slice (slice_type 5), then an I slice followed by a P slice, then a
+	// P slice followed by an I slice.
+	feed.packet(append(sei, 0, 4, 0x41, 0x9a, 0x84, 3)...)
+	feed.packet(0x41, 0x9a, 0x00, 0x00)
+	feed.packet(append(sei, 0, 4, 0x41, 0x88, 0x84, 4, 0, 4, 0x41, 0x9a, 0x84, 4)...)
+	feed.packet(0x41, 0x9a, 0x00, 0x00)
+	feed.packet(append(sei, 0, 4, 0x41, 0x9a, 0x84, 4, 0, 4, 0x41, 0x88, 0x84, 4)...)
+	feed.packet(0x41, 0x9a, 0x00, 0x00)
+	if got := feed.sc.LastFrame(); got != frame || *built != 0 {
+		t.Fatalf("a recovery point with inter slices was decoded (%d decoders built)", *built)
+	}
+	wantUnits(t, "the decoder", decoders[0].units, openGOPKeyframe(2))
+
+	// Two I slices: both are renumbered.
+	feed.packet(append(sei, 0, 4, 0x41, 0x88, 0x84, 5, 0, 4, 0x41, 0x88, 0x84, 6)...)
+	feed.packet(0x41, 0x9a, 0x00, 0x00)
+	if got := feed.sc.LastFrame(); got == frame {
+		t.Fatal("an intra recovery point after an IDR was not decoded")
+	}
+	wantUnits(t, "the second decoder", decoders[1].units, openGOPKeyframe(2), openGOPUnit(
+		[]byte{0x06, 0x06, 0x01, 0x84, 0x80}, []byte{0x41, 0x88, 0x8c, 5}, []byte{0x41, 0x88, 0x8c, 6}))
+}
+
+// A recovery point that cannot be renumbered, or that has no new decoder to go
+// to, costs nothing: the decoder in place is kept and the frame stays.
+func TestSnapshotConsumerLeavesARecoveryPointItCannotDecode(t *testing.T) {
+	// The SPS of this feed is cut off, so the width of frame_num is unknown.
 	dec := &unitDecoder{paintingDecoder: paintingDecoder{w: 4, h: 4}}
 	feed := newSnapshotFeed(t, dec)
 	built := 0
 	feed.sc.newDecoder = func() FrameDecoder { built++; return dec }
+	feed.keyframe(1)
+	frame := feed.sc.LastFrame()
+	feed.recoveryPoint(2)
+	if got := feed.sc.LastFrame(); got != frame || built != 0 || len(dec.units) != 1 || dec.closes != 0 {
+		t.Fatalf("decodes=%d rebuilt=%d closes=%d, want the unit left alone", len(dec.units), built, dec.closes)
+	}
 
-	feed.recoveryPoint(1)
-	if frame := feed.sc.LastFrame(); frame != nil || len(dec.units) != 0 || built != 0 {
-		t.Fatalf("frame=%v decodes=%d rebuilt=%d, want nothing done", frame, len(dec.units), built)
+	// No new decoder can be built: the used one is not given the unit.
+	decoders := newUnitDecoders(1)
+	open, _ := newOpenGOPFeed(t, decoders...)
+	open.keyframe(1)
+	frame = open.sc.LastFrame()
+	open.recoveryPoint(2)
+	if got := open.sc.LastFrame(); got != frame || len(decoders[0].units) != 1 {
+		t.Fatalf("%d units decoded, want the recovery point kept from a decoder that decoded another unit", len(decoders[0].units))
 	}
 }
 
@@ -892,7 +991,7 @@ func TestSnapshotConsumerCloseDropsUnreadKeyframes(t *testing.T) {
 	feed.sc.Close()
 	feed.sc.mu.Lock()
 	defer feed.sc.mu.Unlock()
-	if feed.sc.unit.data != nil || feed.sc.older.data != nil || feed.sc.chain != nil {
+	if feed.sc.unit.data != nil || feed.sc.older.data != nil {
 		t.Fatal("a closed consumer kept unread keyframes")
 	}
 }

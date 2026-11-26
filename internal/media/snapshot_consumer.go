@@ -22,48 +22,46 @@ import (
 // keyframe nobody asks for costs one copy of its bytes. The price is paid by
 // the first reader of each keyframe, which waits for one decode.
 //
-// That holds for a unit with an IDR picture, which decodes on its own. A unit
-// that is random access through a recovery point decodes only on a decoder
-// that has decoded every random-access unit since the last IDR, in order, so
-// those are decoded as they arrive, on a goroutine of their own.
+// A unit with an IDR picture decodes on its own. A unit that is random access
+// through a recovery point (an intra picture in an open GOP) does not: a
+// decoder wants an IDR picture first and then refuses a picture whose
+// frame_num does not follow on. So such a unit is kept together with the
+// latest IDR unit and decoded on a new decoder, straight after that IDR unit
+// and renumbered to follow it. An intra picture refers to no other picture,
+// so what comes out is the picture the camera sent.
 type SnapshotConsumer struct {
 	camera string
 
-	// h264Decoder, seq, sps and pps belong to the RTP fan-out goroutine.
+	// h264Decoder, sps, pps and anchor belong to the RTP fan-out goroutine.
 	h264Decoder *rtsp.H264AccessUnitDecoder
 	// sps and pps hold the latest parameter set seen for each ID. A slice may
 	// refer to a set that arrived with a keyframe nobody decoded.
 	sps [maxSPSID + 1][]byte
 	pps [maxPPSID + 1][]byte
-	// seq numbers the random-access units in arrival order, from 1, the ones
-	// that are not kept included.
-	seq uint64
+	// anchor is the latest unit with an IDR picture, kept for the
+	// recovery-point units that follow it, and anchorAt when it arrived.
+	anchor   []byte
+	anchorAt time.Time
 
 	// mu guards the undecoded units. The RTP fan-out goroutine takes it for
 	// every keyframe, so nothing slow ever runs under it.
 	mu sync.Mutex
-	// unit is the latest unit with an IDR picture, empty once a reader took it.
+	// unit is the latest random-access unit, empty once a reader took it.
 	unit keyUnit
 	// older is the unread unit that unit replaced, decoded when unit turns
 	// out to be damaged.
 	older keyUnit
-	// chain holds the units to decode in arrival order: recovery-point units,
-	// each run headed by the IDR unit before it when nobody had read that.
-	// Every unit in it is older than unit.
-	chain []keyUnit
-	// draining says a goroutine is on its way to decode chain.
-	draining bool
 
 	// decodeMu serialises readers: the decoder and everything below belong to
 	// whoever holds it.
 	decodeMu sync.Mutex
 	frameDec FrameDecoder
-	// newDecoder builds the replacement for a decoder that failed on a unit.
+	// newDecoder builds the replacement for a decoder that failed on a unit or
+	// was drained, and the decoder each recovery-point unit is decoded on.
 	newDecoder func() FrameDecoder
-	// decodedSeq is the number of the unit frameDec decoded last, 0 when it
-	// has decoded none.
-	decodedSeq uint64
-	closed     bool
+	// used says frameDec has been given a unit.
+	used   bool
+	closed bool
 	// picture is the buffer a reusing decoder decodes into. It is converted
 	// before decodeMu is released, so no reader ever sees it half written.
 	picture *image.YCbCr
@@ -132,50 +130,47 @@ func (sc *SnapshotConsumer) LastFrame() *image.RGBA {
 // LastFrameAt returns the latest full-resolution frame with the time its
 // keyframe arrived. The first call after a new keyframe decodes it; later calls
 // share the result. When that unit does not decode, the unread one before it
-// is tried, and failing that the previous frame stays in place.
+// is tried, then the IDR unit either of them follows when it is newer than the
+// frame, and failing that the previous frame stays in place.
 func (sc *SnapshotConsumer) LastFrameAt() (*image.RGBA, time.Time) {
 	sc.decodeMu.Lock()
 	defer sc.decodeMu.Unlock()
 
 	sc.mu.Lock()
-	chain, unit, older := sc.chain, sc.unit, sc.older
-	sc.chain, sc.unit, sc.older = nil, keyUnit{}, keyUnit{}
+	unit, older := sc.unit, sc.older
+	sc.unit, sc.older = keyUnit{}, keyUnit{}
 	sc.mu.Unlock()
 
-	for _, u := range chain {
-		sc.decodeLocked(u)
-	}
-	if !sc.decodeLocked(unit) {
-		sc.decodeLocked(older)
+	if !sc.decodeLocked(unit) && !sc.decodeLocked(older) {
+		for _, u := range []keyUnit{unit, older} {
+			if u.after != nil && u.afterAt.After(sc.lastTime) && sc.decodeLocked(keyUnit{data: u.after, at: u.afterAt}) {
+				break
+			}
+		}
 	}
 	return sc.lastFrame, sc.lastTime
 }
 
-// drainChain decodes the units that have to be decoded in arrival order.
-func (sc *SnapshotConsumer) drainChain() {
-	sc.decodeMu.Lock()
-	defer sc.decodeMu.Unlock()
-
-	sc.mu.Lock()
-	chain := sc.chain
-	sc.chain, sc.draining = nil, false
-	sc.mu.Unlock()
-
-	for _, u := range chain {
-		sc.decodeLocked(u)
-	}
-}
-
-// decodeLocked makes u the latest frame and reports whether it decoded. A unit
-// that follows on from the one before it is left alone unless the decoder
-// decoded that one last. A decoder that failed or had to be drained is
-// replaced. The caller holds decodeMu.
+// decodeLocked makes u the latest frame and reports whether it decoded. A
+// decoder that failed or had to be drained is replaced. The caller holds
+// decodeMu.
 func (sc *SnapshotConsumer) decodeLocked(u keyUnit) bool {
 	if u.data == nil || sc.closed {
 		return false
 	}
-	if u.followsOn && (sc.decodedSeq == 0 || sc.decodedSeq != u.seq-1) {
-		return false
+	data := u.data
+	if u.after != nil {
+		// The decoder must have seen nothing but the IDR unit and this one.
+		var ok bool
+		if data, ok = withFrameNum(u.data, 1); !ok {
+			return false
+		}
+		if sc.used {
+			if sc.newDecoder == nil {
+				return false
+			}
+			sc.replaceDecoderLocked()
+		}
 	}
 	if sc.frameDec == nil {
 		// The last replacement could not be built: try again for this unit.
@@ -186,36 +181,57 @@ func (sc *SnapshotConsumer) decodeLocked(u keyUnit) bool {
 			return false
 		}
 	}
-	picture, spent := decodeKeyframe(sc.frameDec, u.data, sc.picture)
+	if u.after != nil {
+		if picture, spent := sc.decodeUnitLocked(u.after); picture == nil || spent {
+			// A decoder that was drained for the IDR picture takes no more
+			// input, so the unit that follows it cannot be decoded.
+			sc.replaceDecoderLocked()
+			return false
+		}
+	}
+	picture, spent := sc.decodeUnitLocked(data)
 	if picture == nil {
 		sc.replaceDecoderLocked()
 		return false
 	}
-	if _, reuses := sc.frameDec.(reusingFrameDecoder); reuses {
-		sc.picture = picture
-	}
 	sc.lastFrame = ycbcrToRGBA(picture)
 	sc.lastTime = u.at
-	sc.decodedSeq = u.seq
-	if spent {
+	if spent || u.after != nil {
+		// After a renumbered unit the decoder's idea of the stream is not the
+		// camera's, and it can refuse the IDR unit that comes next.
 		sc.replaceDecoderLocked()
 	}
 	return true
 }
 
-// replaceDecoderLocked swaps in a new decoder after a unit failed to decode or
-// the decoder had to be drained for its picture. A decoder that rejected a
-// damaged unit can reject the intact one that follows, and a drained one
-// accepts no more input. The new decoder has decoded nothing, so the units
-// that follow on from an earlier one wait for the next IDR. The caller holds
-// decodeMu.
+// decodeUnitLocked decodes one unit into the reusable picture buffer. The
+// caller holds decodeMu.
+func (sc *SnapshotConsumer) decodeUnitLocked(unit []byte) (picture *image.YCbCr, spent bool) {
+	sc.used = true
+	picture, spent = decodeKeyframe(sc.frameDec, unit, sc.picture)
+	if picture != nil {
+		if _, reuses := sc.frameDec.(reusingFrameDecoder); reuses {
+			sc.picture = picture
+		}
+	}
+	return picture, spent
+}
+
+// replaceDecoderLocked swaps in a new decoder after a unit failed to decode,
+// the decoder had to be drained for its picture, or it decoded a renumbered
+// unit. A decoder that rejected a damaged unit can reject the intact one that
+// follows, and a drained one accepts no more input. When no decoder can be
+// built the consumer is left without one and the next read tries again. The
+// caller holds decodeMu.
 func (sc *SnapshotConsumer) replaceDecoderLocked() {
 	if sc.newDecoder == nil {
 		return
 	}
-	sc.frameDec.Close()
+	if sc.frameDec != nil {
+		sc.frameDec.Close()
+	}
 	sc.frameDec = sc.newDecoder()
-	sc.decodedSeq = 0
+	sc.used = false
 }
 
 // Close releases decoder resources, waiting for a decode in progress. The last
@@ -230,7 +246,7 @@ func (sc *SnapshotConsumer) Close() {
 		}
 		// Nothing can decode the pending units any more.
 		sc.mu.Lock()
-		sc.chain, sc.unit, sc.older = nil, keyUnit{}, keyUnit{}
+		sc.unit, sc.older = keyUnit{}, keyUnit{}
 		sc.mu.Unlock()
 	})
 }
@@ -249,11 +265,10 @@ func (sc *SnapshotConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	if !h264.IsRandomAccess(au) {
 		return
 	}
-	sc.seq++
 
 	// Learn the parameter sets this unit brings, and find its first slice.
 	var slice []byte
-	hasIDR := false
+	hasIDR, intra := false, true
 	size := 0
 	for _, nalu := range au {
 		if len(nalu) == 0 {
@@ -273,6 +288,7 @@ func (sc *SnapshotConsumer) OnVideoRTP(pkt *rtp.Packet) {
 			if slice == nil {
 				slice = nalu
 			}
+			intra = intra && isIntraSlice(nalu)
 		}
 		size += 4 + len(nalu)
 	}
@@ -282,6 +298,14 @@ func (sc *SnapshotConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	// a decoder needs them. No other set goes in: a decoder that holds a single
 	// pair takes the last one it is given. A unit whose sets are unknown cannot
 	// be decoded and is not kept.
+	//
+	// A recovery point without an IDR picture is kept when the picture is
+	// intra coded and an IDR unit came before it. A recovery point on a
+	// picture with inter slices (gradual refresh) only promises a correct
+	// picture some frames later, to a decoder that decodes all of them.
+	if !hasIDR && (!intra || sc.anchor == nil) {
+		return
+	}
 	ppsID, ok := sliceParameterSetID(slice)
 	if !ok || sc.pps[ppsID] == nil {
 		return
@@ -311,47 +335,33 @@ func (sc *SnapshotConsumer) OnVideoRTP(pkt *rtp.Packet) {
 		}
 	}
 
-	now := time.Now()
-	sc.mu.Lock()
-	arrived := keyUnit{data: unit, at: now, seq: sc.seq, followsOn: !hasIDR}
+	arrived := keyUnit{data: unit, at: time.Now()}
 	if hasIDR {
-		sc.older, sc.unit = sc.unit, arrived
-		sc.mu.Unlock()
-		return
+		sc.anchor, sc.anchorAt = unit, arrived.at
+	} else {
+		arrived.after, arrived.afterAt = sc.anchor, sc.anchorAt
 	}
-	// An unread unit here is the IDR this one follows on from.
-	if sc.unit.data != nil {
-		sc.chain = append(sc.chain, sc.unit)
-	}
-	sc.unit, sc.older = keyUnit{}, keyUnit{}
-	if len(sc.chain) >= maxChainedUnits {
-		// The decoder is not keeping up. Without these units the ones after
-		// them cannot be decoded either, until the next IDR.
-		sc.chain = nil
-	}
-	sc.chain = append(sc.chain, arrived)
-	drain := !sc.draining
-	if drain {
-		sc.draining = true
-	}
+	sc.mu.Lock()
+	sc.older, sc.unit = sc.unit, arrived
 	sc.mu.Unlock()
-	if drain {
-		go sc.drainChain()
-	}
+}
+
+// isIntraSlice reports whether a slice NAL unit is an I slice.
+func isIntraSlice(slice []byte) bool {
+	ids, ok := readGolombs(slice, 0, 2)
+	return ok && ids[1]%5 == 2
 }
 
 // keyUnit is a random-access unit as an Annex B stream.
 type keyUnit struct {
 	data []byte
 	at   time.Time
-	seq  uint64
-	// followsOn says the unit is random access through a recovery point and
-	// decodes only after the unit before it.
-	followsOn bool
+	// after is the IDR unit to decode first, for a unit that is random access
+	// through a recovery point, and afterAt when that unit arrived. It is nil
+	// for a unit with an IDR picture.
+	after   []byte
+	afterAt time.Time
 }
-
-// maxChainedUnits bounds the units waiting to be decoded in order.
-const maxChainedUnits = 8
 
 // The largest seq_parameter_set_id and pic_parameter_set_id H.264 allows.
 const (

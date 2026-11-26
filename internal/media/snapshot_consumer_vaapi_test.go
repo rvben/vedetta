@@ -59,8 +59,7 @@ func TestSnapshotConsumerShowsTheKeyframeItDecodedOnVAAPI(t *testing.T) {
 	deliver := func(i int) {
 		sc.mu.Lock()
 		defer sc.mu.Unlock()
-		sc.seq++
-		sc.older, sc.unit = sc.unit, keyUnit{data: units[i], at: time.Now(), seq: sc.seq}
+		sc.older, sc.unit = sc.unit, keyUnit{data: units[i], at: time.Now()}
 	}
 	last := len(units) - 1
 	for _, i := range []int{0, last, 1, last - 1, last - 1, 2} {

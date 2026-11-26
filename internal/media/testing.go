@@ -18,5 +18,5 @@ func NewTestSnapshotConsumer(frame *image.RGBA) *SnapshotConsumer {
 // hands it to dec, so a test can observe when, and on which goroutine, the
 // decode happens.
 func NewTestSnapshotConsumerWithKeyframe(dec FrameDecoder) *SnapshotConsumer {
-	return &SnapshotConsumer{frameDec: dec, unit: keyUnit{data: []byte{0, 0, 0, 1, 0x65}, at: time.Now(), seq: 1}, seq: 1}
+	return &SnapshotConsumer{frameDec: dec, unit: keyUnit{data: []byte{0, 0, 0, 1, 0x65}, at: time.Now()}}
 }

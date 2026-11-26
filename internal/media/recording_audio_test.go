@@ -564,3 +564,340 @@ func TestG711RecordingRealVideoAndRecompression(t *testing.T) {
 		t.Fatalf("recompressed AV decode: %v %s", err, out)
 	}
 }
+
+// audioRuns returns the recorded audio as contiguous runs: each run is its
+// start time and length in samples, and a new run starts wherever a fragment's
+// base time is not the end of the audio before it.
+func audioRuns(t *testing.T, path string) (runs [][2]uint64, fragments int) {
+	t.Helper()
+	_, parts := recordingParts(t, path)
+	for _, part := range parts {
+		for _, tr := range part.Tracks {
+			if tr.ID != 2 {
+				continue
+			}
+			fragments++
+			if len(runs) == 0 || tr.BaseTime != runs[len(runs)-1][0]+runs[len(runs)-1][1] {
+				runs = append(runs, [2]uint64{tr.BaseTime, 0})
+			}
+			for _, s := range tr.Samples {
+				runs[len(runs)-1][1] += uint64(s.Duration)
+			}
+		}
+	}
+	return runs, fragments
+}
+
+// recordG711Steps records one PCMA packet of 256 samples per timestamp step,
+// with contiguous sequence numbers unless a step is in lost, and reports how
+// many AAC encoders the recording used. A before hook runs ahead of each packet.
+func recordG711Steps(t *testing.T, steps []int, lost map[int]bool, before ...func(i int, sw *SegmentWriter)) (path string, encoders int) {
+	t.Helper()
+	probe, err := aac.New(48000, 1)
+	if err != nil {
+		if os.Getenv("VEDETTA_REQUIRE_AAC") == "1" {
+			t.Fatal(err)
+		}
+		t.Skip(err)
+	}
+	probe.Close()
+	original := newRecordingAACEncoder
+	newRecordingAACEncoder = func(rate, channels int) (aac.RecordingEncoder, error) {
+		encoders++
+		return original(rate, channels)
+	}
+	defer func() { newRecordingAACEncoder = original }()
+	path = filepath.Join(t.TempDir(), "steps.mp4")
+	sw, err := NewSegmentWriter(path, reliabilityVideoTrack(), &rtsp.TrackInfo{Codec: "PCMA", ClockRate: 8000, ChannelCount: 1, PayloadType: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sw.WriteVideo(h264TestPacket(1, 0, 0x65)); err != nil {
+		t.Fatal(err)
+	}
+	if err := sw.WriteVideo(h264TestPacket(2, 3000, 0x41)); err != nil {
+		t.Fatal(err)
+	}
+	// Start just below the wrap of both RTP counters.
+	sequence, timestamp := uint16(65500), uint32(0xffffc000)
+	for i, step := range steps {
+		if i > 0 {
+			sequence++
+			if lost[i] {
+				sequence++
+			}
+			timestamp += uint32(int32(step))
+		}
+		for _, hook := range before {
+			hook(i, sw)
+		}
+		p := &rtp.Packet{Header: rtp.Header{PayloadType: 8, SSRC: 1, SequenceNumber: sequence, Timestamp: timestamp}, Payload: bytes.Repeat([]byte{0xd5}, 256)}
+		if err := sw.WriteAudio(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := sw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sw.AudioError(); err != nil {
+		t.Fatal(err)
+	}
+	return path, encoders
+}
+
+// A camera that stamps audio from a wall clock sends every packet in order
+// with a timestamp step that jitters around the packet length. No audio is
+// missing, so the recording is one continuous run from one encoder.
+func TestG711RecordingToleratesTimestampJitter(t *testing.T) {
+	// Steps measured on a camera whose packets carry 256 samples; they sum to
+	// 256 per packet, and the timestamps run up to 926 samples ahead on the way.
+	pattern := []int{202, 251, 251, 238, 257, 262, 275, 227, 346, 190, 276, 226, 246, 270, 238, 353, 158, 271, 244, 269, 502, 506, 506, 506, 6, 6, 6, 256, 170, 166}
+	sum := 0
+	for _, step := range pattern {
+		sum += step
+	}
+	if sum != len(pattern)*256 {
+		t.Fatalf("pattern drifts: %d over %d packets", sum, len(pattern))
+	}
+	steps := []int{0}
+	for range 20 {
+		steps = append(steps, pattern...)
+	}
+	path, encoders := recordG711Steps(t, steps, nil)
+	runs, fragments := audioRuns(t, path)
+	if len(runs) != 1 || runs[0][1] != uint64(len(steps))*256*6 {
+		t.Fatalf("jittery timestamps split the audio: runs=%v", runs)
+	}
+	if encoders != 1 || fragments > 2 {
+		t.Fatalf("jitter restarted the recording: encoders=%d fragments=%d", encoders, fragments)
+	}
+}
+
+// When the timestamps run ahead of the samples and stay ahead, the camera
+// stopped sending audio for that long. The recording keeps the silence as a gap
+// of the same length.
+func TestG711RecordingKeepsTimestampGap(t *testing.T) {
+	steps := []int{0}
+	for i := 1; i < 60; i++ {
+		step := 256
+		if i == 30 {
+			step = 256 + 8000
+		}
+		steps = append(steps, step)
+	}
+	path, encoders := recordG711Steps(t, steps, nil)
+	runs, _ := audioRuns(t, path)
+	if len(runs) != 2 || encoders != 2 {
+		t.Fatalf("runs=%v encoders=%d", runs, encoders)
+	}
+	if runs[0][1] != 30*256*6 || runs[1][1] != 30*256*6 {
+		t.Fatalf("samples moved across the gap: %v", runs)
+	}
+	if gap := runs[1][0] - runs[0][0] - runs[0][1]; gap != 8000*6 {
+		t.Fatalf("gap=%d", gap)
+	}
+}
+
+// A gap that builds up over several packets is as real as one in a single step.
+// The part of it that arrives after the restart and stays under the lead
+// tolerance cannot be told from jitter, so the recorded gap may fall short of
+// the true one by at most that tolerance and never exceeds it.
+func TestG711RecordingKeepsGradualTimestampGap(t *testing.T) {
+	steps := []int{0}
+	for i := 1; i < 60; i++ {
+		step := 256
+		if i >= 30 && i < 40 {
+			step = 256 + 800
+		}
+		steps = append(steps, step)
+	}
+	path, _ := recordG711Steps(t, steps, nil)
+	runs, _ := audioRuns(t, path)
+	var samples, gaps uint64
+	for i, run := range runs {
+		samples += run[1]
+		if i > 0 {
+			gaps += run[0] - runs[i-1][0] - runs[i-1][1]
+		}
+	}
+	if samples != 60*256*6 || gaps > 8000*6 || gaps < (8000-4000)*6 {
+		t.Fatalf("samples=%d gaps=%d runs=%v", samples, gaps, runs)
+	}
+	if len(runs) < 2 || len(runs) > 3 {
+		t.Fatalf("an 8000-sample gap made %d runs", len(runs))
+	}
+}
+
+// The tolerance is exact: timestamps 500 ms ahead of the samples are jitter,
+// one tick more is missing audio.
+func TestG711RecordingLeadBoundary(t *testing.T) {
+	for _, lead := range []int{4000, 4001} {
+		steps := []int{0}
+		for i := 1; i < 60; i++ {
+			step := 256
+			if i >= 20 && i < 30 {
+				step += 400
+			}
+			if i == 30 {
+				step += lead - 4000
+			}
+			steps = append(steps, step)
+		}
+		path, encoders := recordG711Steps(t, steps, nil)
+		runs, _ := audioRuns(t, path)
+		if lead == 4000 {
+			if len(runs) != 1 || encoders != 1 {
+				t.Fatalf("lead %d: runs=%v encoders=%d", lead, runs, encoders)
+			}
+			continue
+		}
+		if len(runs) != 2 || encoders != 2 {
+			t.Fatalf("lead %d: runs=%v encoders=%d", lead, runs, encoders)
+		}
+		if gap := runs[1][0] - runs[0][0] - runs[0][1]; gap != 4001*6 {
+			t.Fatalf("lead %d: gap=%d", lead, gap)
+		}
+	}
+}
+
+// Timestamps that fall behind the samples over many packets and then catch up
+// never ran ahead of them, so no audio is missing.
+func TestG711RecordingTimestampLagAndCatchUp(t *testing.T) {
+	steps := []int{0}
+	for range 40 {
+		steps = append(steps, 128)
+	}
+	for range 40 {
+		steps = append(steps, 384)
+	}
+	path, encoders := recordG711Steps(t, steps, nil)
+	runs, _ := audioRuns(t, path)
+	if len(runs) != 1 || encoders != 1 || runs[0][1] != 81*256*6 {
+		t.Fatalf("runs=%v encoders=%d", runs, encoders)
+	}
+}
+
+// A timestamp step of more than ten seconds is a clock reset, not silence: the
+// audio continues at the video position instead of after a gap that long. That
+// holds too when earlier lag would bring the accumulated lead under the
+// tolerance.
+func TestG711RecordingClockResetFollowsVideo(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		lag, step      int
+		minGap, maxGap uint64
+	}{
+		{"ten seconds is still a gap", 0, 80000, (80000 - 256) * 6, (80000 - 256) * 6},
+		{"beyond ten seconds", 0, 80001, 91200, 100800},
+		{"beyond ten seconds after lag", 3000, 80001, 91200, 100800},
+	} {
+		steps := []int{0}
+		for i := 1; i < 60; i++ {
+			step := 256
+			if i < 30 {
+				step -= tc.lag
+			}
+			if i == 30 {
+				step = tc.step
+			}
+			steps = append(steps, step)
+		}
+		// Video reaches three seconds while the audio before the reset ends
+		// just under one second.
+		path, _ := recordG711Steps(t, steps, nil, func(i int, sw *SegmentWriter) {
+			if i != 30 {
+				return
+			}
+			for n := 2; n <= 91; n++ {
+				if err := sw.WriteVideo(h264TestPacket(uint16(n+1), uint32(n*3000), 0x41)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+		runs, _ := audioRuns(t, path)
+		if len(runs) != 2 {
+			t.Fatalf("%s: runs=%v", tc.name, runs)
+		}
+		if gap := runs[1][0] - runs[0][0] - runs[0][1]; gap < tc.minGap || gap > tc.maxGap {
+			t.Fatalf("%s: gap=%d, runs=%v", tc.name, gap, runs)
+		}
+	}
+}
+
+// A lost packet leaves a gap of its own length even when the surrounding
+// timestamps jitter.
+func TestG711RecordingLossAmongJitter(t *testing.T) {
+	steps := []int{0}
+	for i := 1; i < 60; i++ {
+		step := 256 + 40*(i%2*2-1)
+		if i == 30 {
+			step += 256
+		}
+		steps = append(steps, step)
+	}
+	path, encoders := recordG711Steps(t, steps, map[int]bool{30: true})
+	runs, _ := audioRuns(t, path)
+	if len(runs) != 2 || encoders != 2 {
+		t.Fatalf("runs=%v encoders=%d", runs, encoders)
+	}
+	gap := runs[1][0] - runs[0][0] - runs[0][1]
+	if gap < (256-80)*6 || gap > (256+80)*6 {
+		t.Fatalf("gap=%d for a lost packet of 256 samples", gap)
+	}
+}
+
+// The gap a lost packet leaves comes from its own timestamp step. Timestamps
+// that ran ahead of or behind the samples earlier in the run are jitter and
+// neither widen nor erase it.
+func TestG711RecordingLossAfterLeadOrLag(t *testing.T) {
+	for _, drift := range []int{200, -200} {
+		steps := []int{0}
+		for i := 1; i < 60; i++ {
+			step := 256
+			if i >= 10 && i < 20 {
+				step += drift
+			}
+			if i == 30 {
+				step = 2 * 256
+			}
+			steps = append(steps, step)
+		}
+		path, encoders := recordG711Steps(t, steps, map[int]bool{30: true})
+		runs, _ := audioRuns(t, path)
+		if len(runs) != 2 || encoders != 2 {
+			t.Fatalf("drift %d: runs=%v encoders=%d", drift, runs, encoders)
+		}
+		if gap := runs[1][0] - runs[0][0] - runs[0][1]; gap != 256*6 {
+			t.Fatalf("drift %d: gap=%d", drift, gap)
+		}
+	}
+}
+
+// A camera clock that steps back while every packet arrives in order has lost
+// no audio: the run continues and later jitter is measured from the new clock.
+func TestG711RecordingTimestampStepBack(t *testing.T) {
+	steps := []int{0}
+	for i := 1; i < 60; i++ {
+		step := 256
+		if i == 30 {
+			step = -80000
+		}
+		steps = append(steps, step)
+	}
+	path, encoders := recordG711Steps(t, steps, nil)
+	runs, _ := audioRuns(t, path)
+	if len(runs) != 1 || encoders != 1 || runs[0][1] != 60*256*6 {
+		t.Fatalf("runs=%v encoders=%d", runs, encoders)
+	}
+
+	// A gap after the step back is measured against the new clock.
+	steps[45] = 256 + 8000
+	path, encoders = recordG711Steps(t, steps, nil)
+	runs, _ = audioRuns(t, path)
+	if len(runs) != 2 || encoders != 2 {
+		t.Fatalf("gap after a step back: runs=%v encoders=%d", runs, encoders)
+	}
+	if gap := runs[1][0] - runs[0][0] - runs[0][1]; gap != 8000*6 {
+		t.Fatalf("gap after a step back=%d", gap)
+	}
+}

@@ -14,10 +14,19 @@ import (
 
 const recordingAudioRate = 48000
 
+// recordingAudioMaxLeadMs is how far the RTP timestamps of in-order packets may
+// run ahead of the samples received before the difference counts as missing
+// audio. Cameras that stamp audio from a wall clock jitter around the sample
+// count by more than 100 ms without losing a sample, and restarting the encoder
+// for that splits the recording into one fragment per packet.
+const recordingAudioMaxLeadMs = 500
+
 var newRecordingAACEncoder = aac.New
 
 // Each contiguous RTP run has its own encoder. A loss never joins unrelated
 // waveform edges or compresses missing audio out of the recording timeline.
+// Packets that arrive in order belong to one run until their timestamps show
+// that audio is missing.
 type timedAudio struct {
 	packet   *rtp.Packet
 	received time.Time
@@ -31,7 +40,10 @@ type recordingAudio struct {
 	skip           int
 	input, written uint64
 	base           uint64
-	previous       *rtp.Packet
+	// lead is how far, in RTP clock units, the timestamps of the current run
+	// have advanced beyond the samples it received.
+	lead     int64
+	previous *rtp.Packet
 }
 
 func newRecordingAudio(track *rtsp.TrackInfo) (*recordingAudio, error) {
@@ -55,6 +67,7 @@ func (r *recordingAudio) restart(base uint64) error {
 	r.skip = enc.Delay() / 1024
 	r.input = 0
 	r.written = 0
+	r.lead = 0
 	r.base = base
 	return nil
 }
@@ -149,11 +162,28 @@ func (sw *SegmentWriter) writeG711Audio(pkt *rtp.Packet) error {
 		if pkt.SSRC == r.previous.SSRC && seq <= 0 && seq >= -64 {
 			return nil
 		}
-		delta := int32(pkt.Timestamp - r.previous.Timestamp)
-		if pkt.SSRC != r.previous.SSRC || seq != 1 || delta != int32(len(r.previous.Payload)) {
+		step := int64(int32(pkt.Timestamp - r.previous.Timestamp))
+		sameSource := pkt.SSRC == r.previous.SSRC
+		inOrder := sameSource && seq == 1
+		maxLead := int64(r.track.ClockRate) * recordingAudioMaxLeadMs / 1000
+		clockReset := step > int64(r.track.ClockRate*10)
+		// gap is the audio missing before this packet. After a loss it is what
+		// the timestamp step leaves beyond the previous packet's samples.
+		gap := step - int64(len(r.previous.Payload))
+		if inOrder {
+			// Nothing was lost, so the samples are continuous whatever each
+			// timestamp says: only the lead accumulated over the run can show
+			// missing audio. A clock that steps back starts a new measurement.
+			r.lead += gap
+			if step < -maxLead {
+				r.lead = 0
+			}
+			gap = r.lead
+		}
+		if !inOrder || gap > maxLead || clockReset {
 			next := r.base + r.input
-			if pkt.SSRC == r.previous.SSRC && delta >= int32(len(r.previous.Payload)) && delta <= int32(r.track.ClockRate*10) {
-				next = r.base + r.input + uint64(delta-int32(len(r.previous.Payload)))*uint64(r.factor)
+			if sameSource && gap >= 0 && !clockReset {
+				next += uint64(gap) * uint64(r.factor)
 			} else {
 				video := sw.videoDTS * recordingAudioRate / uint64(sw.videoTimeScale)
 				if video > next {

@@ -1,6 +1,8 @@
 package detect
 
 import (
+	"math"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -247,5 +249,166 @@ func BenchmarkMotionDetector_Detect(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		md.Detect(frame, w, h)
+	}
+}
+
+// noisyRGB returns frames of a mid-grey scene with a few levels of sensor
+// noise, the input a camera gives while nothing moves.
+func noisyRGB(w, h, frames int) [][]byte {
+	rng := rand.New(rand.NewPCG(1, 2))
+	out := make([][]byte, frames)
+	for f := range out {
+		frame := make([]byte, w*h*3)
+		for i := range frame {
+			frame[i] = uint8(118 + rng.IntN(5))
+		}
+		out[f] = frame
+	}
+	return out
+}
+
+func BenchmarkMotionDetector_QuietScene(b *testing.B) {
+	w, h := 640, 480
+	md := NewMotionDetector(25, 200, 0.05)
+	frames := noisyRGB(w, h, 8)
+	md.Detect(frames[0], w, h)
+
+	b.ReportAllocs()
+	for i := 0; b.Loop(); i++ {
+		md.Detect(frames[i%len(frames)], w, h)
+	}
+}
+
+// TestMotionDetectorBackgroundFollowsTheBlend checks the fixed-point background
+// against the blend it stands for, computed in float64: after every frame each
+// pixel of the model is within a small fraction of a grey level of
+// bg*(1-alpha) + frame*alpha, and a pixel is foreground exactly when it differs
+// from the model by more than the threshold, except where that difference is
+// too close to the threshold for the two computations to agree.
+func TestMotionDetectorBackgroundFollowsTheBlend(t *testing.T) {
+	const (
+		w, h      = 96, 64
+		threshold = 25
+		tolerance = 0.05
+	)
+	for _, alpha := range []float64{0.01, 0.05, 0.5, 1} {
+		md := NewMotionDetector(threshold, 10, alpha)
+		rng := rand.New(rand.NewPCG(7, uint64(alpha*1000)))
+		var want []float64
+		foreground := 0
+		for f := range 120 {
+			// A noisy scene that brightens slowly, crossed by a bright block.
+			frame := make([]byte, w*h*3)
+			for i := range frame {
+				frame[i] = uint8(60 + f/2 + rng.IntN(7))
+			}
+			if f > 0 {
+				x := (f * 3) % (w - 20)
+				drawRect(frame, w, x, 20, x+20, 40, uint8(100+f), uint8(100+f), uint8(100+f))
+			}
+			md.Detect(frame, w, h)
+
+			if want == nil {
+				want = make([]float64, w*h)
+				for i, v := range md.gray {
+					want[i] = float64(v)
+				}
+				continue
+			}
+			for i, v := range md.blurred {
+				diff := math.Abs(float64(v) - want[i])
+				if math.Abs(diff-threshold) > tolerance {
+					if fg := diff > threshold; fg != (md.binary[i] == 1) {
+						t.Fatalf("alpha %v frame %d pixel %d: foreground is %v, want %v (difference %.3f)", alpha, f, i, md.binary[i] == 1, fg, diff)
+					}
+				}
+				foreground += int(md.binary[i])
+				want[i] = want[i]*(1-alpha) + float64(v)*alpha
+				got := float64(md.bg[i]) / (1 << bgFracBits)
+				if math.Abs(got-want[i]) > tolerance {
+					t.Fatalf("alpha %v frame %d pixel %d: background is %.4f, want %.4f", alpha, f, i, got, want[i])
+				}
+			}
+		}
+		if foreground == 0 {
+			t.Fatalf("alpha %v: the sequence produced no foreground, so the comparison proved nothing", alpha)
+		}
+	}
+}
+
+func TestNewMotionDetectorKeepsTheBlendingFactorInRange(t *testing.T) {
+	for alpha, want := range map[float64]int64{-1: 0, 0: 0, 0.5: 1 << (bgFracBits - 1), 1: 1 << bgFracBits, 3: 1 << bgFracBits} {
+		if got := NewMotionDetector(25, 10, alpha).bgAlpha; got != want {
+			t.Errorf("blending factor %v is stored as %d, want %d", alpha, got, want)
+		}
+	}
+	if got := NewMotionDetector(25, 10, math.NaN()).bgAlpha; got != 0 {
+		t.Errorf("a blending factor that is not a number is stored as %d, want 0", got)
+	}
+	if got, want := NewMotionDetector(25, 10, math.Inf(1)).bgAlpha, int64(1<<bgFracBits); got != want {
+		t.Errorf("an infinite blending factor is stored as %d, want %d", got, want)
+	}
+}
+
+// A scene that changes and then holds has to become the background exactly.
+// A background that stops a fraction short leaves a pixel at the threshold on
+// the wrong side of it for as long as the scene holds.
+func TestMotionDetectorBackgroundSettlesOnALevelThatHolds(t *testing.T) {
+	const (
+		w, h      = 32, 32
+		threshold = 25
+	)
+	gray := func(level uint8) []byte { return makeRGB(w, h, level, level, level) }
+	for _, tc := range []struct {
+		name                       string
+		from, to                   uint8
+		atThreshold, pastThreshold uint8
+	}{
+		{"brighter", 100, 119, 119 + threshold, 119 + threshold + 1},
+		{"darker", 119, 100, 100 - threshold, 100 - threshold - 1},
+	} {
+		settled := func() *MotionDetector {
+			md := NewMotionDetector(threshold, 10, 0.05)
+			md.Detect(gray(tc.from), w, h)
+			for range 600 {
+				md.Detect(gray(tc.to), w, h)
+			}
+			return md
+		}
+
+		md := settled()
+		for i, level := range md.bg {
+			if level != int32(tc.to)<<bgFracBits {
+				t.Fatalf("%s: background pixel %d is %.5f after the scene held at %d", tc.name, i, float64(level)/(1<<bgFracBits), tc.to)
+			}
+		}
+		md.Detect(gray(tc.atThreshold), w, h)
+		if got := md.FrameCoverage(); got != 0 {
+			t.Fatalf("%s: a change of exactly the threshold marked %.0f%% of the frame, want none", tc.name, got*100)
+		}
+
+		md = settled()
+		md.Detect(gray(tc.pastThreshold), w, h)
+		if got := md.FrameCoverage(); got != 1 {
+			t.Fatalf("%s: a change of one level past the threshold marked %.0f%% of the frame, want all of it", tc.name, got*100)
+		}
+	}
+}
+
+// A positive blending factor below the detector's resolution still adapts.
+func TestMotionDetectorAdaptsWithAVerySmallBlendingFactor(t *testing.T) {
+	const w, h = 32, 32
+	md := NewMotionDetector(25, 10, 1e-9)
+	md.Detect(makeRGB(w, h, 100, 100, 100), w, h)
+	md.Detect(makeRGB(w, h, 140, 140, 140), w, h)
+	if got, start := md.bg[0], int32(100)<<bgFracBits; got <= start {
+		t.Fatalf("the background did not move towards a brighter scene: %d, started at %d", got, start)
+	}
+
+	static := NewMotionDetector(25, 10, 0)
+	static.Detect(makeRGB(w, h, 100, 100, 100), w, h)
+	static.Detect(makeRGB(w, h, 140, 140, 140), w, h)
+	if got, start := static.bg[0], int32(100)<<bgFracBits; got != start {
+		t.Fatalf("a blending factor of 0 moved the background: %d, started at %d", got, start)
 	}
 }

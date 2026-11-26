@@ -43,8 +43,10 @@ type MotionRegion struct {
 type MotionDetector struct {
 	threshold uint8
 	minArea   int
-	bgAlpha   float64
-	bg        []float64 // background model (grayscale, one value per pixel)
+	// bgAlpha is the blending factor and bg the background model, one grey
+	// level per pixel, both in fixed point with bgFracBits fractional bits.
+	bgAlpha int64
+	bg      []int32
 
 	// Pre-allocated working buffers, sized on first Detect call.
 	gray         []uint8
@@ -55,6 +57,17 @@ type MotionDetector struct {
 	lastCoverage float64
 }
 
+// fixedBlend returns the blending factor as a fixed-point fraction, held to
+// the range 0 to 1. A positive factor too small to represent becomes the
+// smallest step, so a background meant to adapt slowly is never frozen. A
+// factor that is not a number gives a static background.
+func fixedBlend(alpha float64) int64 {
+	if math.IsNaN(alpha) || alpha <= 0 {
+		return 0
+	}
+	return max(int64(math.Round(min(alpha, 1)*(1<<bgFracBits))), 1)
+}
+
 // NewMotionDetector creates a MotionDetector.
 // threshold: pixel difference threshold for binary mask (0-255).
 // minArea: minimum number of pixels for a motion region to be reported.
@@ -63,9 +76,14 @@ func NewMotionDetector(threshold uint8, minArea int, bgAlpha float64) *MotionDet
 	return &MotionDetector{
 		threshold: threshold,
 		minArea:   minArea,
-		bgAlpha:   bgAlpha,
+		bgAlpha:   fixedBlend(bgAlpha),
 	}
 }
+
+// bgFracBits is the number of fractional bits in the background model. A grey
+// level shifted by it stays inside an int32, and with 16 bits the smallest
+// blending step is far below one grey level for any usable blending factor.
+const bgFracBits = 16
 
 // Detect processes an RGB24 frame and returns bounding boxes of motion regions.
 func (m *MotionDetector) Detect(frame []byte, width, height int) []MotionRegion {
@@ -95,9 +113,9 @@ func (m *MotionDetector) Detect(frame []byte, width, height int) []MotionRegion 
 
 	// Initialize background model on first frame
 	if m.bg == nil {
-		m.bg = make([]float64, pixels)
+		m.bg = make([]int32, pixels)
 		for i, v := range m.gray {
-			m.bg[i] = float64(v)
+			m.bg[i] = int32(v) << bgFracBits
 		}
 		m.lastCoverage = 0
 		return nil
@@ -106,28 +124,31 @@ func (m *MotionDetector) Detect(frame []byte, width, height int) []MotionRegion 
 	// Apply 3x3 box blur to reduce noise
 	boxBlur3x3(m.gray, m.blurred, width, height)
 
-	// Compute absolute difference against background and threshold to binary.
-	// Zero the binary buffer and compute in one pass.
+	// One pass marks every pixel that differs from the background by more
+	// than the threshold and then blends the pixel into the background. The
+	// pass is free of branches: on a quiet scene the sign of the difference is
+	// sensor noise, which a branch predictor cannot follow.
+	bg := m.bg[:pixels]
+	blurred := m.blurred[:pixels]
+	binary := m.binary[:pixels]
+	threshold := int32(m.threshold) << bgFracBits
 	var totalFG int
-	for i := 0; i < pixels; i++ {
-		diff := float64(m.blurred[i]) - m.bg[i]
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > float64(m.threshold) {
-			m.binary[i] = 1
-			totalFG++
-		} else {
-			m.binary[i] = 0
-		}
+	for i, v := range blurred {
+		level := bg[i]
+		diff := int32(v)<<bgFracBits - level
+		sign := diff >> 31
+		magnitude := (diff ^ sign) - sign
+		// threshold-magnitude is negative exactly when the pixel is foreground.
+		fg := uint8(uint32(threshold-magnitude) >> 31)
+		binary[i] = fg
+		totalFG += int(fg)
+		// The step is rounded away from zero, so the background arrives at a
+		// level that holds instead of stopping a fraction short of it.
+		awayFromZero := int64(^sign) & (1<<bgFracBits - 1)
+		bg[i] = level + int32((int64(diff)*m.bgAlpha+awayFromZero)>>bgFracBits)
 	}
 
 	m.lastCoverage = float64(totalFG) / float64(pixels)
-
-	// Update background model with alpha blending
-	for i := 0; i < pixels; i++ {
-		m.bg[i] = m.bg[i]*(1-m.bgAlpha) + float64(m.blurred[i])*m.bgAlpha
-	}
 
 	if totalFG == 0 {
 		m.lastCoverage = 0

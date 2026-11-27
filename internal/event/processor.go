@@ -30,6 +30,11 @@ const (
 	// maxPendingEnds caps the parked-end map so a camera emitting ends for
 	// events that never begin cannot grow it without limit.
 	maxPendingEnds = 1024
+
+	// maxSettledEvents caps the record of events whose end needs no action.
+	// An entry leaves when its end arrives; the cap covers ends that never do
+	// (a camera stopped with tracks still open).
+	maxSettledEvents = 1024
 )
 
 // Inputs contains the event streams consumed by a Processor. EventEnds is
@@ -77,6 +82,13 @@ type Processor struct {
 	// load the end can be serviced first.
 	pendingEnds map[string]pendingEnd
 
+	// settled holds events the processor closed or declined itself: ended at
+	// MaxEventDuration, suppressed by the cooldown, or not persisted. The
+	// camera still reports the end of the track behind each one, possibly much
+	// later, and that end belongs to no open event and to no event still on
+	// its way.
+	settled map[string]time.Time
+
 	// background counts the goroutines the processor detaches. Those goroutines
 	// use the recorder, the MQTT client, the object embedder and the hub, so
 	// Run waits for them before returning and the caller closes those
@@ -123,6 +135,7 @@ func NewProcessor(options Options) (*Processor, error) {
 		objectCountGate: newObjectCountGate(),
 		cooldowns:       make(map[string]time.Time),
 		pendingEnds:     make(map[string]pendingEnd),
+		settled:         make(map[string]time.Time),
 	}
 	if options.Publisher != nil {
 		processor.mqttDispatcher = newMQTTPublishDispatcher(options.Publisher, options.Tracer)
@@ -160,18 +173,9 @@ func (p *Processor) Run(ctx context.Context) {
 				p.stopActiveTimers()
 				return
 			}
-			if active, exists := p.active[end.EventID]; exists {
-				p.finalizeEvent(ctx, active, end.EndTime)
-				delete(p.active, end.EventID)
-			} else {
-				p.parkEnd(end)
-			}
+			p.handleEnd(ctx, end)
 		case eventID := <-p.timeout:
-			if active, exists := p.active[eventID]; exists {
-				endTime := active.event.Timestamp.Add(p.options.Config.Recording.MaxEventDuration)
-				p.finalizeEvent(ctx, active, endTime)
-				delete(p.active, eventID)
-			}
+			p.handleTimeout(ctx, eventID)
 		case presence, ok := <-p.options.Inputs.PresenceEvents:
 			if !ok {
 				p.stopActiveTimers()
@@ -204,12 +208,69 @@ func (p *Processor) Run(ctx context.Context) {
 	}
 }
 
+// handleEnd closes the open event an end belongs to. An end for an event the
+// processor already settled is dropped; any other end is ahead of its event
+// and is parked for acceptEvent to adopt.
+func (p *Processor) handleEnd(ctx context.Context, end camera.EventEnd) {
+	if active, exists := p.active[end.EventID]; exists {
+		p.finalizeEvent(ctx, active, end.EndTime)
+		delete(p.active, end.EventID)
+		return
+	}
+	if _, done := p.settled[end.EventID]; done {
+		delete(p.settled, end.EventID)
+		slog.Debug("event end for an event that was already settled",
+			"event", end.EventID, "camera", end.CameraName)
+		return
+	}
+	p.parkEnd(end)
+}
+
+// handleTimeout ends an event that reached MaxEventDuration. Its track can
+// outlive it, so the end the camera sends for that track later is expected.
+func (p *Processor) handleTimeout(ctx context.Context, eventID string) {
+	active, exists := p.active[eventID]
+	if !exists {
+		return
+	}
+	endTime := active.event.Timestamp.Add(p.options.Config.Recording.MaxEventDuration)
+	p.finalizeEvent(ctx, active, endTime)
+	delete(p.active, eventID)
+	p.settle(eventID)
+}
+
+// decline settles an event that was not accepted. Its end may already be
+// parked, in which case that end is what gets dropped.
+func (p *Processor) decline(eventID string) {
+	if _, parked := p.pendingEnds[eventID]; parked {
+		delete(p.pendingEnds, eventID)
+		return
+	}
+	p.settle(eventID)
+}
+
+// settle records that the end of eventID needs no action when it arrives.
+func (p *Processor) settle(eventID string) {
+	if len(p.settled) >= maxSettledEvents {
+		var oldestID string
+		var oldest time.Time
+		for id, at := range p.settled {
+			if oldestID == "" || at.Before(oldest) {
+				oldestID, oldest = id, at
+			}
+		}
+		delete(p.settled, oldestID)
+	}
+	p.settled[eventID] = time.Now()
+}
+
 func (p *Processor) acceptEvent(ctx context.Context, submitted camera.Event) {
 	if submitted.Kind != camera.EventKindDoorbell && submitted.Kind != camera.EventKindCry {
 		if until, exists := p.cooldowns[cooldownKey(submitted)]; exists &&
 			time.Since(until) < time.Duration(p.options.Config.Events.CooldownSeconds)*time.Second {
 			slog.Info("event suppressed by cooldown", "camera", submitted.CameraName,
 				"label", submitted.Label, "zone", submitted.ZoneName)
+			p.decline(submitted.ID)
 			return
 		}
 	}
@@ -226,6 +287,7 @@ func (p *Processor) acceptEvent(ctx context.Context, submitted camera.Event) {
 		rootSpan.End()
 		slog.Error("event dropped, not persisted", "camera", submitted.CameraName,
 			"label", submitted.Label, "event", submitted.ID, "error", saveErr)
+		p.decline(submitted.ID)
 		return
 	}
 	p.publishActivityForEvent(submitted.ID, "activity_updated")
@@ -343,10 +405,6 @@ func (p *Processor) persistEvent(ctx context.Context, submitted camera.Event) (c
 	return eventCtx, eventSpan, saveErr
 }
 
-// parkEnd holds an end whose event has not been accepted yet, so that
-// acceptEvent can adopt it. Without this the end is discarded and the event
-// stays open until MaxEventDuration, with a wrong stored end time, a wrong
-// clip window and no log line to say so.
 // goBackground runs fn on its own goroutine and counts it, so Run can wait for
 // it during shutdown.
 func (p *Processor) goBackground(fn func()) {
@@ -357,6 +415,10 @@ func (p *Processor) goBackground(fn func()) {
 	}()
 }
 
+// parkEnd holds an end whose event has not been accepted yet, so that
+// acceptEvent can adopt it. Without this the end is discarded and the event
+// stays open until MaxEventDuration, with a wrong stored end time, a wrong
+// clip window and no log line to say so.
 func (p *Processor) parkEnd(end camera.EventEnd) {
 	if len(p.pendingEnds) >= maxPendingEnds {
 		var oldestID string

@@ -124,3 +124,18 @@ func (m *Manager) RegisterForTest(cam *Camera) {
 		stopped: stopped,
 	}
 }
+
+// HoldStoppingForTest puts the named camera in the state a timed-out stop
+// leaves behind: not running, with goroutines of its previous run still
+// finishing. The returned function lets them finish.
+func (m *Manager) HoldStoppingForTest(name string) (finish func()) {
+	done := make(chan struct{})
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.running, name)
+	if m.draining == nil {
+		m.draining = make(map[string]<-chan struct{})
+	}
+	m.draining[name] = done
+	return func() { close(done) }
+}

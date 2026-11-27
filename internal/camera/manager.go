@@ -2,6 +2,7 @@ package camera
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -24,6 +25,10 @@ const (
 	cameraStopTimeout = 5 * time.Second
 )
 
+// ErrCameraStillStopping is returned by StartCamera while the goroutines of the
+// camera's previous run are still finishing after a stop that timed out.
+var ErrCameraStillStopping = errors.New("still stopping, try again shortly")
+
 // CameraStartHook runs when a camera starts, receiving that camera's own
 // context. Work started from it is cancelled when the camera is stopped.
 type CameraStartHook func(ctx context.Context, name string)
@@ -42,7 +47,12 @@ type Manager struct {
 	// context so per-camera background work can be bound to that camera's
 	// lifetime, and a stopped channel so a stop can wait for the camera to
 	// have actually finished.
-	running         map[string]*runningCamera
+	running map[string]*runningCamera
+	// draining holds the stopped channel of a camera whose stop timed out,
+	// until that channel closes. Its goroutines still use the camera's
+	// tracker, motion state and frame cache, so the camera cannot be started
+	// again before they are gone.
+	draining        map[string]<-chan struct{}
 	startHooks      []CameraStartHook
 	order           []string // config-file order
 	detector        *detect.Detector
@@ -203,7 +213,9 @@ func (m *Manager) AddCamera(cfg config.CameraConfig) {
 }
 
 // StartCamera starts the named camera with its own derived context and runs
-// every registered start hook against it.
+// every registered start hook against it. A camera has one set of goroutines
+// at a time: the start is refused while the camera runs, and while a previous
+// run that outlived its stop is still finishing.
 func (m *Manager) StartCamera(ctx context.Context, name string) error {
 	m.mu.Lock()
 	cam, ok := m.cameras[name]
@@ -214,6 +226,15 @@ func (m *Manager) StartCamera(ctx context.Context, name string) error {
 	if _, alreadyRunning := m.running[name]; alreadyRunning {
 		m.mu.Unlock()
 		return fmt.Errorf("camera %q is already running", name)
+	}
+	if previous, ok := m.draining[name]; ok {
+		select {
+		case <-previous:
+			delete(m.draining, name)
+		default:
+			m.mu.Unlock()
+			return fmt.Errorf("camera %q: %w", name, ErrCameraStillStopping)
+		}
 	}
 
 	camCtx, camCancel := context.WithCancel(ctx)
@@ -271,6 +292,14 @@ func (m *Manager) StopCamera(name string) error {
 		return fmt.Errorf("camera %q is already stopped", name)
 	}
 	delete(m.running, name)
+	// The run is draining from the moment it leaves running, in the same
+	// critical section, so a start that arrives while this stop is still
+	// waiting is refused too.
+	if m.draining == nil {
+		m.draining = make(map[string]<-chan struct{})
+	}
+	draining := run.stopped
+	m.draining[name] = draining
 	m.mu.Unlock()
 
 	// The wait happens outside the lock so one unresponsive camera cannot block
@@ -278,8 +307,13 @@ func (m *Manager) StopCamera(name string) error {
 	run.cancel()
 	select {
 	case <-run.stopped:
+		m.mu.Lock()
+		if m.draining[name] == draining {
+			delete(m.draining, name)
+		}
+		m.mu.Unlock()
 	case <-time.After(cameraStopTimeout):
-		slog.Warn("camera did not stop within the timeout, continuing",
+		slog.Warn("camera did not stop within the timeout; it cannot be started again until it has",
 			"camera", name, "timeout", cameraStopTimeout)
 	}
 	return nil

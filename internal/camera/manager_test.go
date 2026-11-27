@@ -2,6 +2,7 @@ package camera
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -134,6 +135,113 @@ func TestStopCameraIsBoundedWhenTheCameraNeverFinishes(t *testing.T) {
 	// The manager must be usable again, not stuck behind the wedged camera.
 	if m.IsStopped("cam") != true {
 		t.Fatal("camera should report stopped after StopCamera returned")
+	}
+}
+
+// A stop waits for the camera's goroutines outside the manager lock. A start
+// that arrives during that wait meets a camera that is no longer running and
+// whose previous run has not finished, and is refused like one that arrives
+// after the wait timed out.
+func TestStartCameraIsRefusedWhileAStopIsStillWaiting(t *testing.T) {
+	m := &Manager{
+		cameras: map[string]*Camera{"cam": NewTestCamera("cam")},
+		running: make(map[string]*runningCamera),
+		order:   []string{"cam"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan struct{})
+	markRunning(m, "cam", ctx, cancel, finished)
+
+	stopReturned := make(chan error, 1)
+	go func() { stopReturned <- m.StopCamera("cam") }()
+	// The stop has taken the camera out of running once it reports stopped,
+	// and cannot return before finished is closed or the timeout passes.
+	deadline := time.Now().Add(cameraStopTimeout / 2)
+	for !m.IsStopped("cam") {
+		if time.Now().After(deadline) {
+			t.Fatal("StopCamera did not take the camera out of running")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	startCtx, stopAll := context.WithCancel(context.Background())
+	defer stopAll()
+	err := m.StartCamera(startCtx, "cam")
+	select {
+	case <-stopReturned:
+		t.Fatal("StopCamera returned before the start was attempted; the test did not exercise the wait")
+	default:
+	}
+	if !errors.Is(err, ErrCameraStillStopping) {
+		t.Fatalf("StartCamera while a stop is waiting = %v, want ErrCameraStillStopping", err)
+	}
+
+	close(finished)
+	if err := <-stopReturned; err != nil {
+		t.Fatalf("StopCamera: %v", err)
+	}
+	m.mu.RLock()
+	leftover := len(m.draining)
+	m.mu.RUnlock()
+	if leftover != 0 {
+		t.Fatalf("%d draining entries left after a stop that finished in time", leftover)
+	}
+	if err := m.StartCamera(startCtx, "cam"); err != nil {
+		t.Fatalf("StartCamera after the stop finished: %v", err)
+	}
+	if err := m.StopCamera("cam"); err != nil {
+		t.Fatalf("StopCamera: %v", err)
+	}
+}
+
+// A camera whose stop timed out still has goroutines on its tracker, motion
+// state and frame cache. Starting it again would run a second set on the same
+// state, so the start waits for the first to be gone.
+func TestStartCameraIsRefusedUntilATimedOutStopHasFinished(t *testing.T) {
+	m := &Manager{
+		cameras: map[string]*Camera{"cam": NewTestCamera("cam"), "other": NewTestCamera("other")},
+		running: make(map[string]*runningCamera),
+		order:   []string{"cam", "other"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan struct{})
+	markRunning(m, "cam", ctx, cancel, finished)
+
+	if err := m.StopCamera("cam"); err != nil {
+		t.Fatalf("StopCamera: %v", err)
+	}
+	startCtx, stopAll := context.WithCancel(context.Background())
+	defer stopAll()
+	if err := m.StartCamera(startCtx, "cam"); !errors.Is(err, ErrCameraStillStopping) {
+		t.Fatalf("StartCamera while the previous run drains = %v, want ErrCameraStillStopping", err)
+	}
+	if !m.IsStopped("cam") {
+		t.Fatal("a refused start left the camera marked as running")
+	}
+	// Only the draining camera is held back.
+	if err := m.StartCamera(startCtx, "other"); err != nil {
+		t.Fatalf("StartCamera of another camera: %v", err)
+	}
+
+	close(finished)
+	if err := m.StartCamera(startCtx, "cam"); err != nil {
+		t.Fatalf("StartCamera after the previous run finished: %v", err)
+	}
+	if m.IsStopped("cam") {
+		t.Fatal("camera is not running after a successful start")
+	}
+	m.mu.RLock()
+	leftover := len(m.draining)
+	m.mu.RUnlock()
+	if leftover != 0 {
+		t.Fatalf("%d draining entries left after the restart", leftover)
+	}
+	for _, name := range []string{"cam", "other"} {
+		if err := m.StopCamera(name); err != nil {
+			t.Fatalf("StopCamera(%q): %v", name, err)
+		}
 	}
 }
 

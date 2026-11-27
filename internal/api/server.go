@@ -65,6 +65,7 @@ type Server struct {
 	auth                 *auth.Checker
 	db                   *storage.DB
 	cameras              *camera.Manager
+	cameraControl        sync.Mutex
 	recorder             *recording.Recorder
 	hub                  *rtsp.Hub
 	streams              *stream.StreamManager

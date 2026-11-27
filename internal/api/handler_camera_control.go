@@ -1,8 +1,11 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/rvben/vedetta/internal/camera"
 )
 
 // StopCamera handles POST /api/cameras/{name}/stop.
@@ -14,6 +17,11 @@ func (s *Server) StopCamera(w http.ResponseWriter, r *http.Request, name string)
 		})
 		return
 	}
+
+	// A stop and a start each change the manager and then the stored stopped
+	// flag. One at a time, so the flag never describes the other's outcome.
+	s.cameraControl.Lock()
+	defer s.cameraControl.Unlock()
 
 	if err := s.cameras.StopCamera(name); err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{
@@ -55,11 +63,19 @@ func (s *Server) StartCamera(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 
-	if err := s.db.SetCameraStopped(name, false); err != nil {
-		slog.Error("failed to clear camera stopped state", "camera", name, "error", err)
-	}
+	s.cameraControl.Lock()
+	defer s.cameraControl.Unlock()
 
-	if err := s.cameras.StartCamera(s.ctx, name); err != nil {
+	// A camera that is already running keeps its stopped flag cleared; one
+	// that could not be started keeps the flag, so the next process start does
+	// not bring up a camera its operator saw fail to start.
+	err := s.cameras.StartCamera(s.ctx, name)
+	if !errors.Is(err, camera.ErrCameraStillStopping) {
+		if dbErr := s.db.SetCameraStopped(name, false); dbErr != nil {
+			slog.Error("failed to clear camera stopped state", "camera", name, "error", dbErr)
+		}
+	}
+	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": err.Error(),
 		})

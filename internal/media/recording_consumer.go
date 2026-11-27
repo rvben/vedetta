@@ -550,9 +550,12 @@ func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 		// segment; the DB then records the coverage gap instead of papering
 		// over it. The fresh writer takes over the depacketizer, which holds
 		// every packet so far of the first frame after the gap, and waits
-		// for a keyframe as usual.
+		// for a keyframe as usual. The last frame before the gap may have
+		// failed to reach the old file; that failure is a write error like any
+		// other and is handled once the new segment is open.
 		slog.Warn("video timestamp gap, rotating segment",
 			"camera", rc.camera, "path", rc.segPath)
+		writeErr := errorsOtherThan(err, ErrTimestampGap)
 		carry := rc.writer.TakeCarry()
 		if rc.closeCurrentSegment() {
 			rc.mediaWritten()
@@ -561,7 +564,7 @@ func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 			rc.handleWriteError(err)
 			return
 		}
-		err = rc.writer.WriteCarry(carry)
+		err = errors.Join(writeErr, rc.writer.WriteCarry(carry))
 	}
 	if err != nil {
 		rc.handleWriteError(err)
@@ -585,6 +588,23 @@ func (rc *RecordingConsumer) mediaWritten() {
 		slog.Info("recording resumed, writes succeed again",
 			"camera", rc.camera, "outage", lasted.Round(time.Second))
 	}
+}
+
+// errorsOtherThan returns what err reports besides sentinel: nil when err is
+// the sentinel alone, and the remaining errors when it joins the sentinel with
+// others.
+func errorsOtherThan(err, sentinel error) error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return nil
+	}
+	var rest []error
+	for _, e := range joined.Unwrap() {
+		if !errors.Is(e, sentinel) {
+			rest = append(rest, e)
+		}
+	}
+	return errors.Join(rest...)
 }
 
 func (rc *RecordingConsumer) processAudio(pkt *rtp.Packet) {

@@ -426,3 +426,34 @@ func TestRecordingConsumer_BufferedFramesDoNotEndAWriteOutage(t *testing.T) {
 		t.Errorf("%q logged %d times while every write failed", msgResumed, got)
 	}
 }
+
+// The last frame before a stall is written when the stall is noticed. A
+// volume that refuses it has failed a write, whatever the rotation that
+// follows does.
+func TestRecordingConsumer_WriteFailureAtATimestampGapIsReported(t *testing.T) {
+	rc, frame := outageTestConsumer(t, t.TempDir())
+	logs := countLogMessages(t)
+
+	frame(true, 3000)
+	frame(false, 3000)
+	// A keyframe ends the GOP before it, so writing it writes to the file.
+	frame(true, 3000)
+	rc.mu.Lock()
+	if rc.writer == nil {
+		rc.mu.Unlock()
+		t.Fatal("no segment is open")
+	}
+	_ = rc.writer.f.Close()
+	rc.mu.Unlock()
+
+	frame(true, 60*90000)
+	if got := logs.count(msgWriteFailed); got != 1 {
+		t.Errorf("%q logged %d times for the frame the volume refused at the stall, want 1", msgWriteFailed, got)
+	}
+	rc.mu.Lock()
+	writeErrors := rc.writeErrors
+	rc.mu.Unlock()
+	if writeErrors != 1 {
+		t.Errorf("writeErrors = %d after one refused frame, want 1", writeErrors)
+	}
+}

@@ -361,3 +361,42 @@ func TestRecordingConsumer_TimestampGapKeepsTheFragmentedKeyframe(t *testing.T) 
 		t.Errorf("the segment after the stall covers %v, want its three frames (%v)", got, want)
 	}
 }
+
+// The frame a camera sent last before a stall is a real frame. It ends the
+// segment before the stall, shown for as long as the frame before it, and the
+// stall itself adds nothing to that segment.
+func TestRecordingConsumer_TimestampGapKeepsTheLastFrameBeforeIt(t *testing.T) {
+	withoutBackstop(t)
+	const frame = 4500 // 90 kHz ticks, 1/20 s: not the writer's fallback duration
+	stub := newSegmentRecorderStub()
+	rc := NewRecordingConsumer(t.TempDir(), "test-cam", time.Minute, reliabilityVideoTrack(), nil, testDiskNoFloor(t), stub.save)
+
+	sendFrame(t, rc, markedFrame(1, 0, idrSlice, 0xA1))
+	sendFrame(t, rc, markedFrame(2, frame, deltaSlice, 0xA2))
+	sendFrame(t, rc, markedFrame(3, 2*frame, deltaSlice, 0xA3))
+	first := waitOpenSegment(t, rc)
+	const resume = 2*frame + 60*90000
+	sendFrame(t, rc, markedFrame(4, resume, idrSlice, 0xB1))
+	sendFrame(t, rc, markedFrame(5, resume+frame, deltaSlice, 0xB2))
+	second := waitOpenSegment(t, rc)
+	rc.Close()
+
+	if second == first {
+		t.Fatal("the stall did not start a new segment")
+	}
+	for _, mark := range []byte{0xA1, 0xA2, 0xA3} {
+		if !segmentHolds(t, first, mark) {
+			t.Errorf("the segment before the stall lacks frame %#x", mark)
+		}
+		if segmentHolds(t, second, mark) {
+			t.Errorf("frame %#x from before the stall is in the segment after it", mark)
+		}
+	}
+	a, ok := stub.get(first)
+	if !ok {
+		t.Fatal("the segment before the stall was not registered")
+	}
+	if got, want := a.EndTime.Sub(a.StartTime), 3*time.Second/20; got != want {
+		t.Errorf("the segment before the stall covers %v, want its three frames (%v)", got, want)
+	}
+}

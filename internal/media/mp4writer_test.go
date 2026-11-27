@@ -207,13 +207,15 @@ func TestSegmentWriter_TimestampGapReturnsError(t *testing.T) {
 	}
 	dtsBefore := sw.videoDTS
 
-	// 3 seconds of missing stream (> the 2s plausibility bound).
+	// 3 seconds of missing stream (> the 2s plausibility bound). The frame
+	// before the gap is written with the duration of the frame before it; the
+	// gap adds no media time.
 	err := sw.WriteVideo(h264TestPacket(3, 3000+3*90000, 0x41))
 	if !errors.Is(err, ErrTimestampGap) {
 		t.Fatalf("got err %v, want ErrTimestampGap", err)
 	}
-	if sw.videoDTS != dtsBefore {
-		t.Errorf("gap sample was buffered: videoDTS %d -> %d", dtsBefore, sw.videoDTS)
+	if got, want := sw.videoDTS-dtsBefore, uint64(3000); got != want {
+		t.Errorf("the gap added %d ticks of media, want the one frame before it (%d)", got, want)
 	}
 
 	// A backwards jump (camera clock reset) is a discontinuity too.

@@ -25,8 +25,9 @@ import (
 // a segment must advance 1:1 with wall time so playback can map a wall-clock
 // instant to a media offset by subtraction; substituting a fake sample
 // duration would silently compress the gap and desync that mapping for the
-// rest of the file. Callers should close the segment and start a new one,
-// which takes over the frame after the gap through TakeCarry and WriteCarry.
+// rest of the file. The last frame before the gap is in the segment when this
+// is returned. Callers should close the segment and start a new one, which
+// takes over the frame after the gap through TakeCarry and WriteCarry.
 var ErrTimestampGap = errors.New("video RTP timestamp gap")
 
 // ErrSegmentSplit reports that WriteVideo ended the segment on a frame
@@ -258,17 +259,27 @@ func (sw *SegmentWriter) WriteVideo(pkt *rtp.Packet) error {
 	if sampleDuration == 0 {
 		sampleDuration = sw.videoTimeScale / 30
 	} else if sampleDuration >= sw.videoTimeScale*2 {
-		// The decoder holds every packet received so far of the first frame
-		// after the discontinuity, so it moves to the next segment. This
-		// writer neither appends the pre-gap unit with a fabricated duration
-		// nor flushes the post-gap unit during Close.
+		// The frame that just left the depacketizer is the last one before the
+		// discontinuity. It is a real frame and ends this segment, shown for
+		// as long as the frame before it, exactly as Close ends a segment on
+		// the frame it flushes; the gap itself is never given a duration. The
+		// decoder holds every packet received so far of the first frame after
+		// the discontinuity, so it moves to the next segment and Close must
+		// not flush it into this file.
 		sw.mu.Lock()
+		defer sw.mu.Unlock()
 		sw.carry = &VideoCarry{
 			received: sw.pendingVideoTime,
 			decoder:  sw.h264Decoder, pendingTimestamp: sw.pendingVideoTimestamp, pendingTime: sw.pendingVideoTime,
 		}
 		sw.skipDecoderFlush = true
-		sw.mu.Unlock()
+		lastFrameTime := sw.pendingVideoTime
+		if sw.hasPrevVideoTime {
+			lastFrameTime = sw.prevVideoTime
+		}
+		if err := sw.writeVideoAccessUnit(au, sw.lastVideoDuration, lastFrameTime); err != nil {
+			return errors.Join(ErrTimestampGap, err)
+		}
 		return ErrTimestampGap
 	}
 

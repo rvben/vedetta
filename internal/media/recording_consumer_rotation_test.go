@@ -193,7 +193,7 @@ func TestRecordingConsumer_RotationDoesNotWaitForFramesThatNeverComplete(t *test
 	seq, ts := uint16(3), uint32(6000)
 	deadline := time.Now().Add(segLen + 10*grace)
 	for rc.CurrentSegmentPath() == first && time.Now().Before(deadline) {
-		sendFrame(t, rc, fragmentedFrame(seq, ts, 0xEE)[0])
+		sendFrame(t, rc, fragmentedFrame(seq, ts, deltaSlice, 0xEE)[0])
 		seq, ts = seq+2, ts+3000
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -215,14 +215,15 @@ func TestRecordingConsumer_RotationDoesNotWaitForFramesThatNeverComplete(t *test
 	}
 }
 
-// fragmentedFrame is a delta frame sent as two FU-A fragments; reassembled, its
+// fragmentedFrame is a frame sent as two FU-A fragments; reassembled, its
 // payload can be found in a segment file by its mark.
-func fragmentedFrame(seq uint16, ts uint32, mark byte) []*rtp.Packet {
+func fragmentedFrame(seq uint16, ts uint32, nal, mark byte) []*rtp.Packet {
 	const fuIndicator = 0x7C // NRI 3, type 28 (FU-A)
-	start := h264TestPacket(seq, ts, deltaSlice)
-	start.Payload = []byte{fuIndicator, 0x80 | 0x01, 0x88, 0x84, mark, mark, mark}
-	end := h264TestPacket(seq+1, ts, deltaSlice)
-	end.Payload = []byte{fuIndicator, 0x40 | 0x01, mark, mark, mark}
+	nalType := nal & 0x1F
+	start := h264TestPacket(seq, ts, nal)
+	start.Payload = []byte{fuIndicator, 0x80 | nalType, 0x88, 0x84, mark, mark, mark}
+	end := h264TestPacket(seq+1, ts, nal)
+	end.Payload = []byte{fuIndicator, 0x40 | nalType, mark, mark, mark}
 	return []*rtp.Packet{start, end}
 }
 
@@ -242,7 +243,7 @@ func TestRecordingConsumer_RotationKeepsTheFragmentedFrameAfterTheKeyframe(t *te
 	time.Sleep(2 * segLen)
 	sendFrame(t, rc, markedFrame(3, 2*frame, idrSlice, 0xB1))
 	keyframeArrived := time.Now()
-	for _, pkt := range fragmentedFrame(4, 3*frame, 0xB2) {
+	for _, pkt := range fragmentedFrame(4, 3*frame, deltaSlice, 0xB2) {
 		time.Sleep(40 * time.Millisecond)
 		rc.OnVideoRTP(pkt)
 	}
@@ -318,5 +319,45 @@ func TestRecordingConsumer_RotationCarriesAKeyframeAcrossTheGraceDeadline(t *tes
 		if segmentHolds(t, first, mark) {
 			t.Errorf("frame %#x of the second GOP is in the first segment", mark)
 		}
+	}
+}
+
+// A stream that resumes after a stall starts a new segment, and it resumes on
+// a keyframe. That keyframe arrives in fragments, all of which belong to the
+// new segment.
+func TestRecordingConsumer_TimestampGapKeepsTheFragmentedKeyframe(t *testing.T) {
+	withoutBackstop(t)
+	stub := newSegmentRecorderStub()
+	rc := NewRecordingConsumer(t.TempDir(), "test-cam", time.Minute, reliabilityVideoTrack(), nil, testDiskNoFloor(t), stub.save)
+
+	sendFrame(t, rc, markedFrame(1, 0, idrSlice, 0xA1))
+	sendFrame(t, rc, markedFrame(2, 3000, deltaSlice, 0xA2))
+	first := waitOpenSegment(t, rc)
+	const resume = 3000 + 60*90000
+	for _, pkt := range fragmentedFrame(3, resume, idrSlice, 0xB1) {
+		rc.OnVideoRTP(pkt)
+	}
+	sendFrame(t, rc, markedFrame(5, resume+3000, deltaSlice, 0xB2))
+	second := waitOpenSegment(t, rc)
+	sendFrame(t, rc, markedFrame(6, resume+6000, deltaSlice, 0xB3))
+	rc.Close()
+
+	if second == first {
+		t.Fatal("the stall did not start a new segment")
+	}
+	for _, mark := range []byte{0xB1, 0xB2, 0xB3} {
+		if !segmentHolds(t, second, mark) {
+			t.Errorf("the segment after the stall lacks frame %#x", mark)
+		}
+		if segmentHolds(t, first, mark) {
+			t.Errorf("frame %#x from after the stall is in the segment before it", mark)
+		}
+	}
+	b, ok := stub.get(second)
+	if !ok {
+		t.Fatal("the segment after the stall was not registered")
+	}
+	if got, want := b.EndTime.Sub(b.StartTime), 3*time.Second/30; got != want {
+		t.Errorf("the segment after the stall covers %v, want its three frames (%v)", got, want)
 	}
 }

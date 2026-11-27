@@ -538,16 +538,18 @@ func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 		// RTSP disconnect. Close the segment at its honest end and start a
 		// fresh file so wall time and media time stay 1:1 within every
 		// segment; the DB then records the coverage gap instead of papering
-		// over it. The packet is re-fed to the fresh writer, which accepts
-		// any starting timestamp (and waits for a keyframe as usual).
+		// over it. The fresh writer takes over the depacketizer, which holds
+		// every packet so far of the first frame after the gap, and waits
+		// for a keyframe as usual.
 		slog.Warn("video timestamp gap, rotating segment",
 			"camera", rc.camera, "path", rc.segPath)
+		carry := rc.writer.TakeCarry()
 		rc.closeCurrentSegment()
-		if err := rc.ensureSegment(); err != nil {
+		if err := rc.openSegment(carry.Received()); err != nil {
 			rc.handleWriteError(err)
 			return
 		}
-		err = rc.writer.WriteVideo(pkt)
+		err = rc.writer.WriteCarry(carry)
 	}
 	if err != nil {
 		rc.handleWriteError(err)

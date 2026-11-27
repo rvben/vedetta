@@ -25,14 +25,15 @@ import (
 // a segment must advance 1:1 with wall time so playback can map a wall-clock
 // instant to a media offset by subtraction; substituting a fake sample
 // duration would silently compress the gap and desync that mapping for the
-// rest of the file. Callers should close the segment and start a new one.
+// rest of the file. Callers should close the segment and start a new one,
+// which takes over the frame after the gap through TakeCarry and WriteCarry.
 var ErrTimestampGap = errors.New("video RTP timestamp gap")
 
 // ErrSegmentSplit reports that WriteVideo ended the segment on a frame
 // boundary because the caller asked for it (SplitAtNextKeyframe,
 // SplitAtNextFrame). What belongs to the next segment waits in TakeCarry for
-// that segment's WriteCarry; the packet that completed the frame is already
-// consumed and travels with it.
+// that segment's WriteCarry; every packet consumed so far of the frame being
+// assembled travels with it.
 var ErrSegmentSplit = errors.New("segment split on a frame boundary")
 
 // VideoCarry is what one segment hands to the next when it is split: the
@@ -40,7 +41,8 @@ var ErrSegmentSplit = errors.New("segment split on a frame boundary")
 // and the depacketizer. A frame is only known to be complete once the frame
 // after it has delivered a whole NAL unit, which can be several packets in,
 // so the depacketizer goes along with everything it holds of that next frame.
-// A split forced on a frame that is no keyframe carries no frame.
+// A split forced on a frame that is no keyframe carries no frame, and neither
+// does a timestamp gap.
 type VideoCarry struct {
 	au       [][]byte
 	duration uint32
@@ -256,11 +258,15 @@ func (sw *SegmentWriter) WriteVideo(pkt *rtp.Packet) error {
 	if sampleDuration == 0 {
 		sampleDuration = sw.videoTimeScale / 30
 	} else if sampleDuration >= sw.videoTimeScale*2 {
-		// The decoder has already buffered pkt as the first access unit after
-		// the discontinuity. The recording consumer re-feeds it to a fresh
-		// writer, so this writer must neither append the pre-gap unit with a
-		// fabricated duration nor flush the post-gap unit during Close.
+		// The decoder holds every packet received so far of the first frame
+		// after the discontinuity, so it moves to the next segment. This
+		// writer neither appends the pre-gap unit with a fabricated duration
+		// nor flushes the post-gap unit during Close.
 		sw.mu.Lock()
+		sw.carry = &VideoCarry{
+			received: sw.pendingVideoTime,
+			decoder:  sw.h264Decoder, pendingTimestamp: sw.pendingVideoTimestamp, pendingTime: sw.pendingVideoTime,
+		}
 		sw.skipDecoderFlush = true
 		sw.mu.Unlock()
 		return ErrTimestampGap
@@ -323,8 +329,8 @@ func (sw *SegmentWriter) SplitAtNextFrame() bool {
 	return true
 }
 
-// TakeCarry returns what the WriteVideo call that returned ErrSegmentSplit
-// left for the next segment, once.
+// TakeCarry returns what the WriteVideo call that returned ErrSegmentSplit or
+// ErrTimestampGap left for the next segment, once.
 func (sw *SegmentWriter) TakeCarry() *VideoCarry {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
@@ -334,9 +340,9 @@ func (sw *SegmentWriter) TakeCarry() *VideoCarry {
 }
 
 // WriteCarry continues the previous segment's stream in this one: it writes
-// the keyframe withheld there as this segment's first sample, with the arrival
-// time and duration it had, and goes on with the frame after it from the
-// depacketizer that came along.
+// the keyframe withheld there, if any, as this segment's first sample, with
+// the arrival time and duration it had, and goes on with the frame being
+// assembled in the depacketizer that came along.
 func (sw *SegmentWriter) WriteCarry(c *VideoCarry) error {
 	if c == nil {
 		return nil

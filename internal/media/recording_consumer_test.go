@@ -232,7 +232,7 @@ func TestRecordingConsumer_PanicDuringDecodeKeepsConsumerAlive(t *testing.T) {
 
 	// Three poison packets: each panics inside the real decode path.
 	for i := 0; i < 3; i++ {
-		rc.pktCh <- rtpMsg{pkt: nil, video: true}
+		rc.OnVideoRTP(nil)
 	}
 	time.Sleep(200 * time.Millisecond)
 
@@ -241,7 +241,7 @@ func TestRecordingConsumer_PanicDuringDecodeKeepsConsumerAlive(t *testing.T) {
 	}
 
 	// It must still accept and consume new work after recovering.
-	rc.pktCh <- rtpMsg{pkt: nil, video: true}
+	rc.OnVideoRTP(nil)
 	time.Sleep(120 * time.Millisecond)
 	if n := len(rc.pktCh); n != 0 {
 		t.Fatalf("processLoop not consuming after recovery: %d packets stuck", n)

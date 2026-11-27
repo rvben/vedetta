@@ -58,6 +58,15 @@ type SegmentInfo struct {
 	SizeBytes int64
 }
 
+// recordingQueueDepth bounds the packets waiting for processLoop. A full queue
+// drops; a half-full one wakes the loop without waiting for the next frame.
+const recordingQueueDepth = 512
+
+// recordingBackstopInterval is how long after its last wake-up processLoop
+// looks at the queue again, and so the longest a queued packet waits. A variable so tests can take the
+// backstop out of the picture; each consumer reads it once, when it is built.
+var recordingBackstopInterval = 100 * time.Millisecond
+
 type rtpMsg struct {
 	pkt   *rtp.Packet
 	video bool
@@ -83,10 +92,26 @@ type RecordingConsumer struct {
 	// when Close runs; closing the channel under it would crash the process
 	// with "send on closed channel". processLoop is stopped via stop instead,
 	// and late sends land harmlessly in the buffer.
-	pktCh  chan rtpMsg
-	stop   chan struct{}
-	done   chan struct{}
-	closed atomic.Bool
+	pktCh chan rtpMsg
+	// wake tells processLoop that the queue is worth draining. A frame's
+	// packets arrive within a millisecond of each other and the frame cannot
+	// be written before the next one starts, so the loop is woken once per
+	// frame instead of once per packet.
+	wake chan struct{}
+	// lastVideoTS is one more than the RTP timestamp of the last queued video
+	// packet, zero before the first. A packet with another timestamp starts a
+	// new frame.
+	lastVideoTS atomic.Uint64
+	// idle is set while processLoop waits with its backstop timer stopped,
+	// which it does once the queue has stayed empty for a whole interval.
+	// Any packet queued then wakes the loop, which arms the timer again.
+	idle atomic.Bool
+	// drainMu is held while the queue is emptied, so packets are dispatched
+	// in arrival order whichever goroutine drains. Taken before mu.
+	drainMu sync.Mutex
+	stop    chan struct{}
+	done    chan struct{}
+	closed  atomic.Bool
 
 	// newWriter creates the segment writer; indirected so a stalled-volume
 	// hang in file creation can be bounded and tested. Defaults to
@@ -109,11 +134,15 @@ type RecordingConsumer struct {
 	// lastDropRotate is when a drop last rotated the segment. Guarded by mu.
 	lastDropRotate time.Time
 
-	mu              sync.Mutex
-	writer          *SegmentWriter
-	segPath         string
-	currentPath     string // path of the segment currently being written; "" when closed
-	segStart        time.Time
+	mu          sync.Mutex
+	writer      *SegmentWriter
+	segPath     string
+	currentPath string // path of the segment currently being written; "" when closed
+	segStart    time.Time
+	// videoTS is the RTP timestamp of the last video packet processed, and
+	// haveVideoTS whether there is one.
+	videoTS         uint32
+	haveVideoTS     bool
 	lastSegBase     string // timestamp base of the last segment filename
 	segDupCount     int    // disambiguates same-second rotations (gap rotation is instant)
 	paused          bool
@@ -139,7 +168,8 @@ func NewRecordingConsumer(segDir, camera string, segLen time.Duration, video, au
 		onSegment:  onSegment,
 		segDir:     segDir,
 		disk:       disk,
-		pktCh:      make(chan rtpMsg, 512),
+		pktCh:      make(chan rtpMsg, recordingQueueDepth),
+		wake:       make(chan struct{}, 1),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 		newWriter:  NewSegmentWriter,
@@ -147,7 +177,7 @@ func NewRecordingConsumer(segDir, camera string, segLen time.Duration, video, au
 		createTimeout: segmentWriterCreateTimeout,
 	}
 
-	go rc.processLoop()
+	go rc.processLoop(recordingBackstopInterval)
 
 	return rc
 }
@@ -184,7 +214,8 @@ func (rc *RecordingConsumer) SegmentCreatePending() bool {
 	return rc.createPending.Load()
 }
 
-// OnVideoRTP enqueues a video RTP packet for async processing.
+// OnVideoRTP enqueues a video RTP packet for async processing. The first
+// packet of a frame wakes processLoop, which then writes the frame before it.
 func (rc *RecordingConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	if rc.closed.Load() {
 		return
@@ -193,10 +224,21 @@ func (rc *RecordingConsumer) OnVideoRTP(pkt *rtp.Packet) {
 	case rc.pktCh <- rtpMsg{pkt: pkt, video: true}:
 	default:
 		rc.noteDrop()
+		return
+	}
+	newFrame := true
+	if pkt != nil {
+		ts := uint64(pkt.Timestamp) + 1
+		newFrame = rc.lastVideoTS.Swap(ts) != ts
+	}
+	if newFrame || len(rc.pktCh) >= recordingQueueDepth/2 || rc.idle.Load() {
+		rc.signal()
 	}
 }
 
-// OnAudioRTP enqueues an audio RTP packet for async processing.
+// OnAudioRTP enqueues an audio RTP packet for async processing. Audio rides
+// along with the next video frame; without a video track every packet wakes
+// processLoop.
 func (rc *RecordingConsumer) OnAudioRTP(pkt *rtp.Packet) {
 	if rc.closed.Load() {
 		return
@@ -205,6 +247,19 @@ func (rc *RecordingConsumer) OnAudioRTP(pkt *rtp.Packet) {
 	case rc.pktCh <- rtpMsg{pkt: pkt, video: false}:
 	default:
 		rc.noteDrop()
+		return
+	}
+	if rc.videoTrack == nil || len(rc.pktCh) >= recordingQueueDepth/2 || rc.idle.Load() {
+		rc.signal()
+	}
+}
+
+// signal wakes processLoop without blocking. One pending wake is enough: the
+// loop drains the whole queue each time.
+func (rc *RecordingConsumer) signal() {
+	select {
+	case rc.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -228,8 +283,15 @@ func (rc *RecordingConsumer) noteDrop() {
 	}
 }
 
-// OnDisconnect is called when the RTSP source disconnects.
+// OnDisconnect is called when the RTSP source disconnects. The packets still
+// queued belong to the segment being closed (the rest of its last frame and
+// the audio beside it), so they are written first; left for processLoop they
+// would open a new segment that starts in the middle of a frame.
 func (rc *RecordingConsumer) OnDisconnect() {
+	rc.drainMu.Lock()
+	defer rc.drainMu.Unlock()
+	rc.drainLocked()
+
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.closeCurrentSegment()
@@ -250,24 +312,62 @@ func (rc *RecordingConsumer) Close() {
 	rc.closeCurrentSegment()
 }
 
-func (rc *RecordingConsumer) processLoop() {
+func (rc *RecordingConsumer) processLoop(backstopInterval time.Duration) {
 	defer close(rc.done)
 
+	// The backstop bounds how long a queued packet waits when no new frame
+	// arrives to wake the loop: audio while the video has stalled, or the
+	// tail of the last frame before a stream stops. Each wake-up pushes it
+	// back, so it stays silent while frames keep arriving, and it fires only
+	// once after the last wake-up, so a camera that sends nothing costs
+	// nothing.
+	backstop := time.NewTimer(backstopInterval)
+	defer backstop.Stop()
+
+	for {
+		select {
+		case <-rc.wake:
+			rc.idle.Store(false)
+			rc.drain()
+			backstop.Reset(backstopInterval)
+		case <-backstop.C:
+			rc.goIdle()
+		case <-rc.stop:
+			// Drain what is already queued so the final GOP is written
+			// before the segment is finalized, then stop.
+			rc.drain()
+			return
+		}
+	}
+}
+
+// goIdle marks the loop idle, so that from here on any packet wakes it. A
+// packet queued before the mark did not see it, so the loop wakes itself for
+// whatever is waiting now.
+func (rc *RecordingConsumer) goIdle() {
+	rc.drainMu.Lock()
+	defer rc.drainMu.Unlock()
+	rc.idle.Store(true)
+	if len(rc.pktCh) > 0 {
+		rc.signal()
+	}
+}
+
+// drain processes every queued packet.
+func (rc *RecordingConsumer) drain() {
+	rc.drainMu.Lock()
+	defer rc.drainMu.Unlock()
+	rc.drainLocked()
+}
+
+// drainLocked is drain for a caller that holds drainMu.
+func (rc *RecordingConsumer) drainLocked() {
 	for {
 		select {
 		case msg := <-rc.pktCh:
 			rc.dispatch(msg)
-		case <-rc.stop:
-			// Drain what is already queued so the final GOP is written
-			// before the segment is finalized, then stop.
-			for {
-				select {
-				case msg := <-rc.pktCh:
-					rc.dispatch(msg)
-				default:
-					return
-				}
-			}
+		default:
+			return
 		}
 	}
 }
@@ -393,6 +493,16 @@ func (rc *RecordingConsumer) handlePaused() {
 
 func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 	defer rc.updateAudioError()
+
+	// A segment that has run its length ends where a frame ends: the first
+	// packet of the next frame closes it and opens the next one, so no frame
+	// is split between two files.
+	if pkt != nil {
+		if rc.haveVideoTS && pkt.Timestamp != rc.videoTS {
+			rc.maybeRotate()
+		}
+		rc.videoTS, rc.haveVideoTS = pkt.Timestamp, true
+	}
 	if err := rc.ensureSegment(); err != nil {
 		rc.handleWriteError(err)
 		return
@@ -421,7 +531,6 @@ func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 	}
 
 	rc.writeErrors = 0
-	rc.maybeRotate()
 }
 
 func (rc *RecordingConsumer) processAudio(pkt *rtp.Packet) {

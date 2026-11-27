@@ -85,16 +85,17 @@ func waitOpenSegment(t *testing.T, rc *RecordingConsumer) string {
 	return ""
 }
 
-// waitDrained waits until every queued packet has been processed. Emptying the
-// channel is not enough (the last packet is dispatched after the receive), so
-// it also takes rc.mu, which the dispatch holds for the whole packet.
+// waitDrained waits until every queued packet has been processed and the loop
+// has stopped looking for more. Emptying the channel is not enough (the last
+// packet is dispatched after the receive, and the drain then checks the queue
+// again), so it also takes rc.drainMu, which is held for the whole drain.
 func waitDrained(t *testing.T, rc *RecordingConsumer) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(rc.pktCh) == 0 {
-			rc.mu.Lock()
-			rc.mu.Unlock() //nolint:staticcheck // barrier: waits for the in-flight dispatch
+			rc.drainMu.Lock()
+			rc.drainMu.Unlock() //nolint:staticcheck // barrier: waits for the in-flight drain
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -181,7 +182,7 @@ func TestRecordingConsumer_PanicDiscardRemovesItsRow(t *testing.T) {
 
 	// A nil packet panics inside the real decode path; the consumer recovers
 	// and discards the poisoned writer along with its file.
-	rc.pktCh <- rtpMsg{pkt: nil, video: true}
+	rc.OnVideoRTP(nil)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); os.IsNotExist(err) {

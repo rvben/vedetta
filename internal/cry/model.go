@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -26,13 +27,64 @@ type manifest struct {
 	Resample     []float64 `json:"resample"`
 }
 
-// Model owns one session. Callers must serialize Score calls.
+// constantLevels bounds how many distinct constant windows a model remembers.
+// It holds every level G.711 can decode to, 256 each for A-law and mu-law, so
+// camera audio never fills it; the bound is for callers that score other PCM.
+const constantLevels = 512
+
+// Model owns one session and serializes its own inference.
 type Model struct {
 	mu       sync.Mutex
 	session  *onnxruntime.Session
 	manifest manifest
 	frontend frontend
+
+	// constant holds the model's own score for windows in which every sample
+	// has the same value, keyed by that value. Inference is deterministic, so
+	// such a window is answered from here without running the model again.
+	constantMu sync.Mutex
+	constant   map[int16]float32
 }
+
+// constantLevel reports the value of a window whose samples are all equal.
+func constantLevel(pcm []int16) (int16, bool) {
+	level := pcm[0]
+	for _, s := range pcm[1:] {
+		if s != level {
+			return 0, false
+		}
+	}
+	return level, true
+}
+
+// remembered returns the stored score of a constant window: constant says
+// whether every sample equals level, ok whether that level's score is stored.
+func (m *Model) remembered(pcm []int16) (score float32, level int16, constant, ok bool) {
+	level, constant = constantLevel(pcm)
+	if !constant {
+		return 0, 0, false, false
+	}
+	m.constantMu.Lock()
+	defer m.constantMu.Unlock()
+	score, ok = m.constant[level]
+	return score, level, true, ok
+}
+
+func (m *Model) remember(level int16, score float32) {
+	m.constantMu.Lock()
+	defer m.constantMu.Unlock()
+	if m.constant == nil {
+		m.constant = make(map[int16]float32, constantLevels)
+	}
+	if len(m.constant) < constantLevels {
+		m.constant[level] = score
+	}
+}
+
+// windowSamples is two seconds of 8 kHz audio, the only length the model takes.
+const windowSamples = 16000
+
+var errWindowLength = errors.New("YAMNet requires two seconds of 8 kHz mono PCM")
 
 func readBounded(path string, limit int64) ([]byte, error) {
 	f, err := os.Open(path)
@@ -100,37 +152,53 @@ func Load(path, digest string) (*Model, error) {
 		return nil, fmt.Errorf("unexpected cry model output")
 	}
 	m := &Model{session: session, manifest: meta, frontend: newFrontend(meta)}
-	if _, err := m.Score(make([]int16, 16000)); err != nil {
+	if _, err := m.Score(make([]int16, windowSamples)); err != nil {
 		return nil, fmt.Errorf("cry model warmup: %w", err)
 	}
 	return m, nil
 }
 
-func (m *Model) Score(pcm []int16) (score float32, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.score(pcm)
+// Score returns the cry score of one two-second window of 8 kHz mono PCM.
+func (m *Model) Score(pcm []int16) (float32, error) {
+	return m.scoreWith(pcm, func() bool { m.mu.Lock(); return true })
 }
 
 // TryScore sheds work while another camera uses the shared model. It never
 // builds an inference backlog and keeps only one active session's tensors.
+// A remembered constant window needs no session, so it is answered even then.
 func (m *Model) TryScore(pcm []int16) (float32, error) {
-	if !m.mu.TryLock() {
+	return m.scoreWith(pcm, m.mu.TryLock)
+}
+
+func (m *Model) scoreWith(pcm []int16, lock func() bool) (float32, error) {
+	if len(pcm) != windowSamples {
+		return 0, errWindowLength
+	}
+	score, level, constant, ok := m.remembered(pcm)
+	if ok {
+		return score, nil
+	}
+	if !lock() {
 		return 0, ErrBusy
 	}
 	defer m.mu.Unlock()
-	return m.score(pcm)
+	score, err := m.infer(pcm)
+	if err == nil && constant {
+		m.remember(level, score)
+	}
+	return score, err
 }
 
-func (m *Model) score(pcm []int16) (score float32, err error) {
+// infer runs the model on one window. The caller holds mu.
+func (m *Model) infer(pcm []int16) (score float32, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			score = 0
 			err = fmt.Errorf("cry inference failed: %v", r)
 		}
 	}()
-	if len(pcm) != 16000 {
-		return 0, fmt.Errorf("YAMNet requires two seconds of 8 kHz mono PCM")
+	if len(pcm) != windowSamples {
+		return 0, errWindowLength
 	}
 	patches := m.features(pcm)
 	for _, patch := range patches {

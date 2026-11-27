@@ -104,10 +104,11 @@ test: test-js test-audio-bench
 test-audio-bench:
 	uv run --no-project --python $(PYTHON_VERSION) python -m unittest discover -s tools/audiobench -p 'test_*.py'
 
-# Explicit reference-model parity; never downloads assets during normal checks.
+# Explicit reference-model parity, and proof that a remembered constant window
+# carries the model's own score; never downloads assets during normal checks.
 test-cry-model:
 	@test -n "$(VEDETTA_CRY_MODEL)" -a -n "$(VEDETTA_CRY_FIXTURES)" || (echo "Set VEDETTA_CRY_MODEL and VEDETTA_CRY_FIXTURES; see tools/audiobench/README.md"; exit 1)
-	go test ./internal/cry -run TestReferenceParity -count=1 -v
+	go test ./internal/cry -run 'TestReferenceParity|TestRememberedScoreIsTheModelScore' -count=1 -v
 
 # Browser-side pure logic (no DOM) is extracted into standalone modules and
 # unit-tested with the Node built-in test runner so it runs locally and in CI

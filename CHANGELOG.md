@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.3](https://github.com/rvben/vedetta/compare/v0.8.2...v0.8.3) - 2026-11-27
+
+### Performance
+
+- **cry**: answer a silent window without running the model ([a273628](https://github.com/rvben/vedetta/commit/a2736287ebff7cf67ff8689d97f0149631868332))
+
 ## [0.8.2](https://github.com/rvben/vedetta/compare/v0.8.1...v0.8.2) - 2026-11-27
 
 ### Performance

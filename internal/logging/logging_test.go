@@ -91,7 +91,7 @@ func TestInitExportsToOTLPReceiverWithResourceAndCorrelation(t *testing.T) {
 	var buf bytes.Buffer
 	base := baseHandler(&buf)
 	// httptest serves plain HTTP at the server root; use the URL form so the http
-	// exporter targets it. ensureLogsPath must append /v1/logs.
+	// exporter targets it. The exporter must post to /v1/logs.
 	p, err := Init(context.Background(), Config{
 		Enabled:     true,
 		Endpoint:    srv.URL,
@@ -269,26 +269,4 @@ func assertHasAttr(t *testing.T, req *collogspb.ExportLogsServiceRequest, key, v
 		}
 	}
 	t.Errorf("exported log record missing attribute %s=%q", key, value)
-}
-
-func TestEnsureLogsPath(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"no path gets /v1/logs", "http://host:4318", "http://host:4318/v1/logs"},
-		{"root path gets /v1/logs", "http://host:4318/", "http://host:4318/v1/logs"},
-		{"correct path preserved", "http://host:4318/v1/logs", "http://host:4318/v1/logs"},
-		{"custom path preserved", "http://host:4318/custom/path", "http://host:4318/custom/path"},
-		{"https no path gets /v1/logs", "https://otel.example.com", "https://otel.example.com/v1/logs"},
-		{"unparseable returned unchanged", "://not a url", "://not a url"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := ensureLogsPath(tc.in); got != tc.want {
-				t.Errorf("ensureLogsPath(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
 }

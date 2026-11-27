@@ -238,8 +238,9 @@ notifications:
 tracing:
   enabled: false
   # OTLP endpoint. A scheme-less host:port (paired with insecure below) or a
-  # full URL (e.g. https://otel.example.com). Empty + enabled falls back to
-  # OTEL_EXPORTER_OTLP_ENDPOINT.
+  # full URL (e.g. https://otel.example.com). A URL without a path is sent to
+  # /v1/traces; a path you write is used as it is. Empty + enabled falls back
+  # to OTEL_EXPORTER_OTLP_ENDPOINT.
   endpoint: ""
   # "http" (OTLP/HTTP, default port 4318) or "grpc" (OTLP/gRPC, default 4317).
   protocol: http

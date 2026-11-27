@@ -65,7 +65,7 @@ func buildExporter(ctx context.Context, cfg Config, getenv func(string) string) 
 	// default: OTLP/HTTP ("http", "http/protobuf", or unset)
 	var opts []otlptracehttp.Option
 	if re.AsURL {
-		opts = append(opts, otlptracehttp.WithEndpointURL(re.Value))
+		opts = append(opts, otlptracehttp.WithEndpointURL(otelexport.WithSignalPath(re.Value, "/v1/traces")))
 	} else {
 		opts = append(opts, otlptracehttp.WithEndpoint(re.Value))
 		if re.Insecure {

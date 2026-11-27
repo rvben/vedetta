@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/url"
 	"os"
 	"time"
 
@@ -120,7 +119,7 @@ func buildExporter(ctx context.Context, cfg Config, getenv func(string) string) 
 	var opts []otlploghttp.Option
 	if explicit {
 		if ep.AsURL {
-			opts = append(opts, otlploghttp.WithEndpointURL(ensureLogsPath(ep.Value)))
+			opts = append(opts, otlploghttp.WithEndpointURL(otelexport.WithSignalPath(ep.Value, "/v1/logs")))
 		} else {
 			opts = append(opts, otlploghttp.WithEndpoint(ep.Value))
 			if ep.Insecure {
@@ -132,19 +131,4 @@ func buildExporter(ctx context.Context, cfg Config, getenv func(string) string) 
 		opts = append(opts, otlploghttp.WithHeaders(cfg.Headers))
 	}
 	return otlploghttp.New(ctx, opts...)
-}
-
-// ensureLogsPath guarantees a URL-form HTTP endpoint carries the /v1/logs path.
-// otlploghttp.WithEndpointURL records the parsed URL path as an explicit setting,
-// so an empty or root path is taken literally (posting to "/") and the exporter
-// does NOT fall back to its default /v1/logs the way the trace exporter does. A
-// scheme-less host:port endpoint goes through WithEndpoint instead and keeps the
-// default path, so it is not affected. An explicit non-root path is respected.
-func ensureLogsPath(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil || (u.Path != "" && u.Path != "/") {
-		return rawURL
-	}
-	u.Path = "/v1/logs"
-	return u.String()
 }

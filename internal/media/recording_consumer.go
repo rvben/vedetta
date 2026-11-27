@@ -160,6 +160,10 @@ type RecordingConsumer struct {
 	pausedSince     time.Time
 	lastDiskWarning time.Time
 	writeErrors     int
+	outage          writeOutage
+	// outageFlushed is how much media the open segment had taken when its
+	// last write failed. Media beyond it is a write that succeeded since.
+	outageFlushed time.Duration
 }
 
 // NewRecordingConsumer creates a consumer that records to rotating fMP4 segments.
@@ -492,10 +496,14 @@ func (rc *RecordingConsumer) handlePaused() {
 		return
 	}
 
-	slog.Info("recording resumed, disk space recovered",
-		"camera", rc.camera,
-		"available_mb", avail/(1024*1024),
-	)
+	// After a pause for write failures this is a retry, and whether recording
+	// resumed is known only once a write succeeds.
+	if !rc.outage.paused {
+		slog.Info("recording resumed, disk space recovered",
+			"camera", rc.camera,
+			"available_mb", avail/(1024*1024),
+		)
+	}
 	rc.paused = false
 	rc.pausedAtomic.Store(false)
 	rc.writeErrors = 0
@@ -526,7 +534,9 @@ func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 		// The new segment starts when that keyframe arrived, and the carry
 		// brings pkt along.
 		carry := rc.writer.TakeCarry()
-		rc.closeCurrentSegment()
+		if rc.closeCurrentSegment() {
+			rc.mediaWritten()
+		}
 		if err := rc.openSegment(carry.Received()); err != nil {
 			rc.handleWriteError(err)
 			return
@@ -544,7 +554,9 @@ func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 		slog.Warn("video timestamp gap, rotating segment",
 			"camera", rc.camera, "path", rc.segPath)
 		carry := rc.writer.TakeCarry()
-		rc.closeCurrentSegment()
+		if rc.closeCurrentSegment() {
+			rc.mediaWritten()
+		}
 		if err := rc.openSegment(carry.Received()); err != nil {
 			rc.handleWriteError(err)
 			return
@@ -556,7 +568,23 @@ func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 		return
 	}
 
+	// The writer buffers a GOP before it writes one, so during an outage a
+	// packet it accepted says nothing about the volume. The outage is over
+	// once the file holds more media than when the last write failed.
+	if rc.outage.ongoing() && rc.writer.FlushedDuration() <= rc.outageFlushed {
+		return
+	}
+	rc.mediaWritten()
+}
+
+// mediaWritten records that media reached a segment file, which ends a write
+// outage. Called with mu held.
+func (rc *RecordingConsumer) mediaWritten() {
 	rc.writeErrors = 0
+	if lasted, wasPaused := rc.outage.recovered(time.Now()); wasPaused {
+		slog.Info("recording resumed, writes succeed again",
+			"camera", rc.camera, "outage", lasted.Round(time.Second))
+	}
 }
 
 func (rc *RecordingConsumer) processAudio(pkt *rtp.Packet) {
@@ -579,17 +607,28 @@ func (rc *RecordingConsumer) processAudio(pkt *rtp.Packet) {
 }
 
 // handleWriteError handles write failures. On repeated errors (likely disk full),
-// it closes the segment and pauses recording. Called with mu held.
+// it closes the segment and pauses recording. An outage that outlasts its
+// first pause is logged at intervals, not at every retry. Called with mu held.
 func (rc *RecordingConsumer) handleWriteError(err error) {
 	rc.writeErrors++
+	now := time.Now()
+	rc.outageFlushed = 0
+	if rc.writer != nil {
+		rc.outageFlushed = rc.writer.FlushedDuration()
+	}
 
 	if rc.writeErrors >= 3 {
-		slog.Error("repeated write failures, pausing recording",
-			"camera", rc.camera,
-			"error", err,
-			"consecutive_errors", rc.writeErrors,
-		)
+		if report, unreported := rc.outage.pause(now); report {
+			slog.Error("repeated write failures, pausing recording",
+				"camera", rc.camera,
+				"error", err,
+				"consecutive_errors", rc.writeErrors,
+				"failing_for", now.Sub(rc.outage.since).Round(time.Second),
+				"retries_since_last_report", unreported,
+			)
+		}
 		rc.closeCurrentSegment()
+		rc.outageFlushed = 0
 		rc.paused = true
 		rc.pausedAtomic.Store(true)
 		rc.pausedSince = time.Now()
@@ -597,7 +636,9 @@ func (rc *RecordingConsumer) handleWriteError(err error) {
 		return
 	}
 
-	slog.Error("write failed", "camera", rc.camera, "error", err)
+	if rc.outage.failure(now) {
+		slog.Error("write failed", "camera", rc.camera, "error", err)
+	}
 }
 
 func (rc *RecordingConsumer) ensureSegment() error {
@@ -741,9 +782,13 @@ func (rc *RecordingConsumer) maybeRotate() {
 	rc.closeCurrentSegment()
 }
 
-func (rc *RecordingConsumer) closeCurrentSegment() {
+// closeCurrentSegment ends the open segment and registers what it holds. It
+// reports whether the segment closed cleanly with media in it, which is proof
+// that the volume takes writes: the close flushes the frames the writer still
+// buffered.
+func (rc *RecordingConsumer) closeCurrentSegment() (wroteMedia bool) {
 	if rc.writer == nil {
-		return
+		return false
 	}
 
 	duration, closeErr := rc.writer.Close()
@@ -787,10 +832,12 @@ func (rc *RecordingConsumer) closeCurrentSegment() {
 		}
 		slog.Debug("segment completed", "camera", rc.camera, "path", rc.segPath,
 			"duration", duration.Round(time.Second), "size", info.Size())
+		wroteMedia = closeErr == nil && duration > 0
 	}
 
 	rc.writer = nil
 	rc.currentPath = ""
+	return wroteMedia
 }
 
 // Camera returns the camera name this consumer records for.

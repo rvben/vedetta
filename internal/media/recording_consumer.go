@@ -65,6 +65,12 @@ const recordingQueueDepth = 512
 // recordingBackstopInterval is how long after its last wake-up processLoop
 // looks at the queue again, and so the longest a queued packet waits. A variable so tests can take the
 // backstop out of the picture; each consumer reads it once, when it is built.
+// rotationKeyframeGrace bounds how far a segment outlasts its configured
+// length while it waits for a keyframe to end on. Camera keyframe intervals
+// are a few seconds at most; a stream that exceeds this is cut mid-GOP, which
+// loses the frames up to its next keyframe.
+const rotationKeyframeGrace = 10 * time.Second
+
 var recordingBackstopInterval = 100 * time.Millisecond
 
 type rtpMsg struct {
@@ -117,6 +123,9 @@ type RecordingConsumer struct {
 	// hang in file creation can be bounded and tested. Defaults to
 	// NewSegmentWriter.
 	newWriter func(path string, video, audio *rtsp.TrackInfo) (*SegmentWriter, error)
+	// keyframeGrace is how long past its length a segment waits for a
+	// keyframe to end on.
+	keyframeGrace time.Duration
 	// createTimeout bounds one newWriter call. Defaults to
 	// segmentWriterCreateTimeout; lowered by tests.
 	createTimeout time.Duration
@@ -161,18 +170,19 @@ func NewRecordingConsumer(segDir, camera string, segLen time.Duration, video, au
 	}
 
 	rc := &RecordingConsumer{
-		camera:     camera,
-		segLen:     segLen,
-		videoTrack: video,
-		audioTrack: audio,
-		onSegment:  onSegment,
-		segDir:     segDir,
-		disk:       disk,
-		pktCh:      make(chan rtpMsg, recordingQueueDepth),
-		wake:       make(chan struct{}, 1),
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
-		newWriter:  NewSegmentWriter,
+		camera:        camera,
+		segLen:        segLen,
+		videoTrack:    video,
+		audioTrack:    audio,
+		onSegment:     onSegment,
+		segDir:        segDir,
+		disk:          disk,
+		pktCh:         make(chan rtpMsg, recordingQueueDepth),
+		wake:          make(chan struct{}, 1),
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
+		newWriter:     NewSegmentWriter,
+		keyframeGrace: rotationKeyframeGrace,
 
 		createTimeout: segmentWriterCreateTimeout,
 	}
@@ -494,9 +504,9 @@ func (rc *RecordingConsumer) handlePaused() {
 func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 	defer rc.updateAudioError()
 
-	// A segment that has run its length ends where a frame ends: the first
-	// packet of the next frame closes it and opens the next one, so no frame
-	// is split between two files.
+	// A segment that has run its length is ended on a frame boundary, where
+	// the first packet of the next frame arrives, so no frame is split
+	// between two files.
 	if pkt != nil {
 		if rc.haveVideoTS && pkt.Timestamp != rc.videoTS {
 			rc.maybeRotate()
@@ -509,6 +519,20 @@ func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 	}
 
 	err := rc.writer.WriteVideo(pkt)
+	if errors.Is(err, ErrSegmentSplit) {
+		// The writer ended the segment because it has run its length, and
+		// withheld the keyframe it ended on. That keyframe opens the next
+		// file, so the two segments are contiguous and each starts decodable.
+		// The new segment starts when that keyframe arrived, and the carry
+		// brings pkt along.
+		carry := rc.writer.TakeCarry()
+		rc.closeCurrentSegment()
+		if err := rc.openSegment(carry.Received()); err != nil {
+			rc.handleWriteError(err)
+			return
+		}
+		err = rc.writer.WriteCarry(carry)
+	}
 	if errors.Is(err, ErrTimestampGap) {
 		// The stream stalled (or its clock jumped) mid-segment without an
 		// RTSP disconnect. Close the segment at its honest end and start a
@@ -535,6 +559,14 @@ func (rc *RecordingConsumer) processVideo(pkt *rtp.Packet) {
 
 func (rc *RecordingConsumer) processAudio(pkt *rtp.Packet) {
 	if rc.writer == nil {
+		return
+	}
+	// A segment is ended where a video frame starts. One that is still open
+	// two grace periods past its length has had no such frame, so the video
+	// has stopped, and audio alone must not keep the file growing. The next
+	// video packet opens a new segment.
+	if time.Since(rc.segStart) >= rc.segLen+2*rc.keyframeGrace {
+		rc.closeCurrentSegment()
 		return
 	}
 
@@ -570,7 +602,12 @@ func (rc *RecordingConsumer) ensureSegment() error {
 	if rc.writer != nil {
 		return nil
 	}
+	return rc.openSegment(time.Now())
+}
 
+// openSegment starts a segment whose first frame arrived at start. Called
+// with mu held and no segment open.
+func (rc *RecordingConsumer) openSegment(start time.Time) error {
 	// A create that timed out is still wedged in the kernel, holding two
 	// goroutines: the one blocked in os.Create and the one waiting to reap it.
 	// Recording retries every diskPauseRetryInterval for as long as the volume
@@ -599,14 +636,13 @@ func (rc *RecordingConsumer) ensureSegment() error {
 		return fmt.Errorf("insufficient disk space: %d MB available", avail/(1024*1024))
 	}
 
-	now := time.Now()
-	rc.segStart = now
+	rc.segStart = start
 	// Filenames have second resolution; a gap rotation can open the next
 	// segment within the same second, which would silently truncate the file
 	// just closed. Suffix same-second names with a counter (no Stat: a probe
 	// on a stalled volume would hang the processLoop, see
 	// segmentWriterCreateTimeout).
-	base := now.Format("2006-01-02_15-04-05")
+	base := start.Format("2006-01-02_15-04-05")
 	if base == rc.lastSegBase {
 		rc.segDupCount++
 		base = fmt.Sprintf("%s_%d", base, rc.segDupCount)
@@ -659,13 +695,14 @@ func (rc *RecordingConsumer) ensureSegment() error {
 	slog.Debug("started new segment", "camera", rc.camera, "path", rc.segPath)
 
 	// Register segment in DB immediately so it's queryable before rotation.
-	// Uses projected end time; closeCurrentSegment will update with actual values.
+	// The projected end is the latest the segment can run: its length plus the
+	// wait for a keyframe. closeCurrentSegment replaces it with actual values.
 	if rc.onSegment != nil {
 		rc.onSegment(SegmentInfo{
 			Camera:    rc.camera,
 			Path:      rc.segPath,
 			StartTime: rc.segStart,
-			EndTime:   rc.segStart.Add(rc.segLen),
+			EndTime:   rc.segStart.Add(rc.segLen + rc.keyframeGrace),
 			SizeBytes: 0,
 		})
 	}
@@ -673,9 +710,31 @@ func (rc *RecordingConsumer) ensureSegment() error {
 	return nil
 }
 
+// maybeRotate ends a segment that has run its length. A new file can only
+// start at a keyframe, so the segment runs on until the stream's next one and
+// the writer splits there (ErrSegmentSplit); closing at once would lose every
+// frame up to that keyframe. A stream that sends none within
+// rotationKeyframeGrace is split at its next frame instead. A writer that
+// cannot split is closed here, and so is one that was asked to and has not
+// completed a frame in a second grace period: its video no longer decodes,
+// and audio alone would keep the file growing.
 func (rc *RecordingConsumer) maybeRotate() {
-	if time.Since(rc.segStart) < rc.segLen {
+	if rc.writer == nil {
 		return
+	}
+	over := time.Since(rc.segStart) - rc.segLen
+	if over < 0 {
+		return
+	}
+	switch {
+	case over < rc.keyframeGrace:
+		if rc.writer.SplitAtNextKeyframe() {
+			return
+		}
+	case over < 2*rc.keyframeGrace:
+		if rc.writer.SplitAtNextFrame() {
+			return
+		}
 	}
 	rc.closeCurrentSegment()
 }

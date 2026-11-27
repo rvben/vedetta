@@ -28,6 +28,34 @@ import (
 // rest of the file. Callers should close the segment and start a new one.
 var ErrTimestampGap = errors.New("video RTP timestamp gap")
 
+// ErrSegmentSplit reports that WriteVideo ended the segment on a frame
+// boundary because the caller asked for it (SplitAtNextKeyframe,
+// SplitAtNextFrame). What belongs to the next segment waits in TakeCarry for
+// that segment's WriteCarry; the packet that completed the frame is already
+// consumed and travels with it.
+var ErrSegmentSplit = errors.New("segment split on a frame boundary")
+
+// VideoCarry is what one segment hands to the next when it is split: the
+// keyframe it withheld, so the second file starts where the first one stops,
+// and the depacketizer. A frame is only known to be complete once the frame
+// after it has delivered a whole NAL unit, which can be several packets in,
+// so the depacketizer goes along with everything it holds of that next frame.
+// A split forced on a frame that is no keyframe carries no frame.
+type VideoCarry struct {
+	au       [][]byte
+	duration uint32
+	received time.Time
+	sps, pps []byte
+
+	decoder          *rtsp.H264AccessUnitDecoder
+	pendingTimestamp uint32
+	pendingTime      time.Time
+}
+
+// Received returns when the first packet of the carried keyframe arrived, or
+// of the frame still being assembled when no keyframe is carried.
+func (c *VideoCarry) Received() time.Time { return c.received }
+
 const (
 	// maxPendingPartSeconds bounds how much media time may sit in the GOP
 	// buffer before it is written out. A stream that stops emitting keyframes
@@ -78,10 +106,18 @@ type SegmentWriter struct {
 	videoTimeScale    uint32
 	audioTimeScale    uint32
 
+	// Arrival of the first packet of the newest frame, and of the frame before
+	// it: a frame leaves the depacketizer only after the next one has started.
 	pendingVideoTimestamp uint32
 	pendingVideoTime      time.Time
 	hasPendingVideoTime   bool
+	prevVideoTimestamp    uint32
+	prevVideoTime         time.Time
+	hasPrevVideoTime      bool
 	skipDecoderFlush      bool
+	splitRequested        bool
+	splitAnyFrame         bool
+	carry                 *VideoCarry
 
 	// GOP buffering: accumulate samples until next keyframe
 	pendingVideoSamples []*fmp4.Sample
@@ -197,14 +233,12 @@ func (sw *SegmentWriter) WriteVideo(pkt *rtp.Packet) error {
 
 	now := time.Now()
 	sw.mu.Lock()
-	accessUnitTime := sw.pendingVideoTime
 	if !sw.hasPendingVideoTime {
 		sw.pendingVideoTimestamp = pkt.Timestamp
 		sw.pendingVideoTime = now
 		sw.hasPendingVideoTime = true
-		accessUnitTime = now
 	} else if pkt.Timestamp != sw.pendingVideoTimestamp {
-		accessUnitTime = sw.pendingVideoTime
+		sw.prevVideoTimestamp, sw.prevVideoTime, sw.hasPrevVideoTime = sw.pendingVideoTimestamp, sw.pendingVideoTime, true
 		sw.pendingVideoTimestamp = pkt.Timestamp
 		sw.pendingVideoTime = now
 	}
@@ -234,7 +268,90 @@ func (sw *SegmentWriter) WriteVideo(pkt *rtp.Packet) error {
 
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
+	// The frame that just left the depacketizer is usually the one before the
+	// newest: its last packet is followed by the packets that complete the
+	// first NAL unit of the next frame.
+	accessUnitTime := sw.pendingVideoTime
+	if sw.hasPrevVideoTime && rtpTimestamp != sw.pendingVideoTimestamp {
+		accessUnitTime = sw.prevVideoTime
+	}
+	keyframe := h264.IsRandomAccess(h264au.DropSEI(au))
+	if sw.splitRequested && sw.initWritten && (keyframe || sw.splitAnyFrame) {
+		// The decoder already holds the start of the next frame, so it moves
+		// to the next segment and Close must not flush it into this file.
+		carry := &VideoCarry{
+			received: sw.pendingVideoTime,
+			decoder:  sw.h264Decoder, pendingTimestamp: sw.pendingVideoTimestamp, pendingTime: sw.pendingVideoTime,
+		}
+		if keyframe {
+			carry.au, carry.duration, carry.received = au, sampleDuration, accessUnitTime
+			carry.sps, carry.pps, _ = h264au.TrackParameterSets(au, sw.videoSPS, sw.videoPPS)
+		} else if err := sw.writeVideoAccessUnit(au, sampleDuration, accessUnitTime); err != nil {
+			return err
+		}
+		sw.carry = carry
+		sw.skipDecoderFlush = true
+		return ErrSegmentSplit
+	}
 	return sw.writeVideoAccessUnit(au, sampleDuration, accessUnitTime)
+}
+
+// SplitAtNextKeyframe asks WriteVideo to withhold the next keyframe and return
+// ErrSegmentSplit instead of writing it. It reports false when this writer can
+// never do so: it has no H.264 track, or no keyframe has opened the file yet.
+func (sw *SegmentWriter) SplitAtNextKeyframe() bool {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if sw.h264Decoder == nil || !sw.initWritten {
+		return false
+	}
+	sw.splitRequested = true
+	return true
+}
+
+// SplitAtNextFrame asks WriteVideo to end the segment at the next frame
+// boundary whatever the frame is: a keyframe is withheld for the next segment,
+// any other frame is written here first. It reports false as
+// SplitAtNextKeyframe does.
+func (sw *SegmentWriter) SplitAtNextFrame() bool {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if sw.h264Decoder == nil || !sw.initWritten {
+		return false
+	}
+	sw.splitRequested, sw.splitAnyFrame = true, true
+	return true
+}
+
+// TakeCarry returns what the WriteVideo call that returned ErrSegmentSplit
+// left for the next segment, once.
+func (sw *SegmentWriter) TakeCarry() *VideoCarry {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	c := sw.carry
+	sw.carry = nil
+	return c
+}
+
+// WriteCarry continues the previous segment's stream in this one: it writes
+// the keyframe withheld there as this segment's first sample, with the arrival
+// time and duration it had, and goes on with the frame after it from the
+// depacketizer that came along.
+func (sw *SegmentWriter) WriteCarry(c *VideoCarry) error {
+	if c == nil {
+		return nil
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if c.sps != nil && c.pps != nil {
+		sw.videoSPS, sw.videoPPS = c.sps, c.pps
+	}
+	sw.h264Decoder = c.decoder
+	sw.pendingVideoTimestamp, sw.pendingVideoTime, sw.hasPendingVideoTime = c.pendingTimestamp, c.pendingTime, true
+	if len(c.au) == 0 {
+		return nil
+	}
+	return sw.writeVideoAccessUnit(c.au, c.duration, c.received)
 }
 
 // writeVideoAccessUnit writes one timestamp-coalesced H.264 frame. sw.mu must

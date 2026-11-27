@@ -68,10 +68,14 @@ const (
 	// maxPendingPartBytes bounds the same buffer by size, which is what
 	// catches a high-bitrate stream well before the duration ceiling.
 	maxPendingPartBytes = 8 << 20
-	// noKeyframeLogInterval rate-limits the warning about a stream whose
-	// keyframe interval exceeds maxPendingPartSeconds.
-	noKeyframeLogInterval = time.Minute
 )
+
+// cappedPart describes a part written out because the GOP buffer reached its
+// duration ceiling, until the next frame shows whether a keyframe was due.
+type cappedPart struct {
+	buffered time.Duration
+	samples  int
+}
 
 // SegmentWriter writes RTP packets into an fMP4 file.
 // Video and audio samples are buffered per GOP (group of pictures) and flushed
@@ -129,7 +133,8 @@ type SegmentWriter struct {
 	pendingAudioDTS     uint64 // base decode time for pending audio
 	pendingBytes        int    // payload bytes buffered but not yet marshaled
 	flushedVideoDTS     uint64 // video media time actually marshaled to the file
-	lastNoKeyframeLog   time.Time
+	cappedPart          *cappedPart
+	lateKeyframeLogged  bool
 }
 
 // NewSegmentWriter creates a new fMP4 segment writer.
@@ -426,6 +431,8 @@ func (sw *SegmentWriter) writeVideoAccessUnit(au [][]byte, sampleDuration uint32
 		Payload:         avcc,
 	}
 
+	sw.reportLateKeyframe(au)
+
 	// On keyframe: flush the previous GOP before starting a new one
 	if h264.IsRandomAccess(au) && len(sw.pendingVideoSamples) > 0 {
 		if err := sw.flushGOP(); err != nil {
@@ -444,6 +451,25 @@ func (sw *SegmentWriter) writeVideoAccessUnit(au [][]byte, sampleDuration uint32
 	sw.lastVideoDuration = sample.Duration
 
 	return sw.capPendingPart()
+}
+
+// reportLateKeyframe warns, once per segment, when the frame that follows a
+// part capped at the duration ceiling is not a keyframe: only then was a GOP
+// cut short. A camera whose keyframe interval equals the ceiling reaches it on
+// the last frame of every GOP, and the part written there is the whole GOP.
+// Called with sw.mu held.
+func (sw *SegmentWriter) reportLateKeyframe(au [][]byte) {
+	capped := sw.cappedPart
+	sw.cappedPart = nil
+	if capped == nil || sw.lateKeyframeLogged || h264.IsRandomAccess(au) {
+		return
+	}
+	sw.lateKeyframeLogged = true
+	slog.Warn("no keyframe within the expected interval, wrote a partial GOP",
+		"path", sw.path,
+		"buffered", capped.buffered.Round(time.Millisecond),
+		"samples", capped.samples,
+	)
 }
 
 // capPendingPart writes the buffered samples out early when the GOP buffer
@@ -467,14 +493,11 @@ func (sw *SegmentWriter) capPendingPart() error {
 		return nil
 	}
 
-	if overTime && time.Since(sw.lastNoKeyframeLog) > noKeyframeLogInterval {
-		buffered := time.Duration(sw.videoDTS-sw.pendingVideoDTS) * time.Second / time.Duration(sw.videoTimeScale)
-		slog.Warn("no keyframe within the expected interval, flushing a partial GOP",
-			"path", sw.path,
-			"buffered", buffered.Round(time.Millisecond),
-			"samples", len(sw.pendingVideoSamples),
-		)
-		sw.lastNoKeyframeLog = time.Now()
+	if overTime {
+		sw.cappedPart = &cappedPart{
+			buffered: time.Duration(sw.videoDTS-sw.pendingVideoDTS) * time.Second / time.Duration(sw.videoTimeScale),
+			samples:  len(sw.pendingVideoSamples),
+		}
 	}
 
 	return sw.flushGOP()

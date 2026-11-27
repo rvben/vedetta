@@ -304,3 +304,59 @@ func TestSegmentWriter_Duration(t *testing.T) {
 		t.Errorf("duration = %v, expected >= 50ms", dur)
 	}
 }
+
+// partialGOPWarning is the message SegmentWriter logs when it had to cut a GOP
+// short.
+const partialGOPWarning = "no keyframe within the expected interval, wrote a partial GOP"
+
+// writeGOPs feeds the writer whole GOPs of the given length at 20 frames a
+// second, and one more keyframe to end the last.
+func writeGOPs(t *testing.T, sw *SegmentWriter, gops, framesPerGOP int) {
+	t.Helper()
+	const frame = 4500
+	total := gops*framesPerGOP + 1
+	for i := 0; i < total; i++ {
+		nal := byte(0x41)
+		if i%framesPerGOP == 0 {
+			nal = 0x65
+		}
+		if err := sw.WriteVideo(h264TestPacket(uint16(i+1), uint32(i*frame), nal)); err != nil {
+			t.Fatalf("WriteVideo[%d]: %v", i, err)
+		}
+	}
+}
+
+// A camera whose keyframe interval equals the part ceiling fills the buffer to
+// the ceiling on the last frame of every GOP. The part written there is the
+// whole GOP and the keyframe follows on time, so nothing is reported.
+func TestSegmentWriter_AKeyframeIntervalAtTheCeilingIsNotReported(t *testing.T) {
+	logs := countLogMessages(t)
+	sw := newTestVideoWriter(t, "gop-at-ceiling.mp4")
+	writeGOPs(t, sw, 3, 20*maxPendingPartSeconds)
+	if _, err := sw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n := logs.count(partialGOPWarning); n != 0 {
+		t.Errorf("%d warnings for a stream whose keyframes arrive on time", n)
+	}
+	if sw.seqNum != 4 {
+		t.Errorf("wrote %d parts, want one per GOP and the closing keyframe (4)", sw.seqNum)
+	}
+}
+
+// A stream whose keyframes are further apart than the ceiling has its GOPs cut
+// into parts. That is reported once per segment, not at every GOP.
+func TestSegmentWriter_ALateKeyframeIsReportedOncePerSegment(t *testing.T) {
+	logs := countLogMessages(t)
+	sw := newTestVideoWriter(t, "late-keyframe.mp4")
+	writeGOPs(t, sw, 3, 20*maxPendingPartSeconds+10)
+	if _, err := sw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n := logs.count(partialGOPWarning); n != 1 {
+		t.Errorf("%d warnings, want one for the segment", n)
+	}
+	if got := logs.lastAttr(partialGOPWarning, "samples"); got != int64(20*maxPendingPartSeconds) {
+		t.Errorf("warning reports %v samples, want the part that was cut (%d)", got, 20*maxPendingPartSeconds)
+	}
+}

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.4](https://github.com/rvben/vedetta/compare/v0.8.3...v0.8.4) - 2026-11-27
+
+### Performance
+
+- **recording**: wake the recording loop once per frame, not once per packet ([c070dad](https://github.com/rvben/vedetta/commit/c070dada3cf0927cbd1bb4f47176608ae70984c9))
+
 ## [0.8.3](https://github.com/rvben/vedetta/compare/v0.8.2...v0.8.3) - 2026-11-27
 
 ### Performance

@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.5](https://github.com/rvben/vedetta/compare/v0.8.4...v0.8.5) - 2026-11-27
+
+### Fixed
+
+- **recording**: keep a fragmented keyframe that follows a stream stall ([513a4e4](https://github.com/rvben/vedetta/commit/513a4e4437eff880c89aef18eb46b29f357b8b05))
+- **recording**: rotate a segment at a keyframe so no video is lost ([682bac4](https://github.com/rvben/vedetta/commit/682bac43a9a4728b554924b14028338ff881bb55))
+
 ## [0.8.4](https://github.com/rvben/vedetta/compare/v0.8.3...v0.8.4) - 2026-11-27
 
 ### Performance

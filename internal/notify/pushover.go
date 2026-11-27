@@ -21,6 +21,7 @@ import (
 
 	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/config"
+	"github.com/rvben/vedetta/internal/cry"
 	"github.com/rvben/vedetta/internal/snapshot"
 	"github.com/rvben/vedetta/internal/storage"
 )
@@ -31,6 +32,9 @@ type pushoverJob struct {
 	event   camera.Event
 	payload pushPayload
 	queued  time.Time
+	// textOnly marks a notice that has no photo by nature, so its absence is
+	// not reported as a missing snapshot.
+	textOnly bool
 }
 
 // Pushover delivers directly to a configured Pushover user or group, without a
@@ -125,6 +129,21 @@ func (p *Pushover) EnqueueCryEarly(ev camera.Event) func(camera.Event) bool {
 	return p.EnqueueCry
 }
 
+// EnqueueCryStatus queues the notice that crying recognition stopped working
+// for a camera, or works again, wherever that camera's crying alerts go.
+func (p *Pushover) EnqueueCryStatus(n cry.OutageNotice) bool {
+	if !p.DeliversCryStatus(n.Camera) {
+		return true
+	}
+	return p.enqueueJob(cryStatusEvent(n), BuildCryStatusPayload(n), true)
+}
+
+// DeliversCryStatus reports whether a camera's crying recognition notices are
+// sent anywhere: they follow its crying alerts.
+func (p *Pushover) DeliversCryStatus(cameraName string) bool {
+	return p.accepts(cameraName, "cry")
+}
+
 func (p *Pushover) EnqueueDoorbell(ev camera.Event) bool {
 	if !p.accepts(ev.CameraName, "doorbell") {
 		return true // intentionally filtered; not a delivery failure
@@ -171,6 +190,10 @@ func (p *Pushover) EnqueueActivity(activity storage.Activity) bool {
 }
 
 func (p *Pushover) enqueue(ev camera.Event, data []byte) bool {
+	return p.enqueueJob(ev, data, false)
+}
+
+func (p *Pushover) enqueueJob(ev camera.Event, data []byte, textOnly bool) bool {
 	var payload pushPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return false
@@ -181,7 +204,7 @@ func (p *Pushover) enqueue(ev camera.Event, data []byte) bool {
 	}
 	ev.SnapshotImage, ev.AnnotatedImage = nil, nil
 	select {
-	case p.jobs <- pushoverJob{event: ev, payload: payload, queued: time.Now()}:
+	case p.jobs <- pushoverJob{event: ev, payload: payload, queued: time.Now(), textOnly: textOnly}:
 		return true
 	default:
 		p.recordDelivery(false)
@@ -247,7 +270,11 @@ func (p *Pushover) send(ctx context.Context, job pushoverJob) error {
 			return fmt.Errorf("encode Pushover field: %w", err)
 		}
 	}
-	photo, err := pushoverSnapshot(job.event)
+	var photo []byte
+	var err error
+	if !job.textOnly {
+		photo, err = pushoverSnapshot(job.event)
+	}
 	if err != nil {
 		p.logger.Warn("Pushover sending without photo", "event", job.event.ID, "error", err)
 	}

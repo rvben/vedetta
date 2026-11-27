@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/cry"
 	"github.com/rvben/vedetta/internal/storage"
 )
 
@@ -113,6 +114,59 @@ func BuildActivityPayload(activity storage.Activity, signer *SnapshotSigner) []b
 		data, _ = json.Marshal(p)
 	}
 	return data
+}
+
+// BuildCryStatusPayload produces the notice that crying recognition stopped
+// working for a camera, or works again. Both share one tag, so on a device
+// that replaces by tag the recovery takes the place of the outage card.
+func BuildCryStatusPayload(n cry.OutageNotice) []byte {
+	p := pushPayload{
+		Title: "Crying alerts are not working",
+		Body:  friendlyCameraName(n.Camera) + " · " + n.Reason,
+		URL:   "/camera.html?name=" + url.QueryEscape(n.Camera),
+		Tag:   n.Camera + ":cry-status",
+		TS:    n.At.UTC().Unix(),
+	}
+	if n.Recovered {
+		p.Title = "Crying alerts are working again"
+		p.Body = friendlyCameraName(n.Camera) + " · They were out for " + roughDuration(n.At.Sub(n.Since))
+	}
+	data, _ := json.Marshal(p)
+	return data
+}
+
+// cryStatusEvent is the event a crying recognition notice travels as. It
+// carries the cry label so the mute and per-camera preference that govern
+// crying alerts govern this notice too, and no snapshot.
+func cryStatusEvent(n cry.OutageNotice) camera.Event {
+	return camera.Event{
+		ID:         fmt.Sprintf("cry-status-%s-%d", n.Camera, n.At.Unix()),
+		CameraName: n.Camera,
+		Label:      "baby_cry",
+		Timestamp:  n.At,
+	}
+}
+
+// roughDuration renders a span the way a person would say it.
+func roughDuration(d time.Duration) string {
+	minutes := int(d.Round(time.Minute) / time.Minute)
+	switch {
+	case minutes < 1:
+		return "less than a minute"
+	case minutes == 1:
+		return "1 minute"
+	case minutes < 60:
+		return fmt.Sprintf("%d minutes", minutes)
+	}
+	hours, rest := minutes/60, minutes%60
+	text := fmt.Sprintf("%d hours", hours)
+	if hours == 1 {
+		text = "1 hour"
+	}
+	if rest > 0 {
+		text += fmt.Sprintf(" %d min", rest)
+	}
+	return text
 }
 
 func doorbellAnswerURL(cameraName, eventID string) string {

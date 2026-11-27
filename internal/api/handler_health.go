@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/metrics"
 	"github.com/rvben/vedetta/internal/recording"
 )
@@ -297,6 +298,8 @@ func (s *Server) GetMetrics(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	writeCryRecognitionMetric(&b, cameraStatuses)
+
 	// The only signal that separates an on-demand camera napping between events
 	// from one that has been unplugged or dropped from its bridge: both report
 	// online=0 sleeping=1 indefinitely, and nothing else ever changes. Alert on
@@ -472,4 +475,22 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh", h)
 	}
 	return fmt.Sprintf("%dh%dm", h, m)
+}
+
+// writeCryRecognitionMetric reports, per camera that runs crying recognition,
+// whether a cry would be heard right now. A camera its operator stopped is
+// left out, as is the whole family when no camera listens: a sample of 0 there
+// would read as an outage.
+func writeCryRecognitionMetric(b *strings.Builder, statuses []camera.CameraStatus) {
+	header := false
+	for _, st := range statuses {
+		if st.Cry == nil || st.Stopped {
+			continue
+		}
+		if !header {
+			fmt.Fprintf(b, "# HELP vedetta_cry_recognition_available Whether crying recognition is working for the camera (1) or a cry would go unheard (0). Absent for cameras without recognition and for stopped cameras.\n# TYPE vedetta_cry_recognition_available gauge\n")
+			header = true
+		}
+		fmt.Fprintf(b, "vedetta_cry_recognition_available{camera=%q} %d\n", promLabel(st.Name), boolMetric(st.Cry.Working()))
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/rvben/vedetta/internal/camera"
 	"github.com/rvben/vedetta/internal/config"
 	"github.com/rvben/vedetta/internal/mqtt"
 	"github.com/rvben/vedetta/internal/storage"
@@ -54,11 +55,42 @@ func publishHomeAssistantDiscovery(cfg *config.Config, db *storage.DB, mc *mqtt.
 	mc.PublishDoorbellDiscovery(doorbellCams)
 	mc.ClearDoorbellDiscovery(nonDoorbellCams)
 
+	listening, notListening := cryRecognitionCameras(cfg.Cameras)
+	mc.PublishCryRecognitionDiscovery(listening)
+	mc.ClearCryRecognitionDiscovery(notListening)
+
 	if zoneInfos := presenceZoneInfos(cfg, db); len(zoneInfos) > 0 {
 		mc.PublishPresenceDiscovery(zoneInfos)
 	}
 
 	mc.PublishDiskDiscovery()
+}
+
+// cryRecognitionCameras splits the cameras into those that run crying
+// recognition and those that do not. The second group includes disabled
+// cameras, so turning a camera off also drops its sensor from Home Assistant.
+func cryRecognitionCameras(cameras []config.CameraConfig) (listening, notListening []string) {
+	for _, cam := range cameras {
+		if cam.IsEnabled() && cam.Cry.Enabled {
+			listening = append(listening, cam.Name)
+		} else {
+			notListening = append(notListening, cam.Name)
+		}
+	}
+	return listening, notListening
+}
+
+// cryRecognitionState is the recognition state published for a camera. A
+// camera its operator stopped reports "stopped" whatever its monitor last
+// said, and a camera without recognition reports nothing.
+func cryRecognitionState(st camera.CameraStatus) (string, bool) {
+	switch {
+	case st.Cry == nil:
+		return "", false
+	case st.Stopped:
+		return "stopped", true
+	}
+	return st.Cry.State, true
 }
 
 // presenceZoneInfos collects the zone/label pairs that track presence.

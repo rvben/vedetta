@@ -705,6 +705,9 @@ func startCameraStatusPublisher(ctx context.Context, cfg *config.Config, sub *su
 			}
 			for _, st := range sub.manager.CameraStatuses() {
 				c.PublishCameraStatus(st.Name, st.Online, st.Stopped, st.Sleeping)
+				if state, ok := cryRecognitionState(st); ok {
+					c.PublishCryRecognition(st.Name, state)
+				}
 			}
 		}
 

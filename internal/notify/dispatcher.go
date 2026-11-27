@@ -12,6 +12,7 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/cry"
 	"github.com/rvben/vedetta/internal/storage"
 )
 
@@ -68,6 +69,9 @@ type notificationJob struct {
 	test            bool
 	targetUser      string
 	snapshotEventID string
+	// payload and identity, when set, replace the ones derived from event.
+	payload  []byte
+	identity string
 }
 
 // dropReason names why one user's notification was not delivered. The empty
@@ -219,6 +223,16 @@ func (d *NotificationDispatcher) EnqueueCry(ev camera.Event) bool {
 	return d.enqueue(notificationJob{event: ev, immediate: true})
 }
 
+// EnqueueCryStatus queues the notice that crying recognition stopped working
+// for a camera, or works again. It goes to the users who would get that
+// camera's crying alerts: mute and preferences apply, the cooldown does not.
+func (d *NotificationDispatcher) EnqueueCryStatus(n cry.OutageNotice) bool {
+	return d.enqueue(notificationJob{
+		event: cryStatusEvent(n), immediate: true,
+		payload: BuildCryStatusPayload(n), identity: "cry-status:" + n.Camera,
+	})
+}
+
 // EnqueueActivity is non-blocking and returns whether the incident was
 // accepted. The processor only marks durable notification state after true.
 func (d *NotificationDispatcher) EnqueueActivity(activity storage.Activity) bool {
@@ -337,6 +351,8 @@ func (d *NotificationDispatcher) handleJob(ctx context.Context, job notification
 	} else if job.test {
 		payload = BuildTestPayload(ev.CameraName, job.snapshotEventID, ev.Timestamp, d.snapshotSigner)
 		identity = "test"
+	} else if job.payload != nil {
+		payload, identity = job.payload, job.identity
 	}
 
 	var outcome dispatchOutcome

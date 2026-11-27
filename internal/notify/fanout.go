@@ -2,8 +2,10 @@ package notify
 
 import (
 	"sync"
+	"time"
 
 	"github.com/rvben/vedetta/internal/camera"
+	"github.com/rvben/vedetta/internal/cry"
 	"github.com/rvben/vedetta/internal/storage"
 )
 
@@ -20,10 +22,11 @@ type Fanout struct {
 	providers []Provider
 	mu        sync.Mutex
 	pending   map[string][]bool
+	cryStatus map[string]*cryStatusDelivery
 }
 
 func NewFanout(providers ...Provider) *Fanout {
-	return &Fanout{providers: providers, pending: make(map[string][]bool)}
+	return &Fanout{providers: providers, pending: make(map[string][]bool), cryStatus: make(map[string]*cryStatusDelivery)}
 }
 
 func (f *Fanout) Enqueue(ev camera.Event) {
@@ -90,6 +93,83 @@ func (f *Fanout) EnqueueCryEarly(ev camera.Event) func(camera.Event) bool {
 		}
 		return complete
 	}
+}
+
+// cryStatusProvider is a provider that carries crying recognition notices.
+type cryStatusProvider interface {
+	EnqueueCryStatus(cry.OutageNotice) bool
+}
+
+// cryStatusFilter is a provider that sends a camera's crying recognition
+// notices to nobody when its settings leave that camera out. It accepts such
+// a notice, since there is nothing to retry.
+type cryStatusFilter interface {
+	DeliversCryStatus(camera string) bool
+}
+
+// cryStatusDelivery is the latest crying recognition notice of one camera
+// that some provider has yet to take.
+type cryStatusDelivery struct {
+	recovered bool
+	since     time.Time
+	accepted  []bool
+}
+
+func (d *cryStatusDelivery) of(n cry.OutageNotice) bool {
+	return d != nil && d.recovered == n.Recovered && d.since.Equal(n.Since)
+}
+
+// EnqueueCryStatus hands a crying recognition notice to every provider that
+// carries them and reports whether all of them took it. Providers that already
+// accepted are remembered, so the caller's retry does not send it twice. A
+// camera's newer notice ends the retries of its previous one: a provider that
+// never took an outage gets the recovery alone.
+func (f *Fanout) EnqueueCryStatus(n cry.OutageNotice) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.cryStatus[n.Camera]
+	if !d.of(n) {
+		d = &cryStatusDelivery{recovered: n.Recovered, since: n.Since, accepted: make([]bool, len(f.providers))}
+	}
+	complete := true
+	for i, p := range f.providers {
+		if !d.accepted[i] {
+			if status, ok := p.(cryStatusProvider); ok {
+				d.accepted[i] = status.EnqueueCryStatus(n)
+			} else {
+				d.accepted[i] = true
+			}
+		}
+		complete = complete && d.accepted[i]
+	}
+	if complete {
+		delete(f.cryStatus, n.Camera)
+	} else {
+		f.cryStatus[n.Camera] = d
+	}
+	return complete
+}
+
+// CryStatusReached reports whether a notice that EnqueueCryStatus could not
+// hand to every provider was taken by one that delivers it to someone. People
+// have then been told, although not all of them.
+func (f *Fanout) CryStatusReached(n cry.OutageNotice) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.cryStatus[n.Camera]
+	if !d.of(n) {
+		return false
+	}
+	for i, p := range f.providers {
+		if _, carries := p.(cryStatusProvider); !carries || !d.accepted[i] {
+			continue
+		}
+		if filter, ok := p.(cryStatusFilter); ok && !filter.DeliversCryStatus(n.Camera) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (f *Fanout) EnqueueDoorbell(ev camera.Event) bool {

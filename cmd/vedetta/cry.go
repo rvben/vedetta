@@ -21,9 +21,19 @@ func initCryRecognition(cfg *config.Config, db *storage.DB, sub *subsystems) {
 	if err != nil {
 		slog.Error("cry recognition unavailable; recording continues", "error", err)
 		sub.manager.ConfigureCry(nil, "Cry model could not be loaded; check the model bundle and checksum", cfg.Cry)
+		restoreCrySnoozes(cfg, db, sub)
 		return
 	}
 	sub.manager.ConfigureCry(model, "", cfg.Cry)
+	restoreCrySnoozes(cfg, db, sub)
+	slog.Info("local crying recognition initialized", "model", "YAMNet", "context_seconds", 2)
+}
+
+// restoreCrySnoozes reapplies the snoozes saved before a restart. It runs
+// whether or not the model loaded: a snooze also silences the notice that
+// recognition is out of service, and it must still hold once the model is
+// repaired.
+func restoreCrySnoozes(cfg *config.Config, db *storage.DB, sub *subsystems) {
 	for _, c := range cfg.Cameras {
 		if cam := sub.manager.GetCamera(c.Name); cam != nil {
 			value, err := db.GetSetting("cry_snooze:" + c.Name)
@@ -43,5 +53,4 @@ func initCryRecognition(cfg *config.Config, db *storage.DB, sub *subsystems) {
 			}
 		}
 	}
-	slog.Info("local crying recognition initialized", "model", "YAMNet", "context_seconds", 2)
 }

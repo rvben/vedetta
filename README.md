@@ -262,6 +262,17 @@ The camera page shows recognition availability, recent episodes, and a one-tap
 live-audio control. Alerts can be explicitly enabled after nursery validation;
 a 30-minute snooze applies to every delivery provider and survives restarts.
 
+A camera that drops off the network looks exactly like a quiet room, so a
+camera with alerts on reports its own silence. Once recognition has not worked
+for five minutes, the destinations that receive its crying alerts get one
+"Crying alerts are not working" notice with the reason, and one more when
+recognition has worked again for a minute. A snooze postpones the notice, and a
+camera stopped by its operator sends none. The same state is available to
+monitoring for every camera that runs recognition:
+`vedetta_cry_recognition_available{camera}` on `/metrics`, and over MQTT the raw
+state on `<topic>/camera/<name>/cry_recognition`, announced to Home Assistant as
+a "Crying recognition" problem sensor.
+
 The runtime needs no Python, TensorFlow, or additional RTSP connection. Model
 assets remain external, operator-pinned, and checksum-verified. Provisioning,
 reference parity checks, calibration, and notification setup are documented in

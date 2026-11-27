@@ -43,6 +43,9 @@ type Publisher interface {
 	PublishDiskDiscovery()
 	PublishDoorbellDiscovery(cameraNames []string)
 	ClearDoorbellDiscovery(cameraNames []string)
+	PublishCryRecognition(cameraName, state string)
+	PublishCryRecognitionDiscovery(cameraNames []string)
+	ClearCryRecognitionDiscovery(cameraNames []string)
 	Close()
 }
 

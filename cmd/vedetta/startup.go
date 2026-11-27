@@ -137,6 +137,7 @@ func runFullMode(ctx context.Context, cancel context.CancelFunc, cfg *config.Con
 	wireNotifier(ctx, server, dispatcher, cfg)
 	sub.notifier = setupNotificationProviders(ctx, cfg, dispatcher)
 	server.SetCryDeliveryProvider(sub.notifier, cfg.Notifications.Pushover.Enabled)
+	startCryOutageWatcher(ctx, cfg, db, sub)
 
 	processorDrained := runEventLoop(ctx, cfg, db, sub, server, tp.Tracer())
 	startOnvifSubscribers(ctx, cfg, sub.manager)

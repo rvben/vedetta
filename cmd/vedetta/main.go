@@ -460,7 +460,7 @@ func initSubsystems(ctx context.Context, cfg *config.Config, db *storage.DB) *su
 
 	sub.manager.Start(ctx, stoppedCameras)
 	sub.ptzClients = probePTZClients(cfg)
-	startCameraStatusPublisher(ctx, cfg, &sub)
+	startCameraStatusPublisher(ctx, &sub)
 
 	return &sub
 }
@@ -691,46 +691,64 @@ func probePTZClients(cfg *config.Config) map[string]*camera.PTZClient {
 	return ptzClients
 }
 
+// cameraStatusSink is the part of the MQTT client the status publisher uses.
+type cameraStatusSink interface {
+	PublishCameraStatus(cameraName string, online, stopped, sleeping bool)
+	PublishCryRecognition(cameraName, state string)
+}
+
 // startCameraStatusPublisher publishes camera online/offline status to MQTT,
 // quickly at first so cameras appear as they connect, then on a steady tick.
-func startCameraStatusPublisher(ctx context.Context, cfg *config.Config, sub *subsystems) {
-	if !cfg.MQTT.Enabled {
-		return
+// It runs whether or not MQTT is configured: the client can be installed
+// while the server runs, and a round without one publishes nothing.
+func startCameraStatusPublisher(ctx context.Context, sub *subsystems) {
+	client := func() cameraStatusSink {
+		if c := sub.mqtt.Load(); c != nil {
+			return c
+		}
+		return nil
 	}
-	go func() {
-		publishStatuses := func() {
-			c := sub.mqtt.Load()
-			if c == nil {
-				return
-			}
-			for _, st := range sub.manager.CameraStatuses() {
-				c.PublishCameraStatus(st.Name, st.Online, st.Stopped, st.Sleeping)
-				if state, ok := cryRecognitionState(st); ok {
-					c.PublishCryRecognition(st.Name, state)
-				}
-			}
-		}
+	go publishCameraStatuses(ctx, client, sub.manager.CameraStatuses,
+		cameraStatusWarmupInterval, mqttStatusInterval)
+}
 
-		for range cameraStatusWarmupPublishes {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(cameraStatusWarmupInterval):
-				publishStatuses()
+// publishCameraStatuses publishes every camera's status to the client that
+// is installed at that moment, cameraStatusWarmupPublishes times at the
+// warmup interval and then at the steady one, until ctx is done.
+func publishCameraStatuses(ctx context.Context, client func() cameraStatusSink,
+	statuses func() []camera.CameraStatus, warmup, steady time.Duration) {
+	publish := func() {
+		c := client()
+		if c == nil {
+			return
+		}
+		for _, st := range statuses() {
+			c.PublishCameraStatus(st.Name, st.Online, st.Stopped, st.Sleeping)
+			if state, ok := cryRecognitionState(st); ok {
+				c.PublishCryRecognition(st.Name, state)
 			}
 		}
+	}
 
-		ticker := time.NewTicker(mqttStatusInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				publishStatuses()
-			}
+	for range cameraStatusWarmupPublishes {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(warmup):
+			publish()
 		}
-	}()
+	}
+
+	ticker := time.NewTicker(steady)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			publish()
+		}
+	}
 }
 
 // ensureOpenH264 auto-installs the OpenH264 library when it is missing and

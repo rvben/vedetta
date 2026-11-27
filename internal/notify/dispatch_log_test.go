@@ -3,9 +3,12 @@ package notify
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rvben/vedetta/internal/storage"
 )
 
 // --- log capture ---
@@ -286,4 +289,79 @@ func TestDispatchLog_SendFailureIsNamed(t *testing.T) {
 		t.Errorf("send_failed = %d, want 1", n)
 	}
 	assertNoAttr(t, records[0], "muted")
+}
+
+// An install without a single push subscription delivers nothing by design.
+// It says so once, not on every event.
+func TestDispatchLog_NoSubscribersWarnsOnce(t *testing.T) {
+	store := newFakeStore()
+	d, capture := newLoggingDispatcher(t, store, &fakeSender{})
+	ctx, cancel := context.WithCancel(context.Background())
+	d.Start(ctx)
+	for range 3 {
+		d.Enqueue(sampleEvent())
+	}
+	records := capture.waitForRecords(t, "push dispatch", 3)
+	cancel()
+	d.Wait()
+
+	if n := attrInt(t, records[0], "users"); n != 0 {
+		t.Fatalf("users = %d, want 0", n)
+	}
+	if records[0].Level != slog.LevelWarn {
+		t.Errorf("first dispatch without subscribers logged at %v, want WARN", records[0].Level)
+	}
+	for i, rec := range records[1:] {
+		if rec.Level != slog.LevelInfo {
+			t.Errorf("dispatch %d without subscribers logged at %v, want INFO", i+2, rec.Level)
+		}
+	}
+}
+
+// Losing the last subscription after having had one is news again.
+func TestDispatchLog_NoSubscribersWarnsAgainAfterASubscriptionWasLost(t *testing.T) {
+	store := newFakeStore()
+	sender := &fakeSender{}
+	d, capture := newLoggingDispatcher(t, store, sender)
+	ctx, cancel := context.WithCancel(context.Background())
+	d.Start(ctx)
+
+	d.Enqueue(sampleEvent())
+	capture.waitForRecords(t, "push dispatch", 1)
+
+	store.subscribe("alice", "https://push.example/a")
+	d.Enqueue(sampleEvent())
+	waitForCalls(t, sender, 1)
+	capture.waitForRecords(t, "push dispatch", 2)
+
+	store.unsubscribe("alice")
+	d.Enqueue(sampleEvent())
+	d.Enqueue(sampleEvent())
+	records := capture.waitForRecords(t, "push dispatch", 4)
+	cancel()
+	d.Wait()
+
+	if records[2].Level != slog.LevelWarn {
+		t.Errorf("first dispatch after the last subscription went logged at %v, want WARN", records[2].Level)
+	}
+	if records[3].Level != slog.LevelInfo {
+		t.Errorf("second dispatch after the last subscription went logged at %v, want INFO", records[3].Level)
+	}
+}
+
+// subscribe and unsubscribe change the store while the dispatcher runs.
+func (f *fakeStore) subscribe(user, endpoint string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users = append(f.users, user)
+	f.subs[user] = append(f.subs[user], storage.PushSubscription{
+		ID: int64(len(f.subs[user]) + 1), Username: user, Endpoint: endpoint, P256dh: "p", Auth: "a",
+	})
+}
+
+func (f *fakeStore) unsubscribe(user string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users = slices.DeleteFunc(f.users, func(u string) bool { return u == user })
+	delete(f.subs, user)
 }

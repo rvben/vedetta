@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -54,6 +55,10 @@ type NotificationDispatcher struct {
 	jobs           chan notificationJob
 	workers        int
 	wg             sync.WaitGroup
+
+	// noSubscribersWarned is set once the absence of any push subscription
+	// has been reported, and cleared when a subscription exists again.
+	noSubscribersWarned atomic.Bool
 }
 
 type notificationJob struct {
@@ -358,7 +363,7 @@ func (d *NotificationDispatcher) handleJob(ctx context.Context, job notification
 		"has_image_field", bytesContainsImageField(payload),
 		"users", len(users),
 	}
-	d.logger.Log(ctx, d.dispatchLevel(outcome), "push dispatch", append(attrs, outcome.attrs()...)...)
+	d.logger.Log(ctx, d.dispatchLevel(len(users), outcome), "push dispatch", append(attrs, outcome.attrs()...)...)
 }
 
 // dispatchLevel escalates a fan-out that delivered nothing while the process
@@ -368,7 +373,19 @@ func (d *NotificationDispatcher) handleJob(ctx context.Context, job notification
 // startup instead means push is broken or switched off wholesale, which is the
 // failure that otherwise stays invisible until someone asks why their phone
 // has been quiet. A healthy install stops warning on its first delivery.
-func (d *NotificationDispatcher) dispatchLevel(outcome dispatchOutcome) slog.Level {
+//
+// An install where no device is subscribed is in that state for good, and by
+// choice when its alerts go out another way. It is reported once, and again
+// only after a subscription has come and gone, so the last device being
+// pruned is still visible without a warning on every event.
+func (d *NotificationDispatcher) dispatchLevel(users int, outcome dispatchOutcome) slog.Level {
+	if users == 0 {
+		if d.noSubscribersWarned.CompareAndSwap(false, true) {
+			return slog.LevelWarn
+		}
+		return slog.LevelInfo
+	}
+	d.noSubscribersWarned.Store(false)
 	if outcome.delivered == 0 && d.metrics.EventsSent.Load() == 0 {
 		return slog.LevelWarn
 	}

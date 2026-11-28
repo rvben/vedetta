@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.9.0](https://github.com/rvben/vedetta/compare/v0.8.5...v0.9.0) - 2026-11-28
+
+### Added
+
+- **cry**: report when a camera's crying alerts stop working ([e94ed62](https://github.com/rvben/vedetta/commit/e94ed62f1ec1c9590cb81f65c3a0dc642ba39206))
+
+### Fixed
+
+- **mqtt**: publish camera status when MQTT is switched on while the server runs ([490e266](https://github.com/rvben/vedetta/commit/490e266456b9af413c0b7c5837c05f2884402d21))
+- **recording**: warn about a partial GOP only when a keyframe was late ([7232284](https://github.com/rvben/vedetta/commit/7232284434b55c325a69d2157e31fae3fef5d3a2))
+- **recording**: keep the last frame a camera sent before a stream stall ([b5434de](https://github.com/rvben/vedetta/commit/b5434de0600e2078e8c7eab824b1bd949ef3a43d))
+- **camera**: refuse to start a camera whose previous run is still stopping ([e70522a](https://github.com/rvben/vedetta/commit/e70522a3b46f5b74a1c861e4af2f72dc4ed801b0))
+- **recording**: report a write outage when it starts and ends, not at every retry ([9e1bbbb](https://github.com/rvben/vedetta/commit/9e1bbbbc41e9f054b3b2ebf6c2690ef9ef7a2a79))
+- **notify**: warn once, not on every event, when no device is subscribed to push ([826b8d2](https://github.com/rvben/vedetta/commit/826b8d227879495dcaf2072f9fcb4f8096a36186))
+- **events**: stop warning about ends of events that already ended ([e4b2afd](https://github.com/rvben/vedetta/commit/e4b2afd0e4c6a31213d3a9a65719672c8a71b759))
+- **tracing**: send traces to /v1/traces when the endpoint URL has no path ([c6196b1](https://github.com/rvben/vedetta/commit/c6196b16d689ecac5935e9af84149ddb5ffba20e))
+
 ## [0.8.5](https://github.com/rvben/vedetta/compare/v0.8.4...v0.8.5) - 2026-11-27
 
 ### Fixed
